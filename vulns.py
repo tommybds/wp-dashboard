@@ -339,7 +339,10 @@ def do_scan():
         found = []
         core = s.get("core_version")
         if core:
-            found += hits(cores.get(str(core)), core, "core", "WordPress")
+            # `update_to` renseigne aussi pour le cœur : sans lui, l'interface
+            # affichait « aucun correctif » alors qu'une mise à jour existe.
+            found += hits(cores.get(str(core)), core, "core", "WordPress",
+                          {"update_to": s.get("core_update") or ""})
         for p in (s.get("plugins_list") or []):
             slug, ver = p.get("name"), p.get("version")
             if not slug or not ver or slug in SKIP_SLUGS:

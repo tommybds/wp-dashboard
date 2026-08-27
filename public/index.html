@@ -389,6 +389,10 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
         <option value="medium">Moyenne et +</option>
       </select>
       <label class="small"><input type="checkbox" id="vln-fix"> corrigeable par une MAJ</label>
+      <select id="vln-vue" title="Par site : que corriger sur ce site ? — Par extension : une extension vulnérable sur plusieurs sites se traite en une fois.">
+        <option value="site">Vue par site</option>
+        <option value="ext">Vue par extension (tout le parc)</option>
+      </select>
       <span class="spacer"></span>
       <span id="vln-count" class="muted small"></span>
     </div>
@@ -1776,7 +1780,87 @@ function grouperParExtension(findings){
   }
   return [...g.values()].sort((a,b)=>(SEVRANK[b.worst]||0)-(SEVRANK[a.worst]||0)||b.n-a.n);
 }
-let VLNOPEN=new Set();
+let VLNOPEN=new Set(), VEXTOPEN=new Set();
+
+/* Vue inverse : une extension, tous les sites ou elle est vulnerable.
+   `wordpress-seo` est vulnerable sur 5 sites : une seule action groupee les
+   couvre tous, la vue par site obligeait a ouvrir les 5 fiches. */
+function grouperParParc(sites){
+  const g=new Map();
+  for(const s of sites){
+    for(const v of s.findings){
+      let e=g.get(v.component);
+      if(!e){ e={component:v.component, kind:v.kind, sites:new Map(), worst:'', n:0}; g.set(v.component,e); }
+      e.n++;
+      if((SEVRANK[v.severity]||0)>(SEVRANK[e.worst]||0)) e.worst=v.severity;
+      let d=e.sites.get(s.domain);
+      if(!d){ d={domain:s.domain, server:s.server, via:s.via, version:v.version,
+                 update_to:v.update_to||'', n:0, worst:''}; e.sites.set(s.domain,d); }
+      d.n++;
+      if(v.update_to) d.update_to=v.update_to;
+      if((SEVRANK[v.severity]||0)>(SEVRANK[d.worst]||0)) d.worst=v.severity;
+    }
+  }
+  return [...g.values()].map(e=>({...e, sites:[...e.sites.values()]}))
+    .sort((a,b)=>b.sites.length-a.sites.length
+                 ||(SEVRANK[b.worst]||0)-(SEVRANK[a.worst]||0)||b.n-a.n);
+}
+function renderVulnsParExtension(sitesFiltres){
+  const body=document.getElementById('vln-body'), cnt=document.getElementById('vln-count');
+  const grp=grouperParParc(sitesFiltres);
+  if(!grp.length){ body.innerHTML='<span class="muted">aucune vulnérabilité ne correspond au filtre.</span>';
+    cnt.textContent=''; return; }
+  const multi=grp.filter(e=>e.sites.length>1).length;
+  cnt.textContent=`${grp.length} extension${grp.length>1?'s':''}`
+    +(multi?` · ${multi} sur plusieurs sites`:'');
+  body.innerHTML=grp.map(e=>{
+    const ouvert=VEXTOPEN.has(e.component);
+    const majables=e.sites.filter(d=>d.update_to&&d.via!=='rest');
+    const bouton=majables.length
+      ? `<button class="btn sm primary vbulk" data-ext="${H(e.component)}"
+           title="Lance « MAJ ${H(e.component)} » sur les ${majables.length} site(s) où une mise à jour existe">
+           MAJ sur ${majables.length} site${majables.length>1?'s':''}</button>`
+      : '<span class="pill mut">aucun correctif</span>';
+    const lignes=e.sites.sort((a,b)=>(SEVRANK[b.worst]||0)-(SEVRANK[a.worst]||0)).map(d=>
+      `<div class="vrow">${sevPill(d.worst)}<b>${H(d.domain)}</b>
+        <span class="muted">${H(d.version)}</span>
+        <span class="pill mut">${d.n} faille${d.n>1?'s':''}</span>
+        ${d.update_to?`<span class="pill ok">MAJ ${H(d.update_to)}</span>`
+                     :'<span class="pill err">aucun correctif</span>'}
+        ${d.via==='rest'?'<span class="pill mut" title="site géré sans SSH : action distante indisponible">REST</span>':''}
+      </div>`).join('');
+    return `<div class="vsite${ouvert?' open':''}" data-vext="${H(e.component)}">
+        <span class="tlchev">›</span><b>${H(e.component)}</b>${sevPill(e.worst)}
+        <span class="muted small">${e.sites.length} site${e.sites.length>1?'s':''} · ${e.n} faille${e.n>1?'s':''}</span>
+        ${bouton}</div>
+      <div class="vlist"${ouvert?'':' hidden'}>${lignes}</div>`;
+  }).join('');
+  body.querySelectorAll('.vsite').forEach(h=>h.onclick=ev=>{
+    if(ev.target.closest('.vbulk')) return;          // le bouton ne doit pas replier
+    const c=h.dataset.vext, liste=h.nextElementSibling;
+    if(VEXTOPEN.has(c)) VEXTOPEN.delete(c); else VEXTOPEN.add(c);
+    liste.hidden=!VEXTOPEN.has(c); h.classList.toggle('open',VEXTOPEN.has(c));
+  });
+  body.querySelectorAll('.vbulk').forEach(b=>b.onclick=async ev=>{
+    ev.stopPropagation();
+    const ext=b.dataset.ext, e=grp.find(x=>x.component===ext);
+    const cibles=e.sites.filter(d=>d.update_to&&d.via!=='rest');
+    const ok=await new Promise(res=>{
+      askOpen(`Mettre à jour « ${ext} »`,
+        `Sur <b>${cibles.length} site(s)</b> où une mise à jour existe :<br>`
+        +cibles.map(d=>`${H(d.domain)} <span class="muted">${H(d.version)} → ${H(d.update_to)}</span>`).join('<br>')
+        +`<br><br>Les extensions <b>gelées</b> sur un site seront ignorées automatiquement.`,
+        '', ()=>res(true), ()=>res(false));
+    });
+    if(!ok) return;
+    // Le cœur ne se met pas à jour avec `plugin_update` : action distincte, sans argument.
+    const tasks=cibles.map(d=>e.kind==='core'
+      ? {server:d.server,domain:d.domain,action:'core_update',arg:null}
+      : {server:d.server,domain:d.domain,action:'plugin_update',arg:ext});
+    const r=await api('/api/actions/bulk',{tasks,mode:'continue',backup_first:true,viz_verify:false});
+    if(r.job){ CURJOB=r.job; openBulkModal(`Mise à jour de ${ext}`); pollBulk(); }
+  });
+}
 function renderVulns(){
   const q=(document.getElementById('vln-q').value||'').toLowerCase().trim();
   const minSev=SEVRANK[document.getElementById('vln-sev').value]||0;
@@ -1788,6 +1872,18 @@ function renderVulns(){
       ? '<span class="pill ok">aucune vulnérabilité connue sur le parc</span>'
       : 'Analyse jamais lancée — cliquez sur « Relancer l\'analyse ».';
     cnt.textContent=''; return; }
+  // Filtrage commun aux deux vues, pour qu'elles restent coherentes.
+  const filtres=(VULNS.sites||[]).map(s=>{
+    let f=s.findings.filter(v=>SEVRANK[v.severity]>=minSev);
+    if(fixOnly) f=f.filter(v=>v.update_to);
+    if(q) f=f.filter(v=>(s.domain+' '+v.component+' '+(v.cve||'')+' '+v.title).toLowerCase().includes(q));
+    return {...s, findings:f};
+  }).filter(s=>s.findings.length);
+  if(document.getElementById('vln-vue').value==='ext'){
+    renderVulnsParExtension(filtres);
+    renderVulnsPhp();
+    return;
+  }
   let nSites=0, nGrp=0;
   const html=VULNS.sites.map(s=>{
     let f=s.findings.filter(v=>SEVRANK[v.severity]>=minSev);
@@ -1828,7 +1924,11 @@ function renderVulns(){
     if(VLNOPEN.has(d)) VLNOPEN.delete(d); else VLNOPEN.add(d);
     liste.hidden=!VLNOPEN.has(d); h.classList.toggle('open',VLNOPEN.has(d));
   });
+  renderVulnsPhp();
+}
+function renderVulnsPhp(){
   const php=document.getElementById('vln-php');
+  if(!php) return;
   php.innerHTML=(VULNS.php||[]).length ? VULNS.php.map(e=>{
     const eol=/^([0-7]\.|8\.0)/.test(e.version);
     return `<div class="vulnrow">${sevPill(e.worst)} <b>PHP ${H(e.version)}</b>
@@ -1861,6 +1961,7 @@ async function loadVulns(){
 document.getElementById('vln-q').addEventListener('input',renderVulns);
 document.getElementById('vln-sev').addEventListener('change',renderVulns);
 document.getElementById('vln-fix').addEventListener('change',renderVulns);
+document.getElementById('vln-vue').addEventListener('change',renderVulns);
 document.getElementById('vln-run').onclick=async(e)=>{
   const b=e.currentTarget; b.disabled=true; b.textContent='analyse…';
   document.getElementById('vln-body').innerHTML='<span class="pill mut">analyse en cours…</span> <span class="muted">~2 min (≈320 extensions à vérifier)</span>';
