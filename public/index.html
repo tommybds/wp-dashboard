@@ -146,6 +146,18 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tipbox::before{content:"";position:absolute;top:-5px;left:9px;width:9px;height:9px;background:var(--card);
   border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
+/* Vulnerabilites : un en-tete de site repliable, puis une ligne par extension
+   (et non par CVE — une extension cumule souvent 20 CVE). */
+.vsite{display:flex;align-items:center;gap:8px;padding:8px 6px;cursor:pointer;border-radius:var(--r-sm);
+  flex-wrap:wrap;border-top:1px solid var(--line)}
+.vsite:hover{background:var(--chip)}
+.vsite .tlchev{transition:transform .15s ease}
+.vsite.open .tlchev{transform:rotate(90deg)}
+.vlist{padding:2px 0 8px 26px}
+.vlist[hidden]{display:none}
+.vrow{display:flex;align-items:center;gap:7px;padding:5px 0;flex-wrap:wrap}
+.vcves{flex-basis:100%;margin-left:2px}
+.vcves a{margin-right:7px;white-space:nowrap}
 /* --- journal : une pastille d'icone, un titre, un detail lisible --- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
 .tlrow:last-child{border-bottom:0}
@@ -365,7 +377,9 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <button class="btn sm fr" id="vln-run">↻ Relancer l'analyse</button></h2>
     <p class="hint">Croisement de l'inventaire (cœur, PHP, extensions et leurs versions exactes) avec la base ouverte
       <a href="https://www.wpvulnerability.net/" target="_blank" rel="noopener">WPVulnerability</a>, qui agrège CVE.org, Patchstack, Wordfence et WPScan.
-      Le croisement se fait <b>en local</b> : aucune information sur le parc n'est transmise.</p>
+      Le croisement se fait <b>en local</b> : aucune information sur le parc n'est transmise.<br>
+      Regroupé <b>par extension</b> et non par CVE — une seule extension en cumule souvent une vingtaine.
+      Cliquez un site pour le déplier.</p>
     <div class="filters">
       <input type="search" id="vln-q" placeholder="Filtrer un site, une extension, un CVE…" style="width:280px">
       <select id="vln-sev">
@@ -1745,6 +1759,24 @@ const SEVRANK={critical:4,high:3,medium:2,low:1,'':0};
 const SEVLABEL={critical:'critique',high:'élevée',medium:'moyenne',low:'faible','':'non cotée'};
 function sevPill(s){ const c=s==='critical'?'err':s==='high'?'err':s==='medium'?'warn':'mut';
   return `<span class="pill ${c}">${H(SEVLABEL[s]||s||'?')}</span>`; }
+/* Regroupement par extension : 222 CVE brutes deviennent ~54 lignes lisibles.
+   Une meme extension cumule souvent 20 CVE — les lister une par une noie le
+   signal, alors que la decision se prend au niveau de l'extension. */
+function grouperParExtension(findings){
+  const g=new Map();
+  for(const v of findings){
+    const cle=v.component+'@'+v.version;
+    let e=g.get(cle);
+    if(!e){ e={component:v.component,version:v.version,kind:v.kind,
+               update_to:v.update_to||'',unfixed:false,worst:'',cves:[],n:0}; g.set(cle,e); }
+    e.n++; e.cves.push(v);
+    if(v.update_to) e.update_to=v.update_to;
+    if(v.unfixed) e.unfixed=true;
+    if((SEVRANK[v.severity]||0)>(SEVRANK[e.worst]||0)) e.worst=v.severity;
+  }
+  return [...g.values()].sort((a,b)=>(SEVRANK[b.worst]||0)-(SEVRANK[a.worst]||0)||b.n-a.n);
+}
+let VLNOPEN=new Set();
 function renderVulns(){
   const q=(document.getElementById('vln-q').value||'').toLowerCase().trim();
   const minSev=SEVRANK[document.getElementById('vln-sev').value]||0;
@@ -1756,30 +1788,50 @@ function renderVulns(){
       ? '<span class="pill ok">aucune vulnérabilité connue sur le parc</span>'
       : 'Analyse jamais lancée — cliquez sur « Relancer l\'analyse ».';
     cnt.textContent=''; return; }
-  let rows=0;
+  let nSites=0, nGrp=0;
   const html=VULNS.sites.map(s=>{
     let f=s.findings.filter(v=>SEVRANK[v.severity]>=minSev);
     if(fixOnly) f=f.filter(v=>v.update_to);
     if(q) f=f.filter(v=>(s.domain+' '+v.component+' '+(v.cve||'')+' '+v.title).toLowerCase().includes(q));
     if(!f.length) return '';
-    rows+=f.length;
-    const lignes=f.map(v=>{
-      const fix=v.update_to?`<span class="pill ok">MAJ ${H(v.update_to)}</span>`
-        :(v.unfixed?'<span class="pill err">non corrigée</span>':'<span class="muted small">pas de MAJ vue</span>');
-      const cve=v.cve?`<a href="${H(v.link||'#')}" target="_blank" rel="noopener" class="muted small">${H(v.cve)}</a>`:'';
-      return `<div class="logline">${sevPill(v.severity)} <b>${H(v.component)}</b>
-        <span class="muted">${H(v.version)}</span> ${fix} ${cve}
-        <span class="muted small" title="${H(v.title)}">— ${H((v.title||'').slice(0,80))}</span></div>`;
+    nSites++;
+    const grp=grouperParExtension(f);
+    nGrp+=grp.length;
+    const corrigeables=grp.filter(e=>e.update_to).length;
+    const ouvert=VLNOPEN.has(s.domain)||!!q;
+    const entete=`<div class="vsite${ouvert?' open':''}" data-vsite="${H(s.domain)}">
+      <span class="tlchev">›</span><b>${H(s.domain)}</b>
+      ${sevPill(s.worst)}
+      <span class="muted small">${grp.length} extension${grp.length>1?'s':''} · ${f.length} faille${f.length>1?'s':''}</span>
+      ${corrigeables?`<span class="pill ok">${corrigeables} corrigeable${corrigeables>1?'s':''}</span>`
+                    :'<span class="pill mut">aucun correctif</span>'}</div>`;
+    const rangs=grp.map(e=>{
+      const fix=e.update_to?`<span class="pill ok">MAJ ${H(e.update_to)}</span>`
+        :'<span class="pill err">aucun correctif</span>';
+      // Cinq references suffisent a enqueter ; au-dela la liste noie la ligne,
+      // alors que la decision se prend sur le nombre et l'existence d'un correctif.
+      const refs=e.cves.filter(c=>c.cve);
+      const cves=refs.slice(0,5)
+        .map(c=>`<a href="${H(c.link||'#')}" target="_blank" rel="noopener">${H(c.cve)}</a>`).join(' ')
+        +(refs.length>5?` <span class="muted">+${refs.length-5}</span>`:'');
+      return `<div class="vrow">${sevPill(e.worst)}
+        <b>${H(e.component)}</b> <span class="muted">${H(e.version)}</span>
+        <span class="pill mut">${e.n} faille${e.n>1?'s':''}</span> ${fix}
+        ${refs.length?`<div class="muted small vcves">${cves}</div>`:''}</div>`;
     }).join('');
-    return `<div style="margin-bottom:10px"><b>${H(s.domain)}</b>
-      <span class="muted small">${f.length} sur ce site</span>${lignes}</div>`;
+    return entete+`<div class="vlist"${ouvert?'':' hidden'}>${rangs}</div>`;
   }).join('');
-  cnt.textContent=rows?`${rows} affichée${rows>1?'s':''}`:'';
+  cnt.textContent=nGrp?`${nSites} site${nSites>1?'s':''} · ${nGrp} extension${nGrp>1?'s':''}`:'';
   body.innerHTML=html||'<span class="muted">aucune vulnérabilité ne correspond au filtre.</span>';
+  body.querySelectorAll('.vsite').forEach(h=>h.onclick=()=>{
+    const d=h.dataset.vsite, liste=h.nextElementSibling;
+    if(VLNOPEN.has(d)) VLNOPEN.delete(d); else VLNOPEN.add(d);
+    liste.hidden=!VLNOPEN.has(d); h.classList.toggle('open',VLNOPEN.has(d));
+  });
   const php=document.getElementById('vln-php');
   php.innerHTML=(VULNS.php||[]).length ? VULNS.php.map(e=>{
     const eol=/^([0-7]\.|8\.0)/.test(e.version);
-    return `<div class="logline">${sevPill(e.worst)} <b>PHP ${H(e.version)}</b>
+    return `<div class="vulnrow">${sevPill(e.worst)} <b>PHP ${H(e.version)}</b>
       ${eol?'<span class="pill err">fin de support</span>':''}
       <span class="muted">${e.count} faille${e.count>1?'s':''} connue${e.count>1?'s':''}</span>
       <span class="muted small">— ${e.sites.length} site${e.sites.length>1?'s':''} : ${H(e.sites.slice(0,4).join(', '))}${e.sites.length>4?'…':''}</span></div>`;
@@ -1788,13 +1840,20 @@ function renderVulns(){
 async function loadVulns(){
   try{
     VULNS=await api('/api/sec/vulns');
+    // Le chiffre utile n'est pas « 222 failles » mais la repartition entre ce
+    // qui se corrige d'un clic et ce qui demande une decision.
+    let corrigeables=0, sansFix=0;
+    (VULNS.sites||[]).forEach(x=>x.findings.forEach(v=>v.update_to?corrigeables++:sansFix++));
+    VULNS._fix=corrigeables; VULNS._nofix=sansFix;
     const t=VULNS.totals||{}, sum=document.getElementById('vln-sum');
     if(VULNS.sites_affected){
       const bits=[];
       if(t.critical) bits.push(`${t.critical} critiques`);
       if(t.high) bits.push(`${t.high} élevées`);
       if(t.medium) bits.push(`${t.medium} moyennes`);
-      sum.innerHTML=`<span class="pill ${t.critical?'err':t.high?'warn':'mut'}">${VULNS.sites_affected}/${VULNS.sites_scanned} sites — ${bits.join(', ')||'—'}</span>`;
+      sum.innerHTML=`<span class="pill ${t.critical?'err':t.high?'warn':'mut'}">${VULNS.sites_affected}/${VULNS.sites_scanned} sites — ${bits.join(', ')||'—'}</span>`
+        +` <span class="pill ok">${corrigeables} corrigeables par une MAJ</span>`
+        +` <span class="pill mut">${sansFix} sans correctif</span>`;
     } else sum.innerHTML=VULNS.sites_scanned?'<span class="pill ok">parc sain</span>':'';
     renderVulns();
   }catch(e){ document.getElementById('vln-body').textContent='erreur de chargement : '+e; }
