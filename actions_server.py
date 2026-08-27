@@ -612,7 +612,10 @@ def logged_action(server, domain, action, arg, source="manuel"):
 SAFE = {"running": False, "domain": "", "steps": [], "verdict": "", "started": None,
         "finished": None}
 SAFE_LOCK = threading.Lock()
-SAFE_ROLLBACK_DIR = "/tmp/.wpdash-rollback"
+SAFE_ROLLBACK_PARENT = "/tmp"
+SAFE_ROLLBACK_DIR = SAFE_ROLLBACK_PARENT + "/.wpdash-rollback"
+SAFE_KEEP_DAYS = 7          # archives d'un retour arrière conservées 7 jours
+SAFE_DISK_MARGIN_MB = 500   # marge exigée en plus du double du volume à archiver
 BODY_MIN_RATIO = 0.5   # une page qui perd plus de la moitié de son poids = suspecte
 
 
@@ -650,8 +653,16 @@ def viz_available(srv, site):
     return rc == 0
 
 
-def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True):
-    """Orchestration complète. `slugs` None = toutes les extensions à mettre à jour."""
+def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
+                    with_core=False):
+    """Orchestration complète.
+
+    `slugs` None = toutes les extensions ayant une mise à jour en attente.
+    `with_core` inclut le cœur WordPress : ses fichiers sont archivés et
+    restaurables, MAIS les migrations de base de données déclenchées par
+    `core update-db` ne sont PAS annulées par le retour arrière — c'est la
+    sauvegarde UpdraftPlus qui sert de recours pour la base.
+    """
     SAFE.update({"running": True, "domain": domain, "steps": [], "verdict": "",
                  "started": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "finished": None})
@@ -682,11 +693,32 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                    if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
         if slugs:
             pending = [p for p in pending if p in slugs]
-        if not pending:
-            safe_step("Rien à mettre à jour", True, "aucune extension en attente")
+
+        # Cœur : présent seulement si une mise à jour est réellement disponible.
+        core_target = ""
+        if with_core:
+            rcc, outc = remote_bash(srv, site,
+                                    'run core check-update --field=version --format=csv', timeout=120)
+            cand = [l.strip() for l in (outc or "").splitlines()
+                    if re.match(r"^\d+\.\d+(\.\d+)?$", l.strip())]
+            core_target = cand[0] if rcc == 0 and cand else ""
+            with_core = bool(core_target)
+
+        if not pending and not with_core:
+            safe_step("Rien à mettre à jour", True, "aucune extension ni cœur en attente")
             SAFE["verdict"] = "rien à faire"
             return
-        safe_step(f"{len(pending)} extension(s) à mettre à jour", True, ", ".join(pending[:20]))
+        quoi = []
+        if pending:
+            quoi.append(f"{len(pending)} extension(s) : " + ", ".join(pending[:20]))
+        if with_core:
+            quoi.append(f"cœur WordPress → {core_target}")
+        safe_step("À mettre à jour", True, " | ".join(quoi))
+        if with_core:
+            safe_step("Avertissement sur le cœur", True,
+                      "les fichiers du cœur sont archivés et restaurables, mais les migrations "
+                      "de base de données (core update-db) ne sont PAS annulées par le retour "
+                      "arrière — la sauvegarde UpdraftPlus est le recours pour la base")
 
         # 3. sauvegarde UpdraftPlus (filet, pas le mécanisme de retour arrière)
         if do_backup:
@@ -694,24 +726,62 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
             safe_step("Sauvegarde UpdraftPlus", rc == 0,
                       (out or "")[-300:] if rc else "sauvegarde lancée")
 
-        # 4. archivage des dossiers concernés
+        # 4. archivage des dossiers concernés (+ contrôle d'espace et purge)
+        #    On archive UNIQUEMENT les extensions réellement mises à jour, jamais
+        #    tout le dossier plugins : sur un gros site c'est 400 Mo contre 30.
         lst = " ".join(sq(p) for p in pending)
+        core_arch = "oui" if with_core else "non"
         body = f'''
 set -o pipefail
 PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
 [ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
-mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
 echo "PLUGDIR=$PLUGDIR"
+
+# Purge des archives d'anciennes exécutions (retour arrière conservé 7 jours).
+find {sq(SAFE_ROLLBACK_DIR)} -maxdepth 1 -type d -mtime +{SAFE_KEEP_DAYS} -exec rm -rf {{}} + 2>/dev/null
+
+# Volume à archiver, puis contrôle d'espace : on refuse de commencer si /tmp
+# ne peut pas absorber les archives avec une marge confortable.
+besoin=0
+for s in {lst}; do
+  [ -d "$PLUGDIR/$s" ] || continue
+  besoin=$((besoin + $(du -sm "$PLUGDIR/$s" 2>/dev/null | cut -f1)))
+done
+if [ "{core_arch}" = "oui" ]; then
+  besoin=$((besoin + $(du -sm --exclude=wp-content "$D" 2>/dev/null | cut -f1)))
+fi
+libre=$(df -Pm {sq(SAFE_ROLLBACK_PARENT)} | awk 'NR==2{{print $4}}')
+echo "BESOIN_MO=$besoin"; echo "LIBRE_MO=$libre"
+if [ "$libre" -lt $((besoin * 2 + {SAFE_DISK_MARGIN_MB})) ]; then
+  echo "ESPACE_INSUFFISANT"; exit 83
+fi
+
+mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
 for s in {lst}; do
   if [ -d "$PLUGDIR/$s" ]; then
-    tar czf {sq(arc)}/"$s".tgz -C "$PLUGDIR" "$s" || exit 82
+    tar czf {sq(arc)}/plugin__"$s".tgz -C "$PLUGDIR" "$s" || exit 82
     echo "archivé $s"
   else
     echo "absent $s"
   fi
 done
+if [ "{core_arch}" = "oui" ]; then
+  # Le cœur = tout le docroot SAUF wp-content (extensions, thèmes, médias) :
+  # on ne duplique ni les médias ni les extensions déjà archivées à part.
+  tar czf {sq(arc)}/core__.tgz -C "$D" --exclude=./wp-content . || exit 84
+  echo "archivé (coeur)"
+fi
+echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
 '''
-        rc, out = remote_bash(srv, site, body, timeout=300)
+        rc, out = remote_bash(srv, site, body, timeout=900)
+        if "ESPACE_INSUFFISANT" in (out or ""):
+            besoin = next((l.split("=")[1] for l in out.splitlines() if l.startswith("BESOIN_MO=")), "?")
+            libre = next((l.split("=")[1] for l in out.splitlines() if l.startswith("LIBRE_MO=")), "?")
+            safe_step("Espace disque insuffisant", False,
+                      f"{besoin} Mo à archiver, {libre} Mo libres sur {SAFE_ROLLBACK_PARENT} — "
+                      "mise à jour annulée avant toute modification")
+            SAFE["verdict"] = "annulé"
+            return
         plugdir = next((l.split("=", 1)[1] for l in (out or "").splitlines()
                         if l.startswith("PLUGDIR=")), "")
         n_arc = sum(1 for l in (out or "").splitlines() if l.startswith("archivé"))
@@ -722,9 +792,17 @@ done
             SAFE["verdict"] = "annulé"
             return
 
-        # 5. mise à jour
-        rc, out = remote_bash(srv, site, f'run plugin update {lst}', timeout=900)
-        safe_step("Mise à jour", rc == 0, (out or "")[-500:])
+        # 5. mise à jour (cœur d'abord : les extensions s'adaptent au cœur, l'inverse est faux)
+        rc = 0
+        if with_core:
+            rcc, outc = remote_bash(srv, site,
+                                    'run core update\nrun core update-db', timeout=900)
+            safe_step(f"Mise à jour du cœur → {core_target}", rcc == 0, (outc or "")[-400:])
+            rc = rc or rcc
+        if pending:
+            rcp, outp = remote_bash(srv, site, f'run plugin update {lst}', timeout=900)
+            safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
+            rc = rc or rcp
 
         # 6. contrôles après
         ok2, st2, size_after, msg2 = health_probe(site)
@@ -756,16 +834,21 @@ done
         else:
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
-for f in {sq(arc)}/*.tgz; do
+for f in {sq(arc)}/plugin__*.tgz; do
   [ -f "$f" ] || continue
-  s=$(basename "$f" .tgz)
+  s=$(basename "$f" .tgz); s=${{s#plugin__}}
   rm -rf "$PLUGDIR/$s" && tar xzf "$f" -C "$PLUGDIR" && echo "restauré $s" || echo "ECHEC $s"
 done
+if [ -f {sq(arc)}/core__.tgz ]; then
+  # On remet les fichiers du cœur par-dessus (wp-content n'a jamais été touché).
+  tar xzf {sq(arc)}/core__.tgz -C "$D" && echo "restauré (coeur)" || echo "ECHEC (coeur)"
+fi
 '''
-            rcr, outr = remote_bash(srv, site, rb, timeout=600)
+            rcr, outr = remote_bash(srv, site, rb, timeout=900)
             n_res = sum(1 for l in (outr or "").splitlines() if l.startswith("restauré"))
             safe_step("Retour arrière", rcr == 0 and n_res > 0,
-                      f"{n_res} extension(s) remise(s) en version précédente")
+                      f"{n_res} élément(s) remis en version précédente"
+                      + (" — base de données NON revenue en arrière" if with_core else ""))
             ok3, _st3, size3, msg3 = health_probe(site)
             safe_step("Contrôle après retour arrière", ok3, msg3)
             SAFE["verdict"] = "annulé (retour arrière)" if ok3 else "ÉCHEC — intervention requise"
@@ -2943,7 +3026,8 @@ class Handler(BaseHTTPRequestHandler):
                 slugs = [s for s in slugs if isinstance(s, str) and SLUG_RE.match(s)]
             threading.Thread(target=safe_update_run,
                              args=(server, domain, slugs, bool(body.get("backup", True)),
-                                   bool(body.get("viz", True))), daemon=True).start()
+                                   bool(body.get("viz", True)), bool(body.get("core", False))),
+                             daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
 
         if p == "/api/sec/vulns/run":

@@ -726,8 +726,8 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
          distantes (mises à jour, backup, checksums, caches) ne sont pas disponibles ici. À faire depuis wp-admin,
          ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>`
       : `<div class="actions" style="margin-top:10px">
-      ${s.plugins_updates?`<button class="btn primary sm" id="safeup" title="Archive chaque extension, met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre (${s.plugins_updates})</button>`:''}
-      ${s.core_update?'<button class="btn primary sm" data-act="core_update">MAJ core → '+H(s.core_update)+'</button>':''}
+      ${(s.plugins_updates||s.core_update)?`<button class="btn primary sm" id="safeup" data-core="${s.core_update?1:0}" data-n="${s.plugins_updates||0}" title="Archive ce qui va changer, met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre${s.core_update?' (cœur'+(s.plugins_updates?' + '+s.plugins_updates+' ext.':'')+')':' ('+s.plugins_updates+')'}</button>`:''}
+      ${s.core_update?'<button class="btn sm" data-act="core_update">MAJ core → '+H(s.core_update)+' (directe)</button>':''}
       ${s.plugins_updates?'<button class="btn sm" data-act="plugins_update_all">MAJ '+s.plugins_updates+' plugins (directe)</button>':''}
       ${s.themes_updates?'<button class="btn sm" data-act="themes_update_all">MAJ thèmes</button>':''}
       ${(vizOf(s)||vizInfo(s))?'':'<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'}
@@ -776,10 +776,14 @@ function renderSafe(st){
   box.scrollTop=box.scrollHeight;
 }
 async function startSafeUpdate(srv,dom,btn){
-  if(!confirm(`Mise à jour sûre de ${dom} ?\n\nDéroulé : sauvegarde UpdraftPlus → archivage de chaque extension → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.\n\nL'opération peut durer plusieurs minutes.`)) return;
+  const withCore=btn.dataset.core==='1';
+  let msg=`Mise à jour sûre de ${dom} ?\n\nDéroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
+  if(withCore) msg+=`\n\n⚠️ Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
+  msg+=`\n\nL'opération peut durer plusieurs minutes.`;
+  if(!confirm(msg)) return;
   btn.disabled=true; const lbl=btn.textContent; btn.textContent='en cours…';
   try{
-    const r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true});
+    const r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true,core:withCore});
     if(r.error){ alert(r.error); btn.disabled=false; btn.textContent=lbl; return; }
   }catch(e){ alert('lancement impossible : '+e); btn.disabled=false; btn.textContent=lbl; return; }
   const poll=setInterval(async()=>{
