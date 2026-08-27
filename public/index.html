@@ -11,6 +11,13 @@
   --accent:#2563eb; --ok:#16a34a; --warn:#b45309; --err:#dc2626;
   --ok-bg:#e8f7ee; --warn-bg:#fdf3e3; --err-bg:#fdeaea; --chip:#eef2f6;
   --shadow:0 1px 3px rgba(15,30,50,.08); --rowh:1;
+  /* Échelle typographique : 5 crans au lieu des 13 valeurs accumulées. */
+  --f-xs:11px; --f-sm:12.5px; --f-md:13.5px; --f-lg:16px; --f-xl:21px;
+  /* Rayons : 4 crans. */
+  --r-sm:6px; --r-md:9px; --r-lg:12px; --r-pill:999px;
+  /* Espacements, multiples de 4. */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+
 }
 [data-theme="dark"]{ --bg:#0e1419; --card:#161d24; --fg:#dce5ed; --line:#232d37; --muted:#8494a3;
   --accent:#60a5fa; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
@@ -27,54 +34,54 @@ a{color:var(--accent)}
   backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
   border-bottom:1px solid var(--line);box-shadow:0 1px 12px rgba(15,30,50,.05)}
 .top{display:flex;align-items:center;gap:12px;padding:11px 22px 9px;flex-wrap:wrap}
-.logo{font-size:22px;line-height:1;filter:saturate(1.1)}
+.logo{font-size:var(--f-xl);line-height:1;filter:saturate(1.1)}
 .brand{display:flex;flex-direction:column;gap:1px;min-width:0}
-.brand h1{margin:0;font-size:16.5px;letter-spacing:-.01em}
-.brand .meta{font-size:12px}
-.btngroup{display:flex;gap:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+.brand h1{margin:0;font-size:var(--f-lg);letter-spacing:-.01em}
+.brand .meta{font-size:var(--f-sm)}
+.btngroup{display:flex;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
 .btngroup .btn{border:none;border-radius:0;box-shadow:none;border-right:1px solid var(--line)}
 .btngroup .btn:last-child{border-right:none}
-.btn.icon{padding:6px 10px;font-size:15px;line-height:1.35}
+.btn.icon{padding:6px 10px;font-size:var(--f-md);line-height:1.35}
 .btn.danger-hover:hover{border-color:var(--err);color:var(--err)}
 #meta .sep{opacity:.45;margin:0 5px}
 #meta .live{color:var(--accent);font-weight:600}
-.top h1{font-size:19px;margin:0}
-.top .meta{color:var(--muted);font-size:12.5px}
+.top h1{font-size:var(--f-lg);margin:0}
+.top .meta{color:var(--muted);font-size:var(--f-sm)}
 .spacer{flex:1}
 button,select,input{font:inherit;color:var(--fg)}
-.btn{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 11px;cursor:pointer;box-shadow:var(--shadow)}
+.btn{background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);padding:6px 11px;cursor:pointer;box-shadow:var(--shadow)}
 .btn:hover{border-color:var(--accent)} .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.danger{color:var(--err);border-color:var(--err)} .btn:disabled{opacity:.5;cursor:default} .btn.sm{padding:3px 8px;font-size:12.5px}
+.btn.danger{color:var(--err);border-color:var(--err)} .btn:disabled{opacity:.5;cursor:default} .btn.sm{padding:3px 8px;font-size:var(--f-sm)}
 a.btn{text-decoration:none;display:inline-block;color:var(--fg)}
 .tabs{display:flex;gap:2px;padding:0 22px}
-.tab{padding:8px 15px;cursor:pointer;border:none;background:none;color:var(--muted);border-bottom:2px solid transparent;font-weight:600;border-radius:7px 7px 0 0}
+.tab{padding:8px 15px;cursor:pointer;border:none;background:none;color:var(--muted);border-bottom:2px solid transparent;font-weight:600;border-radius:var(--r-sm) 7px 0 0}
 .tab:hover{color:var(--fg);background:color-mix(in srgb,var(--accent) 7%,transparent)}
 /* sous-onglets : une section à la fois dans Gestion et Sécurité */
 .subtabs{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 14px}
 .subtab{padding:5px 12px;border:1px solid var(--line);background:var(--card);color:var(--muted);
-  border-radius:999px;cursor:pointer;font-size:13px;font-weight:600;box-shadow:var(--shadow)}
+  border-radius:var(--r-pill);cursor:pointer;font-size:var(--f-sm);font-weight:600;box-shadow:var(--shadow)}
 .subtab:hover{border-color:var(--accent);color:var(--fg)}
 .subtab.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .subtab .cnt{opacity:.75;font-weight:500;margin-left:4px}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .page{display:none;padding:14px 22px 60px} .page.active{display:block}
 .cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 15px;min-width:98px;cursor:pointer;box-shadow:var(--shadow)}
-.card b{font-size:19px;display:block} .card small{color:var(--muted)} .card.sel{outline:2px solid var(--accent)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);padding:9px 15px;min-width:98px;cursor:pointer;box-shadow:var(--shadow)}
+.card b{font-size:var(--f-lg);display:block} .card small{color:var(--muted)} .card.sel{outline:2px solid var(--accent)}
 .filters{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-.filters input[type=search],.filters select,input.inp{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.filters input[type=search],.filters select,input.inp{background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);padding:6px 10px}
 .filters input[type=search]{width:230px}
 .wrap{overflow-x:auto}
-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow)}
 th,td{text-align:left;padding:calc(9px*var(--rowh)) 12px;border-bottom:1px solid var(--line);white-space:nowrap}
 /* .wrap (défilement horizontal) sert de référentiel au collage : top:0 = position naturelle */
-th{font-weight:600;font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;background:var(--bg);position:sticky;top:0;z-index:1}
+th{font-weight:600;font-size:var(--f-sm);color:var(--muted);cursor:pointer;user-select:none;background:var(--bg);position:sticky;top:0;z-index:1}
 tbody tr{cursor:pointer} tbody tr:hover td{background:color-mix(in srgb,var(--accent) 6%,var(--card))}
 tr:last-child td{border-bottom:none}
-td.site b{font-weight:600} td .sub{color:var(--muted);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.grouprow td{background:var(--chip);font-weight:700;color:var(--fg);font-size:12.5px;letter-spacing:.03em}
-.rowscan{margin-left:7px;padding:0 5px;border:1px solid transparent;border-radius:6px;background:none;
-  color:var(--muted);cursor:pointer;font-size:12.5px;line-height:1.4;opacity:0;transition:opacity .12s}
+td.site b{font-weight:600} td .sub{color:var(--muted);font-size:var(--f-sm);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grouprow td{background:var(--chip);font-weight:700;color:var(--fg);font-size:var(--f-sm);letter-spacing:.03em}
+.rowscan{margin-left:7px;padding:0 5px;border:1px solid transparent;border-radius:var(--r-sm);background:none;
+  color:var(--muted);cursor:pointer;font-size:var(--f-sm);line-height:1.4;opacity:0;transition:opacity .12s}
 tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .rowscan:hover{border-color:var(--accent);color:var(--accent)}
 .rowscan.spin{animation:rowspin 1s linear infinite;display:inline-block}
@@ -83,7 +90,7 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dot.up{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
 .dot.down{background:var(--err);box-shadow:0 0 0 3px color-mix(in srgb,var(--err) 25%,transparent)}
 .dot.pending{background:var(--warn)}
-.pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
+.pill{display:inline-block;border-radius:var(--r-pill);padding:2px 9px;font-size:var(--f-sm);font-weight:600}
 .pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.warn{background:var(--warn-bg);color:var(--warn)}
 .pill.err{background:var(--err-bg);color:var(--err)} .pill.mut{background:var(--chip);color:var(--muted);font-weight:500}
 .drawer-back,.modal{position:fixed;inset:0;background:rgba(10,15,20,.45);z-index:8;display:none}
@@ -91,29 +98,29 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .drawer{position:fixed;top:0;right:-580px;width:560px;max-width:96vw;height:100vh;background:var(--card);border-left:1px solid var(--line);z-index:9;transition:right .18s ease;display:flex;flex-direction:column}
 .drawer.open{right:0}
 .dhead{padding:15px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
-.dhead h2{margin:0;font-size:17px} .dbody{padding:16px 20px;overflow-y:auto;flex:1}
-.dbody h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;font-size:13.5px} .kv .k{color:var(--muted)}
+.dhead h2{margin:0;font-size:var(--f-lg)} .dbody{padding:16px 20px;overflow-y:auto;flex:1}
+.dbody h3{font-size:var(--f-sm);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;font-size:var(--f-md)} .kv .k{color:var(--muted)}
 /* --- tiroir : bandeau de synthèse, groupes d'actions, sections --- */
 /* 6 indicateurs sur 2 rangées de 3 : jamais de tuile orpheline en fin de ligne */
 .dstats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:2px 0 14px}
-.dstat{background:var(--chip);border-radius:10px;padding:8px 10px;min-width:0}
+.dstat{background:var(--chip);border-radius:var(--r-md);padding:8px 10px;min-width:0}
 .dstat .lbl,.dstat .val,.dstat .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dstat .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.dstat .val{font-size:15px;font-weight:650;margin-top:2px;line-height:1.25}
+.dstat .lbl{font-size:var(--f-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.dstat .val{font-size:var(--f-md);font-weight:650;margin-top:2px;line-height:1.25}
 .dstat.ok .val{color:var(--ok)} .dstat.warn .val{color:var(--warn)} .dstat.err .val{color:var(--err)}
-.dstat .sub{font-size:11px;color:var(--muted);margin-top:1px}
+.dstat .sub{font-size:var(--f-xs);color:var(--muted);margin-top:1px}
 #hist-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:760px){#hist-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:420px){.dstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .agroup{margin-top:12px}
-.agroup>.glbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
+.agroup>.glbl{font-size:var(--f-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
 .dsec{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}
 .dsec>h3{margin:0 0 8px}
-.dhead-links a{font-size:12px;margin-left:10px;white-space:nowrap}
+.dhead-links a{font-size:var(--f-sm);margin-left:10px;white-space:nowrap}
 .ptable td{padding:5px 4px;border-bottom:1px solid var(--line)}
 .ptable tr:last-child td{border-bottom:0}
-.info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--chip);color:var(--muted);font-size:10px;font-weight:700;cursor:help;vertical-align:1px}
+.info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--chip);color:var(--muted);font-size:var(--f-xs);font-weight:700;cursor:help;vertical-align:1px}
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* --- journal : une pastille d'icone, un titre, un detail lisible --- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
@@ -121,7 +128,7 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tlic{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
       /* line-height:1 + presentation TEXTE des glyphes : sans ca les symboles
          sortent en emoji colore, plus gros que la pastille et decentres. */
-      line-height:1;font-size:11px;font-family:ui-sans-serif,system-ui,"Segoe UI Symbol",sans-serif;
+      line-height:1;font-size:var(--f-xs);font-family:ui-sans-serif,system-ui,"Segoe UI Symbol",sans-serif;
       background:var(--chip);color:var(--muted);margin-top:2px;user-select:none}
 .tlic.ok{background:var(--ok-bg);color:var(--ok)} .tlic.warn{background:var(--warn-bg);color:var(--warn)}
 .tlic.err{background:var(--err-bg);color:var(--err)}
@@ -129,42 +136,46 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tltop{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
 .tlwhen{margin-left:auto;white-space:nowrap}
 .tlsub{margin-top:1px;word-break:break-word}
-.tldet{background:var(--chip);border-radius:6px;padding:6px 8px;margin:4px 0 0;
+.tldet{background:var(--chip);border-radius:var(--r-sm);padding:6px 8px;margin:4px 0 0;
        font:11.5px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
        max-height:130px;overflow:auto}
 .tldet[hidden]{display:none}
 .tlopenable{cursor:pointer}
-.tlopenable:hover{background:var(--chip);border-radius:8px;margin:0 -6px;padding-left:6px;padding-right:6px}
-.tlchev{color:var(--muted);font-size:13px;transition:transform .15s ease;display:inline-block}
+.tlopenable:hover{background:var(--chip);border-radius:var(--r-md);margin:0 -6px;padding-left:6px;padding-right:6px}
+.tlchev{color:var(--muted);font-size:var(--f-sm);transition:transform .15s ease;display:inline-block}
 .tlopenable.open .tlchev{transform:rotate(90deg)}
-.actions{display:flex;flex-wrap:wrap;gap:8px} .ptable{width:100%;font-size:13px}
-.console{background:#0d1117;color:#c9d1d9;border-radius:8px;padding:10px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
+.actions{display:flex;flex-wrap:wrap;gap:8px} .ptable{width:100%;font-size:var(--f-sm)}
+.console{background:#0d1117;color:#c9d1d9;border-radius:var(--r-md);padding:10px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
 .console b.ok{color:#4ade80} .console b.warn{color:#fbbf24} .console b.err{color:#f87171}
 .vizrun{text-decoration:none;vertical-align:middle}
 .codebig{font:700 28px/1.3 ui-monospace,Menlo,monospace;letter-spacing:.09em;user-select:all;color:var(--fg)}
 .steps ol{margin:10px 0 0 20px;padding:0;line-height:2}
-.choice{flex:1;min-width:250px} .choice b{font-size:15px;margin-bottom:4px} .choice small{display:block;line-height:1.55}
-.fld{display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:12.5px}
-.errbox{background:var(--err-bg);color:var(--err);border-radius:8px;padding:9px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.choice{flex:1;min-width:250px} .choice b{font-size:var(--f-md);margin-bottom:4px} .choice small{display:block;line-height:1.55}
+.fld{display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:var(--f-sm)}
+.errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-md);padding:9px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 .modal.open{display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px}
-.modal .box{background:var(--card);border:1px solid var(--line);border-radius:12px;max-width:900px;width:100%;max-height:82vh;overflow:auto;padding:18px 22px}
-.logline{border-bottom:1px solid var(--line);padding:7px 0;font-size:13px} .logline code{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
+.modal .box{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);max-width:900px;width:100%;max-height:82vh;overflow:auto;padding:18px 22px}
+.logline{border-bottom:1px solid var(--line);padding:7px 0;font-size:var(--f-sm)} .logline code{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
 .bulkbar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 10px rgba(0,0,0,.12);padding:10px 22px;display:none;align-items:center;gap:10px;flex-wrap:wrap;z-index:7}
 .bulkbar.open{display:flex}
-.bar{height:8px;background:var(--chip);border-radius:999px;overflow:hidden;margin:8px 0}
-.bar>div{height:100%;background:var(--accent);border-radius:999px;width:0%;transition:width .4s ease}
+.bar{height:8px;background:var(--chip);border-radius:var(--r-pill);overflow:hidden;margin:8px 0}
+.bar>div{height:100%;background:var(--accent);border-radius:var(--r-pill);width:0%;transition:width .4s ease}
 .bar.indet{display:inline-block;vertical-align:middle;width:60px;margin:0}
 .bar.indet>div{width:40%;transition:none;animation:indet 1.1s linear infinite}
 @keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
-.section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow)}
-.section h2{margin:0 0 4px;font-size:16px} .section p.hint,.box p.hint{color:var(--muted);margin:0 0 12px;font-size:13px}
-.box h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
-.tag{display:inline-block;background:var(--chip);border-radius:6px;padding:1px 7px;font-size:12px;margin:1px}
+.section{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow)}
+.section h2{margin:0 0 4px;font-size:var(--f-lg)} .section p.hint,.box p.hint{color:var(--muted);margin:0 0 12px;font-size:var(--f-sm)}
+.box h3{font-size:var(--f-sm);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
+.tag{display:inline-block;background:var(--chip);border-radius:var(--r-sm);padding:1px 7px;font-size:var(--f-sm);margin:1px}
 .new-admin{color:var(--err);font-weight:600}
-textarea.code{width:100%;min-height:150px;font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);color:var(--fg)}
+textarea.code{width:100%;min-height:150px;font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:var(--r-md);padding:10px;background:var(--bg);color:var(--fg)}
 input[type=checkbox]{width:16px;height:16px;cursor:pointer}
-.muted{color:var(--muted)} .small{font-size:12px}
+.muted{color:var(--muted)} .small{font-size:var(--f-sm)}
 @media (max-width:800px){ .kv{grid-template-columns:110px 1fr} th,td{padding:7px 8px} .drawer{width:100%} }
+
+/* Utilitaires d'espacement : évitent 36 style="margin-top:…" dispersés. */
+.mt0{margin-top:0}.mt1{margin-top:var(--s1)}.mt2{margin-top:var(--s2)}
+.mt3{margin-top:var(--s3)}.mt4{margin-top:var(--s4)}.mt5{margin-top:var(--s5)}
 </style>
 </head>
 <body>
@@ -260,7 +271,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Sites en mode REST (sans SSH) <span class="muted small" id="rest-count"></span></h2>
     <p class="hint">Sites gérés par l'agent Dash à travers l'API REST : l'inventaire remonte sans accès SSH au serveur. L'ajout manuel ci-dessous ne sert que si l'agent est déjà installé et appairé sur le site — sinon passez par « ＋ Ajouter un site ».</p>
     <div id="rest-body" class="small muted">chargement…</div>
-    <div class="filters" style="margin-top:8px">
+    <div class="filters" class="mt2" >
       <input class="inp" id="rest-url" placeholder="https://exemple.fr" style="width:300px">
       <input class="inp" id="rest-name" placeholder="nom du site (facultatif)" style="width:220px">
       <button class="btn sm" id="rest-add">＋ Ajouter manuellement</button>
@@ -278,7 +289,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Docroots supplémentaires</h2>
     <p class="hint">Chemins à scanner en plus des patterns par défaut (ex. dev, sous-installs). Le prochain scan les prend en compte.</p>
     <div id="doc-list"></div>
-    <div class="filters" style="margin-top:8px">
+    <div class="filters" class="mt2" >
       <select id="doc-srv"></select>
       <input class="inp" id="doc-path" placeholder="/var/www/vhosts/xxx/httpdocs" style="width:360px">
       <button class="btn sm" id="doc-add">＋ Ajouter</button>
@@ -288,7 +299,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Serveurs (avancé)</h2>
     <p class="hint">Liste des serveurs interrogés (JSON). Modifier avec prudence.</p>
     <textarea class="code" id="srv-json"></textarea>
-    <div style="margin-top:8px"><button class="btn sm" id="srv-save">Enregistrer les serveurs</button> <span id="srv-msg" class="small muted"></span></div>
+    <div class="mt2" ><button class="btn sm" id="srv-save">Enregistrer les serveurs</button> <span id="srv-msg" class="small muted"></span></div>
   </div>
 </div>
 
@@ -311,7 +322,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
         <span class="spacer"></span>
         <span id="chg-count" class="muted small"></span>
       </div>
-      <div id="chg-body" class="small muted" style="max-height:440px;overflow:auto;margin-top:8px">chargement…</div>
+      <div id="chg-body" class="small muted" class="mt2" style="max-height:440px; overflow:auto" >chargement…</div>
     </div>
 </div>
 
@@ -334,8 +345,8 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <span class="spacer"></span>
       <span id="vln-count" class="muted small"></span>
     </div>
-    <div id="vln-body" class="small muted" style="max-height:520px;overflow:auto;margin-top:8px">chargement…</div>
-    <h3 style="margin-top:14px">Versions de PHP</h3>
+    <div id="vln-body" class="small muted" class="mt2" style="max-height:520px; overflow:auto" >chargement…</div>
+    <h3 class="mt4" >Versions de PHP</h3>
     <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" title="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
     <div id="vln-php" class="small muted"></div>
   </div>
@@ -352,7 +363,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <select id="phe-h"><option value="24">24 h</option><option value="72">3 jours</option><option value="168">7 jours</option></select>
       <span class="spacer"></span><span id="phe-count" class="muted small"></span>
     </div>
-    <div id="phe-body" class="small muted" style="max-height:520px;overflow:auto;margin-top:8px">chargement…</div>
+    <div id="phe-body" class="small muted" class="mt2" style="max-height:520px; overflow:auto" >chargement…</div>
   </div>
   <div class="section">
     <h2>Comptes administrateurs <button class="btn sm" id="baseline-all" style="float:right">Tout marquer comme vu</button></h2>
@@ -373,7 +384,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Certificats SSL</h2>
     <p class="hint">Expiration des certificats vue par Uptime Kuma. Alerte sous 21 jours, critique sous 7 jours.</p>
     <div class="wrap"><table><thead><tr><th>Moniteur</th><th>Jours restants</th><th>Expire le</th></tr></thead><tbody id="cert-tb"></tbody></table></div>
-    <div id="cert-msg" class="small muted" style="margin-top:8px"></div>
+    <div id="cert-msg" class="small muted" class="mt2" ></div>
   </div>
   <div class="section">
     <h2>Plugins à risque</h2>
@@ -418,9 +429,9 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div class="dbody" id="dbody"></div>
 </div>
 
-<div class="modal" id="logmodal"><div class="box"><h2 style="margin-top:0">Journal des actions</h2><div id="loglist">…</div></div></div>
+<div class="modal" id="logmodal"><div class="box"><h2 class="mt0" >Journal des actions</h2><div id="loglist">…</div></div></div>
 <div class="modal" id="setmodal"><div class="box">
-  <h2 style="margin-top:0">Réglages</h2>
+  <h2 class="mt0" >Réglages</h2>
   <h3>Cadence de collecte</h3>
   <div id="sched-body"><span class="muted small">chargement…</span></div>
   <h3>Clés SSH</h3>
@@ -429,33 +440,33 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div id="alert-body"><span class="muted small">chargement…</span></div>
 </div></div>
 <div class="modal" id="addmodal"><div class="box">
-  <h2 style="margin-top:0">Ajouter un WordPress</h2>
+  <h2 class="mt0" >Ajouter un WordPress</h2>
   <div id="add-steps" class="small" style="margin-bottom:12px"></div>
   <div id="add-body"></div>
-  <div style="margin-top:16px"><button class="btn sm" id="add-close">Fermer</button></div>
+  <div class="mt4" ><button class="btn sm" id="add-close">Fermer</button></div>
 </div></div>
 <div class="modal" id="askmodal"><div class="box" style="max-width:520px">
-  <h2 style="margin-top:0" id="ask-title"></h2>
+  <h2 class="mt0" id="ask-title"></h2>
   <p class="hint" id="ask-intro"></p>
   <div id="ask-body"></div>
-  <div class="actions" style="margin-top:16px;justify-content:flex-end">
+  <div class="actions" class="mt4" style="justify-content:flex-end" >
     <button class="btn" id="ask-cancel">Annuler</button>
     <button class="btn primary" id="ask-ok">Valider</button>
   </div>
 </div></div>
 <div class="modal" id="rbmodal"><div class="box" style="max-width:560px">
-  <h2 style="margin-top:0">Rétablir une version</h2>
+  <h2 class="mt0" >Rétablir une version</h2>
   <p id="rb-intro" class="hint"></p>
   <div id="rb-choices"></div>
-  <div class="actions" style="margin-top:16px;justify-content:flex-end">
+  <div class="actions" class="mt4" style="justify-content:flex-end" >
     <button class="btn" id="rb-cancel">Annuler</button>
   </div>
 </div></div>
 <div class="modal" id="bulkmodal"><div class="box">
-  <h2 style="margin-top:0" id="bm-title">Exécution en masse</h2>
+  <h2 class="mt0" id="bm-title">Exécution en masse</h2>
   <div class="bar"><div id="bm-bar"></div></div>
   <div id="bm-list" class="small"></div>
-  <div style="margin-top:12px"><button class="btn sm" id="bm-cancel">Annuler la suite</button> <button class="btn sm" id="bm-close">Fermer</button></div>
+  <div class="mt3" ><button class="btn sm" id="bm-cancel">Annuler la suite</button> <button class="btn sm" id="bm-close">Fermer</button></div>
 </div></div>
 
 <script>
@@ -928,7 +939,7 @@ async function doRollback(slug,src,btn){
   intro.innerHTML=`Rétablir <b>${H(slug)}</b> ${H(quoi)} ?`;
   box.innerHTML=`<p class="hint">⚠️ Seuls les <b>fichiers</b> sont remis en place. Si l'extension a migré ses tables,
       la base reste dans son nouvel état — vérifiez le site après l'opération.</p>
-    <div class="actions" style="margin-top:12px"><button class="btn primary" id="rb-go">Rétablir</button></div>`;
+    <div class="actions" class="mt3" ><button class="btn primary" id="rb-go">Rétablir</button></div>`;
   document.getElementById('rbmodal').classList.add('open');
   document.getElementById('rb-go').onclick=async()=>{
     box.innerHTML='<span class="pill mut">opération en cours…</span>';
@@ -939,7 +950,7 @@ async function doRollback(slug,src,btn){
     intro.innerHTML=r.ok?`<b>${H(slug)}</b> rétabli.`:`Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
     box.innerHTML=`<div class="logline"><span class="pill ${r.ok?'ok':'err'}">${r.ok?'réussi':'échec'}</span></div>
       ${r.output?`<pre class="tldet">${H(stripPhpNoise(r.output).slice(-800))}</pre>`:''}
-      <div class="actions" style="margin-top:12px"><button class="btn primary" id="rb-done">Fermer</button></div>`;
+      <div class="actions" class="mt3" ><button class="btn primary" id="rb-done">Fermer</button></div>`;
     document.getElementById('rb-done').onclick=()=>{ closeRb(); if(r.ok) loadFleet().catch(()=>{}); };
   };
 }
@@ -1160,8 +1171,8 @@ function renderTimeline(){
   const vus=TLGROUPS.slice(0,TLSHOWN);
   const reste=TLGROUPS.length-vus.length;
   el.innerHTML=vus.map(tlRow).join('')
-    +(reste>0?`<button class="btn sm" id="tlmore" style="margin-top:10px">Voir plus (${reste})</button>`
-             :(TLGROUPS.length>TLPAGE?'<div class="muted small" style="margin-top:8px">fin de l\'historique</div>':''));
+    +(reste>0?`<button class="btn sm" id="tlmore" class="mt3" >Voir plus (${reste})</button>`
+             :(TLGROUPS.length>TLPAGE?'<div class="muted small" class="mt2" >fin de l\'historique</div>':''));
   el.querySelectorAll('.tlopenable').forEach(r=>r.onclick=()=>{
     const pre=r.querySelector('.tldet'); if(!pre) return;
     pre.hidden=!pre.hidden; r.classList.toggle('open',!pre.hidden);
@@ -1441,7 +1452,7 @@ function addStep1(){ return `
 
 function addInfo(i){ const shown=i.url_effective||i.home||ADD.url||'', u=safeUrl(shown),
     ns=Array.isArray(i.namespaces)?i.namespaces.join(' · '):'';
-  return `<div class="kv" style="margin-top:14px">
+  return `<div class="kv" class="mt4" >
     <span class="k">Site</span><span><b>${H(i.name||'—')}</b></span>
     <span class="k">URL</span><span>${u?`<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(shown)}</a>`:H(shown||'—')}</span>
     <span class="k">WordPress</span><span><span class="pill ${i.is_wordpress?'ok':'err'}">${i.is_wordpress?'détecté':'non détecté'}</span></span>
@@ -1449,8 +1460,8 @@ function addInfo(i){ const shown=i.url_effective||i.home||ADD.url||'', u=safeUrl
     <span class="k">Agent Dash</span><span>${i.has_agent?'<span class="pill ok">déjà installé</span>':'<span class="pill mut">absent</span>'}${i.has_vizproof?' <span class="pill ok">VizProof présent</span>':''}</span>
     <span class="k">Multisite</span><span>${i.multisite?'<span class="pill warn">oui — réglages dans Réseau → Dash Agent</span>':'<span class="pill mut">non</span>'}</span>
     <span class="k">Dans le parc</span><span>${i.already_known?'<span class="pill warn">déjà connu du dashboard</span>':'<span class="pill ok">nouveau</span>'}</span></div>
-  ${i.is_wordpress?'':'<p class="hint" style="margin-top:10px">WordPress n\'a pas été reconnu à cette adresse : vérifiez l\'URL (redirection, sous-dossier, site en maintenance) avant de continuer.</p>'}
-  <div class="actions" style="margin-top:14px"><button class="btn primary sm" id="add-next">${i.is_wordpress?'Continuer':'Continuer quand même'}</button></div>`; }
+  ${i.is_wordpress?'':'<p class="hint" class="mt3" >WordPress n\'a pas été reconnu à cette adresse : vérifiez l\'URL (redirection, sous-dossier, site en maintenance) avant de continuer.</p>'}
+  <div class="actions" class="mt4" ><button class="btn primary sm" id="add-next">${i.is_wordpress?'Continuer':'Continuer quand même'}</button></div>`; }
 
 async function addDiscover(){ const msg=document.getElementById('add-msg'), res=document.getElementById('add-res');
   const inp=document.getElementById('add-url'); if(inp) ADD.url=inp.value.trim();
@@ -1477,7 +1488,7 @@ function addStep2(){ const i=ADD.info||{}, ssh=i.suggestion==='ssh';
       ${card('ssh','Via SSH',ssh,"Le serveur est déjà connecté : l'agent s'installe en une commande depuis « Installs découverts », sans rien toucher dans wp-admin.")}
       ${card('pair','Sans SSH (appairage)',!ssh,"L'API REST de WordPress n'installe que des extensions publiées sur wordpress.org, or notre agent est privé : on télécharge son ZIP, on l'installe depuis wp-admin, puis on colle un code d'appairage.")}
     </div>
-    <div class="actions" style="margin-top:14px"><button class="btn sm" id="add-back">← Retour</button></div>`; }
+    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button></div>`; }
 
 function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
   if(ADD.method==='ssh') return `
@@ -1487,7 +1498,7 @@ function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
       <li>Colonne « Dashboard » : cliquez sur <b>Connecter</b>, puis confirmez le second clic.</li>
       <li>La pastille passe à <span class="pill ok">connecté</span> — le site pousse alors ses événements en temps réel.</li>
     </ol></div>
-    <div class="actions" style="margin-top:14px"><button class="btn sm" id="add-back">← Retour</button>
+    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button>
       <button class="btn primary sm" id="add-goinstalls">Aller à la ligne « ${H(dom||'?')} »</button>
       <span id="add-msg3" class="small"></span></div>`;
   return `
@@ -1504,8 +1515,8 @@ function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
       <li>Ouvrez <b>${i.multisite?'Réseau → Dash Agent':'Réglages → Dash Agent'}</b>${i.multisite?' (site multisite : le réglage est au niveau du réseau)':' — en multisite, passez par <b>Réseau → Dash Agent</b>'}.</li>
       <li>Collez le code ci-dessus, puis validez.</li>
     </ol></div>
-    <div id="add-wait" class="small muted" style="margin-top:12px">Générez un code pour démarrer l'appairage.</div>
-    <div class="actions" style="margin-top:14px"><button class="btn sm" id="add-back">← Retour</button></div>`; }
+    <div id="add-wait" class="small muted" class="mt3" >Générez un code pour démarrer l'appairage.</div>
+    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button></div>`; }
 
 function addWait(html){ const el=document.getElementById('add-wait'); if(el) el.innerHTML=html; }
 function addTick(){ const el=document.getElementById('add-exp');
@@ -1541,9 +1552,9 @@ async function addPoll(){ ADD.poll=null; if(!ADD.open) return;
   const hit=restList(j).some(x=>x&&hostOf(restDomain(x)||x.url)===want);
   if(hit){ addStop();
     addWait(`<span class="pill ok">✅ site appairé</span> <span class="muted small">il apparaît maintenant dans le parc.</span>
-      ${WPAUTH_ENABLED?`<div style="margin-top:10px"><button class="btn primary sm" id="add-wpauth">🔗 Autoriser l'installation d'extensions (1 clic)</button>
+      ${WPAUTH_ENABLED?`<div class="mt3" ><button class="btn primary sm" id="add-wpauth">🔗 Autoriser l'installation d'extensions (1 clic)</button>
         <span id="add-wpmsg" class="small"></span>
-        <div class="muted small" style="margin-top:4px"><b>Étape facultative.</b> ${H(WPAUTH_HELP)} Le dashboard pourra alors installer les extensions publiques (VizProof…) sans SSH.</div></div>`:''}`);
+        <div class="muted small" class="mt1" ><b>Étape facultative.</b> ${H(WPAUTH_HELP)} Le dashboard pourra alors installer les extensions publiques (VizProof…) sans SSH.</div></div>`:''}`);
     const ab=document.getElementById('add-wpauth');
     if(ab) ab.onclick=()=>wpAuthorize(ab,'',want,(ok,err)=>{ const m=document.getElementById('add-wpmsg'); if(!m) return;
       m.innerHTML=ok?'<span class="pill warn">approuvez dans l\'onglet ouvert…</span>'
@@ -1622,7 +1633,7 @@ function wpCredRender(c,srv,dom,j){
   } else {
     c.innerHTML=`<span class="pill warn">non autorisé</span>
       <button class="btn sm primary" data-wpauth="${H(dom)}">🔗 Autoriser en un clic</button> <span data-wpmsg class="small"></span>
-      <div class="muted small" style="margin-top:4px">${H(WPAUTH_HELP)}</div>`;
+      <div class="muted small" class="mt1" >${H(WPAUTH_HELP)}</div>`;
   }
   const msg=c.querySelector('[data-wpmsg]');
   const ab=c.querySelector('[data-wpauth]');
@@ -1823,7 +1834,7 @@ async function loadHist(){
       <div class="val">${der[m.k]??'?'}</div>
       <div class="sub">${deltaPill(der[m.k]??0, ref[m.k], m.inv)} sur 24 h</div></div>`).join('');
   document.getElementById('hist-charts').innerHTML=M.map(m=>
-    `<div style="margin-top:14px"><div class="glbl">${H(m.lbl)}</div>
+    `<div class="mt4" ><div class="glbl">${H(m.lbl)}</div>
       ${sparkline(hist.map(x=>x[m.k]??0), m.c)}
       <div class="muted small" style="display:flex;justify-content:space-between">
         <span>${H((hist[0].ts||'').slice(5,16))}</span><span>${H((der.ts||'').slice(5,16))}</span></div></div>`).join('');
@@ -1936,7 +1947,7 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
     <h3>Affectation par serveur</h3>
     <p class="hint">⚠ Assigner une clé non enrôlée casse la collecte du serveur concerné — toujours tester avant d'assigner.</p>
     <div class="wrap"><table><thead><tr><th>Serveur</th><th>Clé</th><th></th></tr></thead><tbody>${asgRows}</tbody></table></div>
-    <div class="filters" style="margin-top:10px"><select id="k-allsel">${keyOpts('')}</select>
+    <div class="filters" class="mt3" ><select id="k-allsel">${keyOpts('')}</select>
       <button class="btn sm danger" id="k-all">Assigner cette clé à TOUS les serveurs</button> <span id="k-allmsg" class="small"></span></div>`;
   bd.querySelectorAll('[data-pub]').forEach(b=>b.onclick=()=>{ const r=bd.querySelector(`[data-pubrow="${b.dataset.pub}"]`);
     const show=r.style.display==='none'; r.style.display=show?'':'none'; b.textContent=show?'masquer la clé publique':'voir la clé publique'; });
@@ -2014,8 +2025,8 @@ async function loadAlerts(){ const bd=document.getElementById('alert-body');
     </div>
     <p class="hint" style="margin:10px 0 6px"><b>Déclencheurs</b></p>
     <div>${AL_CHK.map(([k,l])=>`<label class="fld"><input type="checkbox" data-arule="${k}"${r[k]?' checked':''}> ${H(l)}</label>`).join('')}</div>
-    <div style="margin-top:4px">${AL_NUM.map(([k,l,d])=>`<label class="fld">${H(l)} <input class="inp" type="number" min="0" step="1" data-arule="${k}" value="${H(r[k]??d)}" style="width:90px"></label>`).join('')}</div>
-    <div class="filters" style="margin-top:10px">
+    <div class="mt1" >${AL_NUM.map(([k,l,d])=>`<label class="fld">${H(l)} <input class="inp" type="number" min="0" step="1" data-arule="${k}" value="${H(r[k]??d)}" style="width:90px"></label>`).join('')}</div>
+    <div class="filters" class="mt3" >
       <button class="btn primary sm" id="al-save">Enregistrer</button>
       <button class="btn sm" id="al-test">Envoyer un test</button>
       <span id="al-msg" class="small"></span>
