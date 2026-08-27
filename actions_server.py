@@ -71,6 +71,10 @@ ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 PHPERR_PATH = os.path.join(DATA, "php_errors.json")
+# Index local des archives de restauration : interroger le serveur en SSH à
+# chaque ouverture de tiroir coûtait 2 secondes. On tient donc la liste ici,
+# alimentée au moment où la MAJ sûre crée l'archive.
+ROLLBACK_INDEX_PATH = os.path.join(DATA, "rollback_index.json")
 # Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
 # extension gelée (parce qu'une version casse le site, ou qu'un client valide
 # avant) reste installée mais n'est jamais mise à jour par le dashboard.
@@ -947,6 +951,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             safe_step("Interrompu", False, "sans archive, aucun retour arrière possible")
             SAFE["verdict"] = "annulé"
             return
+        rollback_index_add(domain, arc, pending, versions_avant)
         if with_core and not db_ok:
             # Le cœur migre le schéma : sans dump, un retour arrière laisserait
             # d'anciens fichiers sur une base déjà migrée. On refuse.
@@ -1052,12 +1057,33 @@ fi
         SAFE["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def rollback_points(server_name, domain):
-    """Points de restauration disponibles pour un site → liste décroissante.
+def rollback_index_add(domain, arc_dir, plugins, versions):
+    """Enregistre un point de restauration dans l'index local."""
+    idx = load_json(ROLLBACK_INDEX_PATH, {})
+    if not isinstance(idx, dict):
+        idx = {}
+    entries = [e for e in (idx.get(domain) or []) if e.get("dir") != arc_dir]
+    entries.insert(0, {"dir": arc_dir, "plugins": sorted(plugins),
+                       "versions": versions or {},
+                       "ts": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")})
+    idx[domain] = entries[:SAFE_KEEP_SETS]
+    save_json(ROLLBACK_INDEX_PATH, idx)
 
-    Chaque entrée décrit un jeu d'archives laissé par une mise à jour sûre :
-    quand, et quelle version chaque extension avait AVANT.
+
+def rollback_points(server_name, domain, verify=False):
+    """Points de restauration d'un site → liste décroissante.
+
+    Par défaut on lit l'index local (instantané). `verify=True` interroge le
+    serveur en SSH pour refléter l'état réel du disque — utile si /tmp a été
+    vidé entre-temps, mais trop lent pour l'ouverture d'un tiroir.
     """
+    if not verify:
+        idx = load_json(ROLLBACK_INDEX_PATH, {})
+        entrees = idx.get(domain) or [] if isinstance(idx, dict) else []
+        limite = (datetime.datetime.now()
+                  - datetime.timedelta(days=SAFE_KEEP_DAYS)).strftime("%Y%m%d-%H%M%S")
+        return [e for e in entrees if str(e.get("ts", "")) >= limite and e.get("plugins")]
+
     srv, site = find_site(server_name, domain)
     if not srv or not site:
         return []
@@ -2997,7 +3023,8 @@ class Handler(BaseHTTPRequestHandler):
             dom = urllib.parse.unquote(q.get("domain", ""))
             if not SERVER_RE.match(server) or not SLUG_RE.match(dom):
                 return self._send(400, {"error": "cible invalide"})
-            self._send(200, {"points": rollback_points(server, dom)})
+            self._send(200, {"points": rollback_points(server, dom,
+                                                       verify=q.get("verify") == "1")})
         elif p == "/api/actions/policy":
             dom = urllib.parse.unquote(q.get("domain", ""))
             self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
@@ -3013,6 +3040,12 @@ class Handler(BaseHTTPRequestHandler):
             # Résultat du dernier croisement local (vulns.py --scan) + état d'avancement.
             res = load_json(VULNS_FOUND_PATH, {"sites": [], "totals": {},
                                                "sites_affected": 0, "sites_scanned": 0})
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            if dom:
+                # Le tiroir n'a besoin que de son site : renvoyer les 190 Ko du
+                # parc entier à chaque ouverture serait du gaspillage.
+                res = dict(res, sites=[x for x in (res.get("sites") or [])
+                                       if x.get("domain") == dom])
             res["running"] = VULNS["running"]
             res["run_message"] = VULNS["message"]
             self._send(200, res)

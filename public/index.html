@@ -379,7 +379,6 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <b id="bulk-n">0 sélectionné</b>
   <select id="bulk-act">
     <option value="plugins_update_all">MAJ tous les plugins</option>
-    <option value="plugins_update_except">MAJ plugins sauf…</option>
     <option value="core_update">MAJ du core</option>
     <option value="themes_update_all">MAJ des thèmes</option>
     <option value="updraft_backup">Backup UpdraftPlus</option>
@@ -391,6 +390,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <option value="viz_baseline">Capturer une baseline visuelle</option>
     <option value="rescan">Re-scanner</option>
     <option value="dash_connect">Installer l'agent Dash (alertes temps réel)</option>
+      <option value="dash_disconnect">Dissocier l'agent Dash</option>
   </select>
   <label class="small"><input type="checkbox" id="bulk-backup" checked> backup avant MAJ</label>
   <label class="small"><input type="checkbox" id="bulk-stop"> arrêt sur erreur</label>
@@ -420,6 +420,15 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div id="add-steps" class="small" style="margin-bottom:12px"></div>
   <div id="add-body"></div>
   <div style="margin-top:16px"><button class="btn sm" id="add-close">Fermer</button></div>
+</div></div>
+<div class="modal" id="askmodal"><div class="box" style="max-width:520px">
+  <h2 style="margin-top:0" id="ask-title"></h2>
+  <p class="hint" id="ask-intro"></p>
+  <div id="ask-body"></div>
+  <div class="actions" style="margin-top:16px;justify-content:flex-end">
+    <button class="btn" id="ask-cancel">Annuler</button>
+    <button class="btn primary" id="ask-ok">Valider</button>
+  </div>
 </div></div>
 <div class="modal" id="rbmodal"><div class="box" style="max-width:560px">
   <h2 style="margin-top:0">Rétablir une version</h2>
@@ -710,7 +719,8 @@ function bulkBar(){ document.getElementById('bulk-n').textContent=SEL.size+' sé
 document.getElementById('bulk-clear').onclick=()=>{ SEL.clear(); render(); };
 document.getElementById('bulk-run').onclick=async()=>{
   const act=document.getElementById('bulk-act').value; let arg=null;
-  if(act==='plugins_update_except'){ arg=prompt('Plugins à NE PAS mettre à jour (slugs séparés par virgule) :'); if(!arg) return; arg=arg.replace(/\s/g,''); }
+  // « MAJ plugins sauf… » retiré : le gel par extension (tiroir du site)
+  // exclut désormais automatiquement, et de façon persistante.
   const sites=allSites().filter(s=>SEL.has(key(s)));
   if(!confirm(`Exécuter « ${document.getElementById('bulk-act').selectedOptions[0].text} » sur ${sites.length} site(s) ?`)) return;
   const tasks=sites.map(s=>({server:s.srv,domain:s.domain,action:act,arg}));
@@ -745,10 +755,16 @@ document.getElementById('csvbtn').onclick=()=>{ const S=filtered();
 /* vues sauvegardées */
 function loadViews(){ const v=JSON.parse(localStorage.dashViews||'{}'); const sel=document.getElementById('views');
   sel.innerHTML='<option value="">Vues…</option>'+Object.keys(v).map(n=>`<option>${H(n)}</option>`).join('')+'<option value="__del">🗑 Supprimer une vue…</option>'; }
-document.getElementById('saveview').onclick=()=>{ const n=prompt('Nom de la vue :'); if(!n) return; const v=JSON.parse(localStorage.dashViews||'{}');
+document.getElementById('saveview').onclick=async()=>{ const n=await askText('Enregistrer la vue','Elle mémorise les filtres actuels.',''); if(!n) return; const v=JSON.parse(localStorage.dashViews||'{}');
   v[n]={FILT:{...FILT,card:undefined},SORT}; localStorage.dashViews=JSON.stringify(v); loadViews(); };
 document.getElementById('views').onchange=e=>{ const v=JSON.parse(localStorage.dashViews||'{}');
-  if(e.target.value==='__del'){ const n=prompt('Nom de la vue à supprimer :'); if(n&&v[n]){ delete v[n]; localStorage.dashViews=JSON.stringify(v); loadViews(); } return; }
+  if(e.target.value==='__del'){
+    (async()=>{ const noms=Object.keys(v);
+      const n=await askChoice('Supprimer une vue','Choisissez la vue à supprimer.',
+        noms.map(x=>({value:x,label:x})));
+      if(n&&v[n]){ delete v[n]; localStorage.dashViews=JSON.stringify(v); }
+      loadViews(); })();
+    return; }
   const view=v[e.target.value]; if(!view) return; Object.assign(FILT,view.FILT); SORT=view.SORT||SORT;
   document.getElementById('q').value=FILT.q||''; document.getElementById('fsrv').value=FILT.srv||''; document.getElementById('fgrp').value=FILT.grp||'';
   document.getElementById('fst').value=FILT.st||''; document.getElementById('ftodo').checked=!!FILT.todo;
@@ -917,6 +933,41 @@ async function doRollback(slug,src,btn){
     document.getElementById('rb-done').onclick=()=>{ closeRb(); if(r.ok) loadFleet().catch(()=>{}); };
   };
 }
+/* ---- modales génériques : remplacent les prompt() du navigateur ---- */
+function askClose(){ document.getElementById('askmodal').classList.remove('open'); }
+document.getElementById('ask-cancel').onclick=askClose;
+document.getElementById('askmodal').onclick=e=>{ if(e.target.id==='askmodal') askClose(); };
+function askOpen(titre,intro,corps,onOk,onCancel){
+  document.getElementById('ask-title').textContent=titre;
+  document.getElementById('ask-intro').innerHTML=intro||'';
+  document.getElementById('ask-body').innerHTML=corps;
+  const ok=document.getElementById('ask-ok'), an=document.getElementById('ask-cancel');
+  const ok2=ok.cloneNode(true), an2=an.cloneNode(true);   // purge des handlers précédents
+  ok.replaceWith(ok2); an.replaceWith(an2);
+  ok2.onclick=()=>{ if(onOk()!==false) askClose(); };
+  an2.onclick=()=>{ askClose(); if(onCancel) onCancel(); };
+  document.getElementById('askmodal').classList.add('open');
+  const f=document.querySelector('#ask-body input,#ask-body select'); if(f) f.focus();
+}
+function askText(titre,intro,defaut){
+  return new Promise(res=>{
+    askOpen(titre,intro,`<input class="inp" id="ask-input" style="width:100%" value="${H(defaut||'')}">`,
+      ()=>{ const v=(document.getElementById('ask-input').value||'').trim();
+            if(!v) return false; res(v); },
+      ()=>res(null));
+    document.getElementById('ask-input').addEventListener('keydown',e=>{
+      if(e.key==='Enter') document.getElementById('ask-ok').click(); });
+  });
+}
+function askChoice(titre,intro,options,defaut){
+  return new Promise(res=>{
+    if(!options.length){ res(null); return; }
+    const opts=options.map(o=>`<option value="${H(o.value)}"${String(o.value)===String(defaut)?' selected':''}>${H(o.label)}</option>`).join('');
+    askOpen(titre,intro,`<select class="inp" id="ask-select" style="width:100%">${opts}</select>`,
+      ()=>res(document.getElementById('ask-select').value), ()=>res(null));
+  });
+}
+
 /* choix d'une version : modale maison, les versions se cliquent (pas de saisie) */
 function closeRb(){ document.getElementById('rbmodal').classList.remove('open'); }
 document.getElementById('rb-cancel').onclick=closeRb;
@@ -990,8 +1041,9 @@ async function loadPolicy(srv,dom){
 async function drawerVulns(dom){
   const tile=document.getElementById('dvuln'); if(!tile) return;
   try{
-    if(!(VULNS.sites||[]).length) VULNS=await api('/api/sec/vulns');
-    const site=(VULNS.sites||[]).find(x=>x.domain===dom);
+    // On ne demande que ce site : le parc entier pèse ~190 Ko.
+    const r=await api('/api/sec/vulns?domain='+encodeURIComponent(dom));
+    const site=(r.sites||[])[0];
     const n=site?site.count:0, worst=site?site.worst:'';
     tile.className='dstat '+(worst==='critical'||worst==='high'?'err':n?'warn':'ok');
     tile.querySelector('.val').className='val';
@@ -1223,10 +1275,21 @@ async function loadMgmt(){
     b.textContent='…'; await api('/api/mgmt/override',{domain:d,visible:vis==='show'?true:vis==='hide'?false:null,alias});
     b.textContent='✓'; await loadFleet(); });
   document.querySelectorAll('[data-create]').forEach(b=>b.onclick=async()=>{ const d=b.dataset.create;
-    const gid=prompt('Créer le moniteur dans quel client ?\n'+MGMT.kuma_groups.map(g=>`${g.id} = ${g.name}`).join('\n')+'\n\nEntrez l\'ID du groupe :',MGMT.kuma_groups[0]?.id);
-    if(!gid) return; const type=confirm('OK = check keyword sur /wp-login.php (WordPress standard)\nAnnuler = simple check HTTP de la home')?'keyword':'http';
+    const gid=await askChoice('Créer le moniteur','Dans quel client ce moniteur doit-il être rangé ?',
+      (MGMT.kuma_groups||[]).map(g=>({value:g.id,label:g.name})), MGMT.kuma_groups[0]?.id);
+      if(!gid) return;
+      // Deux vraies options : un confirm() détourné en choix (« OK = ceci,
+      // Annuler = cela ») obligeait à deviner ce que fait chaque bouton.
+      const type=await askChoice('Type de surveillance',
+        "Le contrôle par mot-clé détecte aussi un site en ligne mais cassé ; le contrôle HTTP se contente du code de réponse.",
+        [{value:'keyword',label:'Mot-clé sur /wp-login.php (recommandé pour WordPress)'},
+         {value:'http',label:"Contrôle HTTP simple de la page d'accueil"}],'keyword');
+      if(!type) return;
     b.textContent='⏳ redémarrage Kuma…'; const r=await api('/api/mgmt/kuma/create',{domain:d,group_id:gid,type});
-    alert(r.ok?'Moniteur créé. Kuma redémarre (~15s).':'Échec : '+(r.output||'')); setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
+      askOpen(r.ok?'Moniteur créé':'Échec de la création',
+        r.ok?'Kuma redémarre — le statut apparaîtra dans une quinzaine de secondes.':H(r.output||''),
+        '',()=>true);
+      setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
   // moniteurs
   document.getElementById('mon-tb').innerHTML=MGMT.kuma_monitors.map(m=>{
     const grp=m.parent?(monById[m.parent]?.name||''):''; return `<tr><td><b>${H(m.name)}</b></td><td>${H(grp)}</td>
