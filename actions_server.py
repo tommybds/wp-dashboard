@@ -46,6 +46,7 @@ AGENT_INVENTORY_ROUTE = f"/wp-json/{AGENT_NS}/inventory"  # inventaire REST sans
 AGENT_TIMEOUT = 60  # installer un plugin est lent : marge large
 VIZ_SLUG = "vizproof-timeline"  # seul slug accepté par l'agent (liste blanche côté site)
 # actions impossibles sans SSH : l'agent est en lecture seule (hors installation de vizproof)
+FROZEN_RC = 96  # extension gelée par la politique de mise à jour du site
 REST_UNSUPPORTED_RC = 97
 REST_UNSUPPORTED_MSG = "action indisponible : site géré sans SSH (l'agent est en lecture seule)"
 AGENT_OLD_RC = 99
@@ -69,6 +70,10 @@ ALERTS_LOG = os.path.join(DATA, "alerts.log")
 ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 24 h
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
+# Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
+# extension gelée (parce qu'une version casse le site, ou qu'un client valide
+# avant) reste installée mais n'est jamais mise à jour par le dashboard.
+UPDATE_POLICY_PATH = os.path.join(DATA, "update_policy.json")
 CHECKSUM_SOURCES = ("securite", "bulk", "manuel")  # sources dont on mémorise le résultat
 SECRETS_PATH = os.path.join(DATA, "site_secrets.json")
 EVENTS_PATH = os.path.join(DATA, "events.jsonl")
@@ -484,6 +489,35 @@ def run_wp_remote(srv, site, wp_args, timeout=300):
     return run_remote_script(srv, script, timeout)
 
 
+def update_policy():
+    d = load_json(UPDATE_POLICY_PATH, {})
+    return d if isinstance(d, dict) else {}
+
+
+def frozen_plugins(domain):
+    """Extensions gelées pour ce site (jamais mises à jour automatiquement)."""
+    entry = update_policy().get(str(domain or "")) or {}
+    out = [str(x) for x in (entry.get("frozen") or []) if SLUG_RE.match(str(x))]
+    return sorted(set(out))
+
+
+def set_frozen_plugin(domain, slug, frozen):
+    """Gèle ou dégèle une extension. → nouvelle liste pour ce site."""
+    pol = update_policy()
+    entry = pol.setdefault(str(domain), {})
+    cur = set(entry.get("frozen") or [])
+    if frozen:
+        cur.add(str(slug))
+    else:
+        cur.discard(str(slug))
+    entry["frozen"] = sorted(cur)
+    entry["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if not entry["frozen"]:
+        pol.pop(str(domain), None)
+    save_json(UPDATE_POLICY_PATH, pol)
+    return sorted(cur)
+
+
 def run_action(server_name, domain, action, arg):
     if action == "rescan":
         r = subprocess.run(["/usr/bin/python3", os.path.join(BASE, "collect.py"),
@@ -492,6 +526,14 @@ def run_action(server_name, domain, action, arg):
         return r.returncode, (r.stdout + r.stderr).strip()
     if action not in ACTIONS:
         return 1, "action inconnue"
+    # Politique par extension : une extension gelée n'est jamais mise à jour,
+    # que la demande vienne d'un bouton, d'une action groupée ou de la MAJ sûre.
+    gelees = frozen_plugins(domain)
+    if gelees:
+        if action == "plugin_update" and str(arg or "") in gelees:
+            return FROZEN_RC, f"extension gelée pour ce site : {arg}"
+        if action == "plugins_update_all":
+            action, arg = "plugins_update_except", ",".join(gelees)
     label, needs_arg, wp_args = ACTIONS[action]
     if needs_arg:
         arg = str(arg or "")
@@ -709,6 +751,12 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                    if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
         if slugs:
             pending = [p for p in pending if p in slugs]
+        gelees = frozen_plugins(domain)
+        if gelees:
+            ecartees = [p for p in pending if p in gelees]
+            pending = [p for p in pending if p not in gelees]
+            if ecartees:
+                safe_step("Extensions gelées, écartées", True, ", ".join(ecartees))
 
         # Cœur : présent seulement si une mise à jour est réellement disponible.
         core_target = ""
@@ -2751,6 +2799,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
+        elif p == "/api/actions/policy":
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
         elif p == "/api/actions/safe_update_status":
             self._send(200, dict(SAFE))
         elif p == "/api/sec/vulns":
@@ -3080,6 +3131,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "aucun site visible"})
             return self._send(200, {"ok": True, "job": start_bulk(tasks, "continue", False),
                                     "total": len(tasks)})
+
+        if p == "/api/actions/policy":
+            domain, slug = str(body.get("domain", "")), str(body.get("slug", ""))
+            if not SLUG_RE.match(domain) or not SLUG_RE.match(slug):
+                return self._send(400, {"error": "cible invalide"})
+            frozen = set_frozen_plugin(domain, slug, bool(body.get("frozen")))
+            append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "source": "politique", "server": str(body.get("server", "")),
+                        "domain": domain, "action": "plugin_freeze", "arg": slug, "rc": 0,
+                        "duration_s": 0,
+                        "output_tail": ("gelée" if body.get("frozen") else "dégelée") + f" : {slug}"})
+            return self._send(200, {"ok": True, "frozen": frozen})
 
         if p == "/api/actions/safe_update":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))

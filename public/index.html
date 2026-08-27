@@ -738,7 +738,9 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   document.getElementById('dtitle').textContent=kName(s)||s.domain;
   const ud=s.updraft, age=bkAge(s);
   const plugRows=(s.plugins_list||[]).filter(p=>p.update==='available').map(p=>
-    `<tr><td>${H(p.name)}</td><td>${H(p.version)} → ${H(p.to||'?')}</td><td><button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button></td></tr>`).join('');
+    `<tr data-plug="${H(p.name)}"><td>${H(p.name)}</td><td>${H(p.version)} → ${H(p.to||'?')}</td>
+      <td class="pcell"><button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button>
+      <button class="btn sm pfreeze" data-slug="${H(p.name)}" title="Ne plus jamais mettre à jour cette extension sur ce site">Geler</button></td></tr>`).join('');
   const adm=(s.admins||[]).map(a=>`<span class="tag">${H(a.login)}</span>`).join(' ')||'<span class="muted">—</span>';
   const auto=(()=>{ const n=s.plugins_auto_update, t=s.plugins_total;
     if(n==null||t==null) return {c:'',v:'?',s:'auto-MAJ'};
@@ -794,6 +796,10 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       ${ud&&s.via!=='rest'?'<button class="btn sm" data-act="updraft_backup">Lancer une sauvegarde</button>':''}
       </div></div>`}
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
+    <div class="dsec" id="dfrozensec" style="display:none"><h3>Extensions gelées</h3>
+      <p class="hint">Ces extensions restent installées mais ne sont <b>jamais</b> mises à jour par le dashboard —
+        ni par une action groupée, ni par la MAJ sûre. Utile quand une version casse le site ou qu'un client valide avant.</p>
+      <div id="dfrozenlist" class="small"></div></div>
     <div class="dsec" id="dvulnsec" style="display:none"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
       <div id="dvulnlist" class="small"></div></div>
     <div class="dsec"><h3>Fiche</h3>
@@ -820,10 +826,41 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     <div id="timeline"><span class="muted small">chargement…</span></div></div>`;
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
   const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
+  loadPolicy(s.srv,s.domain);
   document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
   loadTimeline(s.srv,s.domain);
   drawerVulns(kName(s)||s.domain);
   if(s.via==='rest') loadWpCred(s.srv,s.domain); }
+
+/* ---- politique de mise à jour par extension (gel) ---- */
+let FROZEN=[];
+function renderPolicy(){
+  const sec=document.getElementById('dfrozensec'), list=document.getElementById('dfrozenlist');
+  if(sec&&list){
+    sec.style.display=FROZEN.length?'':'none';
+    list.innerHTML=FROZEN.map(sl=>`<div class="vulnrow"><span class="pill warn">gelée</span>
+      <b>${H(sl)}</b><button class="btn sm pthaw" data-slug="${H(sl)}">Dégeler</button></div>`).join('');
+  }
+  document.querySelectorAll('#dbody [data-plug]').forEach(tr=>{
+    const sl=tr.dataset.plug, gel=FROZEN.includes(sl);
+    const b=tr.querySelector('.pfreeze'), maj=tr.querySelector('[data-act="plugin_update"]');
+    if(b){ b.textContent=gel?'Dégeler':'Geler'; b.classList.toggle('primary',gel); }
+    if(maj) maj.disabled=gel;
+    tr.style.opacity=gel?'.55':'';
+  });
+  document.querySelectorAll('#dbody .pfreeze,#dbody .pthaw').forEach(b=>b.onclick=async()=>{
+    const sl=b.dataset.slug, gel=!FROZEN.includes(sl);
+    b.disabled=true;
+    try{ const r=await api('/api/actions/policy',{server:CUR.srv,domain:CUR.domain,slug:sl,frozen:gel});
+      FROZEN=r.frozen||[]; }catch(e){}
+    b.disabled=false; renderPolicy();
+  });
+}
+async function loadPolicy(srv,dom){
+  try{ const r=await api('/api/actions/policy?domain='+encodeURIComponent(dom)); FROZEN=r.frozen||[]; }
+  catch(e){ FROZEN=[]; }
+  renderPolicy();
+}
 
 /* vulnérabilités du site affiché : réutilise le dernier croisement (aucun recalcul) */
 async function drawerVulns(dom){
