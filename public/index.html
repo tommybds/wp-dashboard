@@ -103,6 +103,8 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dstat .val{font-size:15px;font-weight:650;margin-top:2px;line-height:1.25}
 .dstat.ok .val{color:var(--ok)} .dstat.warn .val{color:var(--warn)} .dstat.err .val{color:var(--err)}
 .dstat .sub{font-size:11px;color:var(--muted);margin-top:1px}
+#hist-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:760px){#hist-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:420px){.dstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .agroup{margin-top:12px}
 .agroup>.glbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
@@ -111,6 +113,7 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dhead-links a{font-size:12px;margin-left:10px;white-space:nowrap}
 .ptable td{padding:5px 4px;border-bottom:1px solid var(--line)}
 .ptable tr:last-child td{border-bottom:0}
+.info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--chip);color:var(--muted);font-size:10px;font-weight:700;cursor:help;vertical-align:1px}
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* --- journal : une pastille d'icone, un titre, un detail lisible --- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
@@ -185,6 +188,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <button class="tab active" data-tab="dash">Tableau de bord</button>
     <button class="tab" data-tab="mgmt">Gestion</button>
     <button class="tab" data-tab="sec">Sécurité</button>
+    <button class="tab" data-tab="hist">Historique</button>
   </nav>
 </header>
 
@@ -289,6 +293,28 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 </div>
 
 <!-- ===================== SÉCURITÉ ===================== -->
+<!-- ===================== HISTORIQUE ===================== -->
+<div class="page" id="page-hist">
+  <div class="section">
+    <h2>Tendance du parc <span id="hist-sum" class="small"></span></h2>
+    <p class="hint">Relevé à chaque collecte. Montre si la dette de mises à jour se résorbe ou s'accumule.
+      <span class="info" title="Ces chiffres portent sur toutes les installations detectees, y compris celles qui ne sont pas suivies dans Kuma et n'apparaissent donc pas dans le tableau de bord.">?</span></p>
+    <div class="dstats" id="hist-tiles"></div>
+    <div id="hist-charts"></div>
+  </div>
+    <div class="section">
+      <h2>Changements <span id="chg-sum" class="small"></span></h2>
+      <p class="hint">Historique persistant des changements d'état réel détectés à chaque collecte — version installée qui bouge, admin ou extension ajouté/retiré. Un <span class="new-admin">ajout d'admin ou d'extension</span> sur un site que vous n'avez pas touché est le signal n°1 d'une compromission. Complète les alertes temps réel des sites équipés de l'agent.</p>
+      <div class="filters">
+        <input type="search" id="chg-q" placeholder="Filtrer un site, un changement…" style="width:260px">
+        <label class="small"><input type="checkbox" id="chg-warn"> à surveiller seulement</label>
+        <span class="spacer"></span>
+        <span id="chg-count" class="muted small"></span>
+      </div>
+      <div id="chg-body" class="small muted" style="max-height:440px;overflow:auto;margin-top:8px">chargement…</div>
+    </div>
+</div>
+
 <div class="page" id="page-sec">
   <div class="section">
     <h2>Vulnérabilités connues <span id="vln-sum" class="small"></span>
@@ -310,9 +336,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     </div>
     <div id="vln-body" class="small muted" style="max-height:520px;overflow:auto;margin-top:8px">chargement…</div>
     <h3 style="margin-top:14px">Versions de PHP</h3>
-    <p class="hint">Regroupé par version, car une faille PHP se corrige chez l'hébergeur, pas site par site.
-      ⚠️ À lire avec prudence : Debian et Plesk <b>rétroportent</b> les correctifs sans changer le numéro de version —
-      une version signalée ici peut déjà être corrigée. Le signal fiable, c'est une branche en <b>fin de support</b> (7.x, 8.0).</p>
+    <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" title="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
     <div id="vln-php" class="small muted"></div>
   </div>
   <div class="section">
@@ -329,17 +353,6 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <span class="spacer"></span><span id="phe-count" class="muted small"></span>
     </div>
     <div id="phe-body" class="small muted" style="max-height:520px;overflow:auto;margin-top:8px">chargement…</div>
-  </div>
-  <div class="section">
-    <h2>Changements <span id="chg-sum" class="small"></span></h2>
-    <p class="hint">Historique persistant des changements d'état réel détectés à chaque collecte — version installée qui bouge, admin ou extension ajouté/retiré. Un <span class="new-admin">ajout d'admin ou d'extension</span> sur un site que vous n'avez pas touché est le signal n°1 d'une compromission. Complète les alertes temps réel des sites équipés de l'agent.</p>
-    <div class="filters">
-      <input type="search" id="chg-q" placeholder="Filtrer un site, un changement…" style="width:260px">
-      <label class="small"><input type="checkbox" id="chg-warn"> à surveiller seulement</label>
-      <span class="spacer"></span>
-      <span id="chg-count" class="muted small"></span>
-    </div>
-    <div id="chg-body" class="small muted" style="max-height:440px;overflow:auto;margin-top:8px">chargement…</div>
   </div>
   <div class="section">
     <h2>Comptes administrateurs <button class="btn sm" id="baseline-all" style="float:right">Tout marquer comme vu</button></h2>
@@ -469,7 +482,8 @@ document.getElementById('logoutbtn').onclick=async()=>{ await fetch('/api/auth/l
 /* Fil d'Ariane dans l'URL : #onglet/sous-onglet — partageable et rechargeable. */
 const SUBSLUG={
   mgmt:['sites-non-geres','installs','mode-rest','moniteurs','docroots','serveurs'],
-  sec:['vulnerabilites','erreurs-php','changements','administrateurs','recherche-plugin','php-obsolete','certificats','plugins-a-risque','integrite-core']
+  hist:['tendance','changements'],
+  sec:['vulnerabilites','erreurs-php','administrateurs','recherche-plugin','php-obsolete','certificats','plugins-a-risque','integrite-core']
 };
 let NAVLOCK=false;   // évite que l'écriture de l'URL relance la navigation
 
@@ -481,6 +495,7 @@ function showTab(tab, {ecrire=true}={}){
   t.classList.add('active'); document.getElementById('page-'+tab).classList.add('active');
   if(tab==='mgmt') loadMgmt();
   if(tab==='sec') loadSec();
+  if(tab==='hist') loadHist();
   if(ecrire) writeHash(tab);
   return true;
 }
@@ -842,18 +857,13 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
     ${autresRows?`<div class="dsec"><h3>Toutes les extensions
         <button class="btn sm" id="pall-toggle" style="float:right">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
-      <p class="hint" id="pall-hint">Repliée par défaut. Utile pour <b>rétablir</b> une version antérieure d'une extension qui est déjà à jour.</p>
+      <p class="hint">Repliée par défaut. <span class="info" title="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
       <table class="ptable" id="pall-tbl" hidden><tbody>${autresRows}</tbody></table></div>`:''}
     <div class="dsec" id="drbsec" style="display:none"><h3>Revenir en arrière</h3>
-      <p class="hint">Chaque « MAJ sûre » archive les extensions avant de les mettre à jour.
-        Cliquez sur une pastille ci-dessous pour <b>remettre cette extension dans sa version d'avant</b>, à l'identique
-        (fonctionne aussi pour les extensions premium).<br>
-        Le bouton <b>↺ Rétablir</b> de chaque extension permet en plus de choisir n'importe quelle version publiée sur wordpress.org.
-        Dans les deux cas, seuls les <b>fichiers</b> sont remis en place — la base n'est pas touchée.</p>
+      <p class="hint">Archives laissées par les mises à jour sûres. <span class="info" title="Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.">?</span></p>
       <div id="drblist" class="small"></div></div>
     <div class="dsec" id="dfrozensec" style="display:none"><h3>Extensions gelées</h3>
-      <p class="hint">Ces extensions restent installées mais ne sont <b>jamais</b> mises à jour par le dashboard —
-        ni par une action groupée, ni par la MAJ sûre. Utile quand une version casse le site ou qu'un client valide avant.</p>
+      <p class="hint">Jamais mises à jour par le dashboard. <span class="info" title="Ni par un bouton, ni par une action groupee, ni par la MAJ sure. Utile quand une version casse le site, ou quand un client doit valider avant.">?</span></p>
       <div id="dfrozenlist" class="small"></div></div>
     <div class="dsec" id="dvulnsec" style="display:none"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
       <div id="dvulnlist" class="small"></div></div>
@@ -1204,7 +1214,14 @@ function tlDetail(e){
 }
 function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); document.getElementById('dback').classList.remove('open'); }
 document.getElementById('dclose').onclick=closeDrawer; document.getElementById('dback').onclick=closeDrawer;
-function confirmRun(btn){ if(btn.dataset.confirm){ runAction(btn); return; }
+/* Seules les actions qui MODIFIENT le site demandent confirmation : un re-scan,
+   un scan visuel ou un vidage de cache n'ont rien a confirmer, et tout
+   confirmer revient a ne plus rien signaler. */
+const ACT_RISQUE=new Set(['core_update','plugins_update_all','plugins_update_except',
+  'plugin_update','themes_update_all','autoupdate_on','autoupdate_off','vizproof_install']);
+function confirmRun(btn){
+  if(!ACT_RISQUE.has(btn.dataset.act)){ runAction(btn); return; }
+  if(btn.dataset.confirm){ runAction(btn); return; }
   btn.dataset.confirm='1'; btn.dataset.label=btn.textContent; btn.textContent='Confirmer ?'; btn.classList.add('danger');
   setTimeout(()=>{ if(btn.dataset.confirm){ delete btn.dataset.confirm; btn.textContent=btn.dataset.label; btn.classList.remove('danger'); } },4000); }
 async function runAction(btn){ const act=btn.dataset.act, arg=btn.dataset.arg||null, s=CUR;
@@ -1761,6 +1778,57 @@ document.getElementById('phe-run').onclick=async(e)=>{
   },3000);
 };
 
+/* ---- onglet Historique : tendance du parc ---- */
+/* Courbe SVG simple : pas de bibliothèque, les données tiennent en 60 points. */
+function sparkline(points, couleur, h=64){
+  if(points.length<2) return '<div class="muted small">pas assez de relevés</div>';
+  const w=560, pad=4;
+  const mn=Math.min(...points), mx=Math.max(...points), amp=(mx-mn)||1;
+  const x=i=>pad+i*(w-2*pad)/(points.length-1);
+  const y=v=>h-pad-((v-mn)/amp)*(h-2*pad);
+  const d=points.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const aire=`${d}L${x(points.length-1).toFixed(1)},${h-pad}L${x(0).toFixed(1)},${h-pad}Z`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block">
+    <path d="${aire}" fill="${couleur}" opacity=".12"/>
+    <path d="${d}" fill="none" stroke="${couleur}" stroke-width="1.6" stroke-linejoin="round"/>
+    <circle cx="${x(points.length-1).toFixed(1)}" cy="${y(points[points.length-1]).toFixed(1)}" r="2.6" fill="${couleur}"/>
+  </svg>`;
+}
+function deltaPill(cur, ref, inverse){
+  if(ref===null||ref===undefined) return '';
+  const d=cur-ref;
+  if(!d) return '<span class="pill mut">stable</span>';
+  // `inverse` : pour une dette, une baisse est une bonne nouvelle.
+  const bon=inverse?d<0:d>0;
+  return `<span class="pill ${bon?'ok':'warn'}">${d>0?'+':''}${d}</span>`;
+}
+async function loadHist(){
+  let hist=[];
+  try{ hist=(await api('/api/actions/collect_history')).history||[]; }
+  catch(e){ document.getElementById('hist-charts').innerHTML='historique indisponible'; return; }
+  if(!hist.length){ document.getElementById('hist-charts').innerHTML='<span class="muted">aucun relevé.</span>'; return; }
+  const der=hist[hist.length-1];
+  // référence ≈ 24 h plus tôt : la collecte tourne toutes les 30 min
+  const ref=hist[Math.max(0,hist.length-49)];
+  const M=[
+    {k:'plugin_updates', lbl:'MAJ extensions', c:'#b45309', inv:true},
+    {k:'core_updates',   lbl:'MAJ cœur',       c:'#2563eb', inv:true},
+    {k:'errors',         lbl:'Sites en erreur',c:'#dc2626', inv:true},
+    {k:'sites',          lbl:'Installations',  c:'#16a34a', inv:false},
+  ];
+  document.getElementById('hist-sum').innerHTML=
+    `<span class="pill mut">${hist.length} relevés · depuis le ${H((hist[0].ts||'').slice(0,10))}</span>`;
+  document.getElementById('hist-tiles').innerHTML=M.map(m=>
+    `<div class="dstat"><div class="lbl">${H(m.lbl)}</div>
+      <div class="val">${der[m.k]??'?'}</div>
+      <div class="sub">${deltaPill(der[m.k]??0, ref[m.k], m.inv)} sur 24 h</div></div>`).join('');
+  document.getElementById('hist-charts').innerHTML=M.map(m=>
+    `<div style="margin-top:14px"><div class="glbl">${H(m.lbl)}</div>
+      ${sparkline(hist.map(x=>x[m.k]??0), m.c)}
+      <div class="muted small" style="display:flex;justify-content:space-between">
+        <span>${H((hist[0].ts||'').slice(5,16))}</span><span>${H((der.ts||'').slice(5,16))}</span></div></div>`).join('');
+}
+
 let CHANGES=[];
 function renderChanges(){
   const q=(document.getElementById('chg-q').value||'').toLowerCase().trim();
@@ -1997,8 +2065,9 @@ function buildSubtabs(pageId, key, shortLabels){
 }
 buildSubtabs('page-mgmt','dashSubMgmt',
   ['Sites non gérés','Installs découverts','Mode REST','Moniteurs Kuma','Docroots','Serveurs']);
+buildSubtabs('page-hist','dashSubHist',['Tendance','Changements']);
 buildSubtabs('page-sec','dashSubSec',
-  ['Vulnérabilités','Erreurs PHP','Changements','Administrateurs','Recherche plugin','PHP obsolète','Certificats SSL','Plugins à risque','Intégrité du core']);
+  ['Vulnérabilités','Erreurs PHP','Administrateurs','Recherche plugin','PHP obsolète','Certificats SSL','Plugins à risque','Intégrité du core']);
 
 // L'onglet demandé par l'URL n'est appliqué qu'une fois la flotte chargée :
 // Gestion et Sécurité se construisent à partir de ces données.
