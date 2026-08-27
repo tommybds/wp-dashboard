@@ -111,6 +111,15 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dstat.ok .val{color:var(--ok)} .dstat.warn .val{color:var(--warn)} .dstat.err .val{color:var(--err)}
 .dstat .sub{font-size:var(--f-xs);color:var(--muted);margin-top:1px}
 #hist-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
+/* Courbes de tendance : deux colonnes des qu'il y a la place, sinon une. */
+/* Deux colonnes fixes : `auto-fit` donnait 3 colonnes sur un large ecran,
+   donc une quatrieme courbe orpheline sur la ligne suivante. */
+.histgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4);margin-top:var(--s3)}
+@media(max-width:760px){.histgrid{grid-template-columns:1fr}}
+.chart{background:var(--chip);border-radius:var(--r-md);padding:10px 12px 8px}
+.charttop{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--s1)}
+.chartaxis{display:flex;justify-content:space-between;font-size:var(--f-xs);color:var(--muted);margin-top:var(--s1)}
+.spark{width:100%;height:90px;display:block;overflow:visible}
 @media(max-width:760px){#hist-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:420px){.dstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .agroup{margin-top:12px}
@@ -1851,20 +1860,32 @@ document.getElementById('phe-run').onclick=async(e)=>{
 
 /* ---- onglet Historique : tendance du parc ---- */
 /* Courbe SVG simple : pas de bibliothèque, les données tiennent en 60 points. */
-function sparkline(points, couleur, h=64){
+/* Courbe SVG : pas de bibliotheque, 60 points suffisent.
+   `vector-effect:non-scaling-stroke` est indispensable — sans lui le trait
+   s'ecrase quand le SVG est etire en largeur (preserveAspectRatio="none"). */
+function sparkline(points, couleur, h=90){
   if(points.length<2) return '<div class="muted small">pas assez de relevés</div>';
-  const w=560, pad=4;
+  const w=400, pad=6;
   const mn=Math.min(...points), mx=Math.max(...points), amp=(mx-mn)||1;
   const x=i=>pad+i*(w-2*pad)/(points.length-1);
   const y=v=>h-pad-((v-mn)/amp)*(h-2*pad);
   const d=points.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
   const aire=`${d}L${x(points.length-1).toFixed(1)},${h-pad}L${x(0).toFixed(1)},${h-pad}Z`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px; display:block" class="w100">
-    <path d="${aire}" fill="${couleur}" opacity=".12"/>
-    <path d="${d}" fill="none" stroke="${couleur}" stroke-width="1.6" stroke-linejoin="round"/>
-    <circle cx="${x(points.length-1).toFixed(1)}" cy="${y(points[points.length-1]).toFixed(1)}" r="2.6" fill="${couleur}"/>
+  const der=points[points.length-1];
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark" role="img"
+      aria-label="évolution de ${mn} à ${mx}">
+    <line x1="0" y1="${(h-pad).toFixed(1)}" x2="${w}" y2="${(h-pad).toFixed(1)}"
+      stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+    <line x1="0" y1="${pad}" x2="${w}" y2="${pad}"
+      stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
+    <path d="${aire}" fill="${couleur}" opacity=".13"/>
+    <path d="${d}" fill="none" stroke="${couleur}" stroke-width="2" stroke-linejoin="round"
+      stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    <circle cx="${x(points.length-1).toFixed(1)}" cy="${y(der).toFixed(1)}" r="3" fill="${couleur}"
+      vector-effect="non-scaling-stroke"/>
   </svg>`;
 }
+
 function deltaPill(cur, ref, inverse){
   if(ref===null||ref===undefined) return '';
   const d=cur-ref;
@@ -1893,11 +1914,18 @@ async function loadHist(){
     `<div class="dstat"><div class="lbl">${H(m.lbl)}</div>
       <div class="val">${der[m.k]??'?'}</div>
       <div class="sub">${deltaPill(der[m.k]??0, ref[m.k], m.inv)} sur 24 h</div></div>`).join('');
-  document.getElementById('hist-charts').innerHTML=M.map(m=>
-    `<div class="mt4"><div class="glbl">${H(m.lbl)}</div>
-      ${sparkline(hist.map(x=>x[m.k]??0), m.c)}
-      <div class="muted small" style="display:flex;justify-content:space-between">
-        <span>${H((hist[0].ts||'').slice(5,16))}</span><span>${H((der.ts||'').slice(5,16))}</span></div></div>`).join('');
+  // Grille : sur un large ecran, quatre courbes pleine largeur donnent des
+  // rapports hauteur/largeur absurdes. Deux colonnes au-dela de 900 px.
+  document.getElementById('hist-charts').innerHTML='<div class="histgrid">'+M.map(m=>{
+    const pts=hist.map(x=>x[m.k]??0);
+    const mn=Math.min(...pts), mx=Math.max(...pts);
+    return `<div class="chart">
+      <div class="charttop"><b>${H(m.lbl)}</b>
+        <span class="muted small">${mn} – ${mx}</span></div>
+      ${sparkline(pts, m.c)}
+      <div class="chartaxis"><span>${H((hist[0].ts||'').slice(5,16))}</span>
+        <span>${H((der.ts||'').slice(5,16))}</span></div></div>`;
+  }).join('')+'</div>';
 }
 
 let CHANGES=[];
