@@ -60,9 +60,9 @@ hosting it, and that operator publishes its own terms of use and privacy policy.
 The dashboard this plugin was written against is a self-hosted, open-source
 application; you can run your own instance.
 
-Reference implementation: <!-- TO FILL IN BEFORE SUBMISSION: public URL of the dashboard source code. -->
-Terms of use: <!-- TO FILL IN BEFORE SUBMISSION: public terms-of-use URL. -->
-Privacy policy: <!-- TO FILL IN BEFORE SUBMISSION: public privacy-policy URL. -->
+Reference implementation: https://github.com/tommybds/wp-dashboard
+Terms of use: https://github.com/tommybds/wp-dashboard/blob/master/TERMS.md
+Privacy policy: https://github.com/tommybds/wp-dashboard/blob/master/PRIVACY.md
 
 **No data is transmitted until the site is paired.** Before pairing the plugin
 makes no outbound request whatsoever, and its REST routes answer 403 to every
