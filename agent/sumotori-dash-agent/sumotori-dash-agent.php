@@ -877,12 +877,11 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		 */
 		private function handle_admin_request( $capability ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- le nonce est vérifié dès que l'action est identifiée, juste en dessous.
-			$raw_action = isset( $_POST['sumotori_dash_action'] ) ? wp_unslash( $_POST['sumotori_dash_action'] ) : '';
-			if ( ! is_string( $raw_action ) || '' === $raw_action ) {
+			$action = isset( $_POST['sumotori_dash_action'] ) ? sanitize_key( wp_unslash( $_POST['sumotori_dash_action'] ) ) : '';
+			if ( '' === $action ) {
 				return;
 			}
 
-			$action = sanitize_key( $raw_action );
 			if ( ! in_array( $action, array( 'pair', 'unpair', 'save_protection', 'remove_mu' ), true ) ) {
 				return;
 			}
@@ -919,12 +918,11 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		 * Appairage depuis le formulaire.
 		 */
 		private function handle_pair_action() {
-			$url = isset( $_POST['sumotori_dash_url'] )
-				? esc_url_raw( wp_unslash( $_POST['sumotori_dash_url'] ) )
-				: '';
-			$code = isset( $_POST['sumotori_dash_code'] )
-				? sanitize_text_field( wp_unslash( $_POST['sumotori_dash_code'] ) )
-				: '';
+			// Nonce déjà vérifié par handle_admin_request() avant l'aiguillage.
+			// phpcs:disable WordPress.Security.NonceVerification.Missing
+			$url  = isset( $_POST['sumotori_dash_url'] ) ? esc_url_raw( wp_unslash( $_POST['sumotori_dash_url'] ) ) : '';
+			$code = isset( $_POST['sumotori_dash_code'] ) ? sanitize_text_field( wp_unslash( $_POST['sumotori_dash_code'] ) ) : '';
+			// phpcs:enable WordPress.Security.NonceVerification.Missing
 
 			$result = $this->pair( $url, $code );
 			if ( is_wp_error( $result ) ) {
@@ -951,10 +949,10 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		 * Enregistrement de la préférence de protection mu-plugins.
 		 */
 		private function handle_protection_action() {
-			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce déjà vérifié par handle_admin_request().
-			$raw_wanted = isset( $_POST['sumotori_dash_mu_protect'] )
-				? sanitize_text_field( wp_unslash( $_POST['sumotori_dash_mu_protect'] ) )
-				: '';
+			// Nonce déjà vérifié par handle_admin_request().
+			// phpcs:disable WordPress.Security.NonceVerification.Missing
+			$raw_wanted = isset( $_POST['sumotori_dash_mu_protect'] ) ? sanitize_text_field( wp_unslash( $_POST['sumotori_dash_mu_protect'] ) ) : '';
+			// phpcs:enable WordPress.Security.NonceVerification.Missing
 			$wanted     = ( '' !== $raw_wanted && '0' !== $raw_wanted );
 			$this->save_config( array( 'mu_protect' => $wanted ) );
 
@@ -2642,6 +2640,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI && class_exists( 'WP_CLI' ) && ! class_exists
 				return;
 			}
 
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $exit_code is a cast integer used as the process exit status, not printed output.
 			exit( $exit_code );
 		}
 	}
