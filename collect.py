@@ -64,7 +64,7 @@ wp_call() {
   local args="$*"
   local extra=""
   [ "$NOSU" != "1" ] && [ "$OWN" = "root" ] && extra="--allow-root"
-  local base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
+  local base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache-$OWN WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
   local out rc
   out=$(asuser "$base wp $args $extra $skips --no-color"); rc=$?
   if [ $rc -ne 0 ] && printf '%s' "$out" | grep -qiE 'requires PHP|PHP version|Parse error|syntax error, unexpected'; then

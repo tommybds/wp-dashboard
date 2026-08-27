@@ -120,7 +120,7 @@ WPBIN=$(command -v wp || true)
 [ -n "$WPBIN" ] || {{ echo "wp-cli absent"; exit 90; }}
 extra=""
 [ "$NOSU" != "1" ] && [ "$OWN" = "root" ] && extra="--allow-root"
-base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
+base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache-$OWN WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
 # Exécution côté site : directe quand l'utilisateur SSH possède déjà le site
 # (mutualisé, NOSU=1), sinon bascule vers le propriétaire du docroot via su.
 asuser() {{
@@ -656,7 +656,8 @@ SAFE = {"running": False, "domain": "", "steps": [], "verdict": "", "started": N
 SAFE_LOCK = threading.Lock()
 SAFE_ROLLBACK_PARENT = "/tmp"
 SAFE_ROLLBACK_DIR = SAFE_ROLLBACK_PARENT + "/.wpdash-rollback"
-SAFE_KEEP_DAYS = 7          # archives d'un retour arrière conservées 7 jours
+SAFE_KEEP_DAYS = 7          # archives conservées 7 jours (purge par date)
+SAFE_KEEP_SETS = 3          # et au plus 3 jeux par site (purge par nombre)
 SAFE_DISK_MARGIN_MB = 500   # marge exigée en plus du double du volume à archiver
 BODY_MIN_RATIO = 0.5   # une page qui perd plus de la moitié de son poids = suspecte
 
@@ -780,6 +781,16 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         if with_core:
             quoi.append(f"cœur WordPress → {core_target}")
         safe_step("À mettre à jour", True, " | ".join(quoi))
+        # Versions actuelles : sans elles, une archive ne dit pas vers quoi on
+        # reviendrait. Le manifeste est écrit à côté des .tgz.
+        versions_avant = {}
+        rcv, outv = remote_bash(srv, site,
+                                'asuser "$base wp plugin list --fields=name,version --format=csv '
+                                '--skip-plugins --skip-themes $extra --no-color"', timeout=120)
+        for ligne in (outv or "").splitlines():
+            bout = ligne.strip().split(",")
+            if len(bout) == 2 and bout[0] in pending:
+                versions_avant[bout[0]] = bout[1]
         if with_core:
             safe_step("Avertissement sur le cœur", True,
                       "les fichiers du cœur sont archivés et restaurables, mais les migrations "
@@ -797,6 +808,9 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #    tout le dossier plugins : sur un gros site c'est 400 Mo contre 30.
         lst = " ".join(sq(p) for p in pending)
         core_arch = "oui" if with_core else "non"
+        manifest = json.dumps({"domain": domain, "ts": stamp, "core_before": core if with_core else None,
+                               "core_target": core_target if with_core else None,
+                               "plugins": versions_avant}, ensure_ascii=False)
         body = f'''
 set -o pipefail
 PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
@@ -832,6 +846,9 @@ if [ "$libre" -lt $((besoin * 2 + {SAFE_DISK_MARGIN_MB})) ]; then
 fi
 
 mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
+# Le script tourne en root mais `wp` tourne sous l'utilisateur du site :
+# sans ce chown, `wp db export` ne peut pas ecrire dans l'archive.
+[ "$NOSU" = "1" ] || chown "$OWN" {sq(arc)} 2>/dev/null
 for s in {lst}; do
   if [ -d "$PLUGDIR/$s" ]; then
     tar czf {sq(arc)}/plugin__"$s".tgz -C "$PLUGDIR" "$s" || exit 82
@@ -851,14 +868,50 @@ fi
 # pas) et utile pour les extensions qui migrent leurs tables (WooCommerce,
 # Yoast, ACF, Gravity Forms…). --skip-plugins : le dump doit aboutir même quand
 # une extension est en erreur fatale.
+dump_ok=0
 if asuser "$base wp db export {sq(arc)}/db__.sql --skip-plugins --skip-themes --add-drop-table $extra --no-color" >/dev/null 2>&1 \
    && [ -s {sq(arc)}/db__.sql ]; then
+  dump_ok=1
+else
+  # Repli : sur un serveur ou wp-cli 2.12 cherche `mariadb-dump` alors que seul
+  # `mysqldump` existe (cas de plesk-mutu), l'export echoue. On appelle donc
+  # mysqldump directement, avec les identifiants lus dans wp-config.
+  # Le mot de passe transite par un fichier 600, jamais par la ligne de commande
+  # (il serait visible dans `ps`) ni par la sortie standard.
+  DUMPBIN=$(command -v mysqldump || command -v mariadb-dump || true)
+  if [ -n "$DUMPBIN" ]; then
+    cfg() {{ asuser "$base wp config get $1 --skip-plugins --skip-themes $extra --no-color" 2>/dev/null | tail -1; }}
+    DBN=$(cfg DB_NAME); DBU=$(cfg DB_USER); DBH=$(cfg DB_HOST)
+    CNF={sq(arc)}/.my.cnf
+    ( umask 077; printf '[client]\npassword=%s\n' "$(cfg DB_PASSWORD)" > "$CNF" )
+    # DB_HOST peut valoir « hote », « hote:port » ou « hote:/chemin/socket » :
+    # passe tel quel a -h, mysqldump le prend pour un nom d'hote et echoue.
+    DBPORT=""; DBSOCK=""
+    case "$DBH" in
+      *:/*) DBSOCK="${{DBH#*:}}"; DBH="${{DBH%%:*}}" ;;
+      *:*)  DBPORT="${{DBH#*:}}"; DBH="${{DBH%%:*}}" ;;
+    esac
+    set -- --defaults-extra-file="$CNF" -h "${{DBH:-localhost}}" -u "$DBU"
+    [ -n "$DBPORT" ] && set -- "$@" -P "$DBPORT"
+    [ -n "$DBSOCK" ] && set -- "$@" --socket="$DBSOCK"
+    if [ -n "$DBN" ] && [ -n "$DBU" ]; then
+      "$DUMPBIN" "$@" --add-drop-table --single-transaction --quick "$DBN" \
+        > {sq(arc)}/db__.sql 2>/dev/null \
+        && [ -s {sq(arc)}/db__.sql ] && dump_ok=1
+    fi
+    rm -f "$CNF"
+  fi
+fi
+if [ "$dump_ok" = "1" ]; then
   gzip -f {sq(arc)}/db__.sql 2>/dev/null
   echo "BDD_MO=$(du -sm {sq(arc)}/db__.sql.gz 2>/dev/null | cut -f1)"
   echo "archivé (base)"
 else
   echo "BDD_ECHEC"
 fi
+cat > {sq(arc)}/manifest.json <<'MANIFEST'
+{manifest}
+MANIFEST
 echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
 '''
         rc, out = remote_bash(srv, site, body, timeout=900)
@@ -935,8 +988,15 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
 
         # 7. retour arrière si nécessaire
         if sain:
-            remote_bash(srv, site, f'rm -rf {sq(arc)}', timeout=60)
-            safe_step("Terminé", True, "mise à jour conservée, archives supprimées")
+            # Les archives sont CONSERVÉES : c'est ce qui permet de rétablir une
+            # version précédente plus tard, y compris pour une extension premium.
+            # Purge bornée : au plus SAFE_KEEP_SETS jeux par site.
+            prefixe = re.sub(r'[^a-zA-Z0-9._-]', '_', domain)
+            remote_bash(srv, site,
+                        f'ls -1dt {sq(SAFE_ROLLBACK_DIR)}/{prefixe}-* 2>/dev/null '
+                        f'| tail -n +{SAFE_KEEP_SETS + 1} | xargs -r rm -rf', timeout=60)
+            safe_step("Terminé", True,
+                      f"mise à jour conservée · point de restauration gardé ({arc})")
             SAFE["verdict"] = "réussi"
         else:
             rb = f'''
@@ -982,6 +1042,109 @@ fi
     finally:
         SAFE["running"] = False
         SAFE["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def rollback_points(server_name, domain):
+    """Points de restauration disponibles pour un site → liste décroissante.
+
+    Chaque entrée décrit un jeu d'archives laissé par une mise à jour sûre :
+    quand, et quelle version chaque extension avait AVANT.
+    """
+    srv, site = find_site(server_name, domain)
+    if not srv or not site:
+        return []
+    prefixe = re.sub(r"[^a-zA-Z0-9._-]", "_", domain)
+    rc, out = remote_bash(srv, site,
+                          f'for d in $(ls -1dt {sq(SAFE_ROLLBACK_DIR)}/{prefixe}-* 2>/dev/null); do '
+                          f'  echo "@@DIR@@$d"; cat "$d/manifest.json" 2>/dev/null; echo; '
+                          f'  ls -1 "$d" | grep "^plugin__" | sed "s/^plugin__/@@P@@/;s/\\.tgz$//"; '
+                          f'done', timeout=120)
+    if rc != 0:
+        return []
+    points, cur = [], None
+    for ligne in (out or "").splitlines():
+        ligne = ligne.rstrip()
+        if ligne.startswith("@@DIR@@"):
+            cur = {"dir": ligne[7:], "plugins": [], "versions": {}, "ts": ""}
+            points.append(cur)
+        elif cur is None:
+            continue
+        elif ligne.startswith("@@P@@"):
+            cur["plugins"].append(ligne[5:])
+        elif ligne.startswith("{"):
+            try:
+                m = json.loads(ligne)
+                cur["versions"] = m.get("plugins") or {}
+                cur["ts"] = m.get("ts") or ""
+            except ValueError:
+                pass
+    return [p for p in points if p["plugins"]]
+
+
+def wporg_versions(slug, limit=40):
+    """Versions publiées d'une extension sur wordpress.org, de la plus récente
+    à la plus ancienne. C'est la source qu'utilise WP Rollback : le dépôt
+    conserve tous les tags, donc n'importe quelle version reste installable.
+    Renvoie [] pour une extension premium (absente du dépôt public)."""
+    if not SLUG_RE.match(str(slug or "")):
+        return []
+    url = f"https://api.wordpress.org/plugins/info/1.0/{urllib.parse.quote(str(slug))}.json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read(2 * 1024 * 1024).decode("utf-8", "replace"))
+    except Exception:
+        return []
+    if not isinstance(data, dict) or data.get("error"):
+        return []
+    brutes = [v for v in (data.get("versions") or {}) if v and v != "trunk"]
+    # Tri décroissant à la sémantique PHP : on réutilise le comparateur déjà
+    # validé contre version_compare() (1.10 > 1.9, et beta2 > beta1).
+    import functools
+    from vulns import version_compare
+    brutes.sort(key=functools.cmp_to_key(version_compare), reverse=True)
+    return {"current": data.get("version"), "versions": brutes[:limit]}
+
+
+def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None):
+    """Rétablit une extension. → (rc, message).
+
+    Deux sources, dans cet ordre de fiabilité :
+      1. une archive locale — restitution à l'identique, fonctionne aussi pour
+         les extensions premium que wordpress.org ne peut pas resservir ;
+      2. une version publiée sur wordpress.org, en repli.
+    La base n'est jamais touchée : une extension qui a migré ses tables peut
+    nécessiter une intervention manuelle, c'est signalé à l'appelant.
+    """
+    srv, site = find_site(server_name, domain)
+    if not srv or not site:
+        return 92, "site inconnu"
+    if not SLUG_RE.match(str(slug or "")):
+        return 91, "extension invalide"
+
+    if arc_dir:
+        if not re.match(r"^/tmp/\.wpdash-rollback/[A-Za-z0-9._-]+$", str(arc_dir)):
+            return 91, "point de restauration invalide"
+        body = f'''
+PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
+[ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
+F={sq(str(arc_dir))}/plugin__{sq(str(slug))}.tgz
+[ -f "$F" ] || {{ echo "ARCHIVE_ABSENTE"; exit 2; }}
+rm -rf "$PLUGDIR"/{sq(str(slug))} && tar xzf "$F" -C "$PLUGDIR" && echo "RESTAURE"
+'''
+        rc, out = remote_bash(srv, site, body, timeout=600)
+        if "ARCHIVE_ABSENTE" in (out or ""):
+            return 2, "aucune archive pour cette extension dans ce point de restauration"
+        if rc != 0 or "RESTAURE" not in (out or ""):
+            return rc or 1, (out or "")[-300:]
+        return 0, f"{slug} rétabli depuis l'archive"
+
+    if not version or not re.match(r"^[0-9][0-9A-Za-z._-]{0,20}$", str(version)):
+        return 91, "version invalide"
+    rc, out = remote_bash(srv, site,
+                          f'run plugin install {sq(str(slug))} --version={sq(str(version))} --force',
+                          timeout=600)
+    return rc, (out or "")[-400:]
 
 
 # ---------- collecte complète ----------
@@ -2799,6 +2962,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
+        elif p == "/api/actions/plugin_versions":
+            self._send(200, wporg_versions(urllib.parse.unquote(q.get("slug", ""))) or
+                            {"current": None, "versions": []})
+        elif p == "/api/actions/rollback_points":
+            server = urllib.parse.unquote(q.get("server", ""))
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(dom):
+                return self._send(400, {"error": "cible invalide"})
+            self._send(200, {"points": rollback_points(server, dom)})
         elif p == "/api/actions/policy":
             dom = urllib.parse.unquote(q.get("domain", ""))
             self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
@@ -3131,6 +3303,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "aucun site visible"})
             return self._send(200, {"ok": True, "job": start_bulk(tasks, "continue", False),
                                     "total": len(tasks)})
+
+        if p == "/api/actions/plugin_rollback":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            slug = str(body.get("slug", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            t0 = time.time()
+            rc, out = plugin_rollback(server, domain, slug,
+                                      body.get("dir") or None, body.get("version") or None)
+            append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "source": "retablissement", "server": server, "domain": domain,
+                        "action": "plugin_rollback", "arg": slug, "rc": rc,
+                        "duration_s": round(time.time() - t0, 1), "output_tail": str(out)[-2000:]})
+            return self._send(200, {"ok": rc == 0, "rc": rc, "output": out})
 
         if p == "/api/actions/policy":
             domain, slug = str(body.get("domain", "")), str(body.get("slug", ""))

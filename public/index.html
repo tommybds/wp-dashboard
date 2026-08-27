@@ -740,7 +740,8 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   const plugRows=(s.plugins_list||[]).filter(p=>p.update==='available').map(p=>
     `<tr data-plug="${H(p.name)}"><td>${H(p.name)}</td><td>${H(p.version)} → ${H(p.to||'?')}</td>
       <td class="pcell"><button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button>
-      <button class="btn sm pfreeze" data-slug="${H(p.name)}" title="Ne plus jamais mettre à jour cette extension sur ce site">Geler</button></td></tr>`).join('');
+      <button class="btn sm pfreeze" data-slug="${H(p.name)}" title="Ne plus jamais mettre à jour cette extension sur ce site">Geler</button>
+      <button class="btn sm prb" data-slug="${H(p.name)}" title="Revenir à une version antérieure">↺</button></td></tr>`).join('');
   const adm=(s.admins||[]).map(a=>`<span class="tag">${H(a.login)}</span>`).join(' ')||'<span class="muted">—</span>';
   const auto=(()=>{ const n=s.plugins_auto_update, t=s.plugins_total;
     if(n==null||t==null) return {c:'',v:'?',s:'auto-MAJ'};
@@ -796,6 +797,11 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       ${ud&&s.via!=='rest'?'<button class="btn sm" data-act="updraft_backup">Lancer une sauvegarde</button>':''}
       </div></div>`}
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
+    <div class="dsec" id="drbsec" style="display:none"><h3>Points de restauration</h3>
+      <p class="hint">Archives laissées par les mises à jour sûres — restitution <b>à l'identique</b>, y compris pour les extensions premium.
+        Le bouton ↺ de chaque extension permet aussi de choisir n'importe quelle version publiée sur wordpress.org.
+        Dans les deux cas, seuls les <b>fichiers</b> sont remis en place : la base n'est pas touchée.</p>
+      <div id="drblist" class="small"></div></div>
     <div class="dsec" id="dfrozensec" style="display:none"><h3>Extensions gelées</h3>
       <p class="hint">Ces extensions restent installées mais ne sont <b>jamais</b> mises à jour par le dashboard —
         ni par une action groupée, ni par la MAJ sûre. Utile quand une version casse le site ou qu'un client valide avant.</p>
@@ -827,10 +833,62 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
   const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
   loadPolicy(s.srv,s.domain);
+  loadRollbackPoints(s.srv,s.domain);
+  document.querySelectorAll('#dbody .prb').forEach(b=>b.onclick=()=>askVersion(b.dataset.slug,b));
   document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
   loadTimeline(s.srv,s.domain);
   drawerVulns(kName(s)||s.domain);
   if(s.via==='rest') loadWpCred(s.srv,s.domain); }
+
+/* ---- rétablir une version antérieure d'une extension ---- */
+let RBPOINTS=[];
+async function loadRollbackPoints(srv,dom){
+  try{ const r=await api(`/api/actions/rollback_points?server=${encodeURIComponent(srv)}&domain=${encodeURIComponent(dom)}`);
+       RBPOINTS=r.points||[]; }catch(e){ RBPOINTS=[]; }
+  const sec=document.getElementById('drbsec'), list=document.getElementById('drblist');
+  if(!sec||!list) return;
+  sec.style.display=RBPOINTS.length?'':'none';
+  list.innerHTML=RBPOINTS.map(pt=>{
+    const quand=pt.ts?H(pt.ts.replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2}).*$/,'$3/$2 à $4h$5')):'';
+    const items=pt.plugins.map(sl=>{
+      const v=pt.versions&&pt.versions[sl];
+      return `<button class="btn sm rbgo" data-dir="${H(pt.dir)}" data-slug="${H(sl)}">${H(sl)}${v?' → '+H(v):''}</button>`;
+    }).join(' ');
+    return `<div class="vulnrow"><span class="muted small">${quand}</span> ${items}</div>`;
+  }).join('');
+  list.querySelectorAll('.rbgo').forEach(b=>b.onclick=()=>doRollback(b.dataset.slug,{dir:b.dataset.dir},b));
+}
+async function doRollback(slug,src,btn){
+  const quoi=src.dir?'depuis l\'archive locale (restitution à l\'identique)':`en version ${src.version}`;
+  if(!confirm(`Rétablir « ${slug} » ${quoi} ?\n\n⚠️ Seuls les FICHIERS sont remis en place. Si l'extension a migré ses tables, la base reste dans son nouvel état — vérifiez le site après.`)) return;
+  const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
+  try{
+    const r=await api('/api/actions/plugin_rollback',
+      Object.assign({server:CUR.srv,domain:CUR.domain,slug},src));
+    alert(r.ok?`${slug} rétabli.\n\n${r.output||''}`:`Échec (rc ${r.rc})\n\n${r.output||''}`);
+    if(r.ok) await loadFleet().catch(()=>{});
+  }catch(e){ alert('erreur : '+e); }
+  btn.disabled=false; btn.textContent=lbl;
+}
+/* choix d'une version publiée sur wordpress.org (comme WP Rollback) */
+async function askVersion(slug,btn){
+  const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
+  let r; try{ r=await api('/api/actions/plugin_versions?slug='+encodeURIComponent(slug)); }
+  catch(e){ r=null; }
+  btn.disabled=false; btn.textContent=lbl;
+  const vs=(r&&r.versions)||[];
+  const arc=RBPOINTS.find(p=>p.plugins.includes(slug));
+  if(!vs.length&&!arc){ alert(`Aucune version antérieure disponible pour « ${slug} ».\n\nCette extension n'est pas sur wordpress.org (extension premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`); return; }
+  let msg=`Rétablir « ${slug} » :\n\n`;
+  if(arc) msg+=`• laissez vide pour restaurer l'archive locale (${arc.versions[slug]||'version précédente'}, à l'identique)\n`;
+  if(vs.length) msg+=`• ou saisissez une version wordpress.org parmi :\n  ${vs.slice(0,12).join(', ')}\n`;
+  const rep=prompt(msg,'');
+  if(rep===null) return;
+  const v=rep.trim();
+  if(!v){ if(arc) doRollback(slug,{dir:arc.dir},btn); return; }
+  if(!vs.includes(v)){ alert(`Version « ${v} » inconnue pour cette extension.`); return; }
+  doRollback(slug,{version:v},btn);
+}
 
 /* ---- politique de mise à jour par extension (gel) ---- */
 let FROZEN=[];
