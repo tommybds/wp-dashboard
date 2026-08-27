@@ -1,0 +1,69 @@
+# =============================================================================
+#  Dashboard parc WordPress — fichiers à ne JAMAIS publier
+# =============================================================================
+#  Règle : tout ce qui décrit le parc réel (serveurs, domaines clients,
+#  comptes) ou permet d'y accéder reste hors du dépôt. Le code, lui, ne
+#  contient aucun secret en dur.
+# =============================================================================
+
+# ── Données du parc + secrets ────────────────────────────────────────────────
+# Contient : mots de passe d'application WordPress (app_passwords.json),
+# secrets d'appairage des agents (site_secrets.json), hash du mot de passe
+# du dashboard (auth.json), clé de signature des sessions (.session_secret),
+# inventaire complet du parc (fleet.json : domaines clients, logins et
+# e-mails des administrateurs), et journaux contenant des adresses IP.
+data/
+
+# Inventaire des serveurs : IP, ports SSH, utilisateurs, chemins des clés.
+# Publier ce fichier revient à publier la cartographie de l'infrastructure.
+servers.json
+
+# Configuration propre au déploiement : URL du dashboard, chemin de la clé SSH,
+# slug Kuma, e-mail du compte admin. Copiez config.example.json → config.json.
+config.json
+
+
+# Copie de l'inventaire servie au navigateur (régénérée par collect.py).
+public/fleet.json
+
+# Correspondances de domaines clients.
+public/aliases.json
+
+# Note opérationnelle : contient un nom de client et une IP réelle.
+# Pour la publier, anonymise-la d'abord puis force son ajout :
+#   git add -f INFOMANIAK.md
+INFOMANIAK.md
+
+# ── Clés, identifiants, configuration locale ─────────────────────────────────
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+*.session_secret
+.session_secret
+.env
+.env.*
+*.local.json
+
+# ── Généré / éphémère ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.log
+*.jsonl
+*.prev.json
+*.tmp
+*.bak
+*.orig
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# ── Archives (le ZIP de l'agent est construit à la volée en mémoire) ─────────
+*.zip
+*.tar.gz
+*.tgz
+
+# Script de diagnostic personnel (hardcode chemins + slug) — hors produit.
+check_filter.py

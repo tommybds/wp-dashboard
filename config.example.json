@@ -1,0 +1,10 @@
+{
+  "dashboard_url": "https://dashboard.example.com",
+  "ssh_key": "/root/.ssh/id_dashboard",
+  "kuma_container": "uptime-kuma",
+  "kuma_db": "/app/data/kuma.db",
+  "kuma_slug": "REMPLACER-par-le-slug-de-votre-status-page-kuma",
+  "kuma_status_url": "http://127.0.0.1:3001/api/status-page/",
+  "bot_admin_login": "dashboard_agent",
+  "bot_admin_email": "admin@example.com"
+}

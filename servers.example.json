@@ -1,0 +1,23 @@
+[
+  {
+    "name": "mon-serveur-root",
+    "host": "203.0.113.10",
+    "port": 22,
+    "patterns": ["/var/www/*/htdocs", "/var/www/html"]
+  },
+  {
+    "name": "plesk",
+    "host": "203.0.113.20",
+    "port": 10022,
+    "patterns": ["/var/www/vhosts/*/httpdocs"]
+  },
+  {
+    "name": "mutualise-sans-root",
+    "host": "ssh.mon-hebergeur.example",
+    "port": 22,
+    "user": "mon-login-ssh",
+    "no_su": true,
+    "key": "/root/.ssh/id_hebergeur",
+    "patterns": ["/home/clients/*/sites/*"]
+  }
+]

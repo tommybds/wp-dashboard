@@ -1,0 +1,5 @@
+# /etc/cron.d/wp-dashboard — collecte du parc + bilan journalier
+# Collecte toutes les 30 min (inventaire de tous les sites).
+*/30 * * * * root cd /opt/wp-dashboard && /usr/bin/python3 collect.py >> /var/log/wp-dashboard.log 2>&1
+# Bilan des changements des dernières 24 h, envoyé sur Telegram si configuré (8 h).
+0 8 * * * root cd /opt/wp-dashboard && /usr/bin/python3 digest.py >> /var/log/wp-dashboard.log 2>&1

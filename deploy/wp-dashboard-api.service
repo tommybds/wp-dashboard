@@ -1,0 +1,16 @@
+[Unit]
+Description=WP Dashboard actions API
+After=network.target
+
+[Service]
+# Écoute en local sur 127.0.0.1:8090 ; c'est nginx qui l'expose en HTTPS.
+ExecStart=/usr/bin/python3 /opt/wp-dashboard/actions_server.py
+WorkingDirectory=/opt/wp-dashboard
+Restart=always
+RestartSec=3
+# root est nécessaire pour lire les clés SSH du parc et exécuter `docker exec`
+# vers Uptime Kuma. À restreindre si votre déploiement le permet.
+User=root
+
+[Install]
+WantedBy=multi-user.target
