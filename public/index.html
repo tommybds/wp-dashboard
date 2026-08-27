@@ -115,8 +115,11 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 /* --- journal : une pastille d'icone, un titre, un detail lisible --- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
 .tlrow:last-child{border-bottom:0}
-.tlic{flex:0 0 22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-      font-size:11px;background:var(--chip);color:var(--muted);margin-top:1px}
+.tlic{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+      /* line-height:1 + presentation TEXTE des glyphes : sans ca les symboles
+         sortent en emoji colore, plus gros que la pastille et decentres. */
+      line-height:1;font-size:11px;font-family:ui-sans-serif,system-ui,"Segoe UI Symbol",sans-serif;
+      background:var(--chip);color:var(--muted);margin-top:2px;user-select:none}
 .tlic.ok{background:var(--ok-bg);color:var(--ok)} .tlic.warn{background:var(--warn-bg);color:var(--warn)}
 .tlic.err{background:var(--err-bg);color:var(--err)}
 .tlmain{min-width:0;flex:1}
@@ -126,6 +129,11 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tldet{background:var(--chip);border-radius:6px;padding:6px 8px;margin:4px 0 0;
        font:11.5px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
        max-height:130px;overflow:auto}
+.tldet[hidden]{display:none}
+.tlopenable{cursor:pointer}
+.tlopenable:hover{background:var(--chip);border-radius:8px;margin:0 -6px;padding-left:6px;padding-right:6px}
+.tlchev{color:var(--muted);font-size:13px;transition:transform .15s ease;display:inline-block}
+.tlopenable.open .tlchev{transform:rotate(90deg)}
 .actions{display:flex;flex-wrap:wrap;gap:8px} .ptable{width:100%;font-size:13px}
 .console{background:#0d1117;color:#c9d1d9;border-radius:8px;padding:10px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
 .console b.ok{color:#4ade80} .console b.warn{color:#fbbf24} .console b.err{color:#f87171}
@@ -879,44 +887,69 @@ async function startSafeUpdate(srv,dom,btn){
 /* historique du site (non bloquant — le tiroir s'affiche sans attendre) */
 let TLSEQ=0;
 const TLKIND={action:'action',collect:'collecte',event:'événement'};
+let TLGROUPS=[], TLSHOWN=0;
+const TLPAGE=20;
 async function loadTimeline(srv,dom){
   const seq=++TLSEQ; const el=document.getElementById('timeline'); if(!el) return;
   el.innerHTML='<span class="muted small">chargement…</span>';
-  const put=h=>{ if(seq!==TLSEQ) return; const t=document.getElementById('timeline'); if(t) t.innerHTML=h; };
   let j; try{ j=await api('/api/site/timeline?server='+encodeURIComponent(srv)+'&domain='+encodeURIComponent(dom)); }
-  catch(e){ put(`<span class="muted small">historique indisponible</span>`); return; }
+  catch(e){ if(seq===TLSEQ) el.innerHTML='<span class="muted small">historique indisponible</span>'; return; }
+  if(seq!==TLSEQ) return;
   const ev=(j&&Array.isArray(j.events))?j.events.filter(x=>x&&typeof x==='object'):[];
-  if(!ev.length){ put('<span class="muted small">aucun événement enregistré.</span>'); return; }
+  if(!ev.length){ el.innerHTML='<span class="muted small">aucun événement enregistré.</span>'; return; }
   ev.sort((a,b)=>((tsMs(b.ts)??0)-(tsMs(a.ts)??0)));
   // Regroupement des répétitions : une même mise à jour relancée quatre fois
   // n'a pas à occuper quatre blocs identiques.
-  const groupes=[];
-  for(const e of ev.slice(0,200)){
+  TLGROUPS=[];
+  for(const e of ev){
     const cle=[e.kind,e.label,e.status,tlDetail(e)].join('|');
-    const last=groupes[groupes.length-1];
+    const last=TLGROUPS[TLGROUPS.length-1];
     if(last&&last.cle===cle){ last.n++; continue; }
-    groupes.push({cle,e,n:1});
+    TLGROUPS.push({cle,e,n:1});
   }
-  put(groupes.slice(0,80).map(({e,n})=>{
-    const kind=String(e.kind??''), lab=String(e.label??''), stt=String(e.status??'').toLowerCase();
-    const det=tlDetail(e);
-    let c='mut';
-    if(kind==='action') c=stt.includes('ok')?'ok':(stt.includes('anomal')?'warn':'err');
-    else if(kind==='event') c=TLCRIT.test(lab)?'err':'mut';
-    else if(kind==='collect') c=(stt==='alerte')?'err':'mut';
-    const titre=(kind==='event'?(EVLABEL[lab]||lab):lab)||'—';
-    // Bloc technique réservé aux sorties réellement utiles : jamais un avertissement PHP.
-    const tech=(kind==='action'&&c!=='ok'&&det);
-    return `<div class="tlrow">
-      <span class="tlic ${c}">${TLICON[kind]||'\u2022'}</span>
-      <div class="tlmain">
-        <div class="tltop"><b>${H(titre)}</b>${n>1?`<span class="pill mut">\u00d7${n}</span>`:''}
-          <span class="muted small tlwhen" title="${H(absTime(e.ts))}">${H(relTime(e.ts))}</span></div>
-        ${det?(tech?`<pre class="tldet">${H(det.slice(-400))}</pre>`
-                   :`<div class="muted small tlsub">${H(det)}</div>`):''}
-      </div></div>`; }).join('')); }
+  TLSHOWN=TLPAGE; renderTimeline();
+}
 
-const TLICON={action:'\u2699',event:'\u26a1',collect:'\u21bb'};
+function tlRow({e,n},i){
+  const kind=String(e.kind??''), lab=String(e.label??''), stt=String(e.status??'').toLowerCase();
+  const det=tlDetail(e);
+  const brut=String(e.detail??'');
+  // On propose le dépliage dès que la source dit plus que le résumé affiché.
+  const depliable=brut && brut.trim()!==det.trim();
+  let c='mut';
+  if(kind==='action') c=stt.includes('ok')?'ok':(stt.includes('anomal')?'warn':'err');
+  else if(kind==='event') c=TLCRIT.test(lab)?'err':'mut';
+  else if(kind==='collect') c=(stt==='alerte')?'err':'mut';
+  const titre=(kind==='event'?(EVLABEL[lab]||lab):lab)||'—';
+  return `<div class="tlrow${depliable?' tlopenable':''}"${depliable?` data-tl="${i}"`:''}>
+    <span class="tlic ${c}">${TLICON[kind]||'\u25cf'}</span>
+    <div class="tlmain">
+      <div class="tltop"><b>${H(titre)}</b>${n>1?`<span class="pill mut">×${n}</span>`:''}
+        ${depliable?'<span class="tlchev">›</span>':''}
+        <span class="muted small tlwhen" title="${H(absTime(e.ts))}">${H(relTime(e.ts))}</span></div>
+      ${det?`<div class="muted small tlsub">${H(det)}</div>`:''}
+      ${depliable?`<pre class="tldet" hidden>${H(brut.slice(0,4000))}</pre>`:''}
+    </div></div>`;
+}
+
+function renderTimeline(){
+  const el=document.getElementById('timeline'); if(!el) return;
+  const vus=TLGROUPS.slice(0,TLSHOWN);
+  const reste=TLGROUPS.length-vus.length;
+  el.innerHTML=vus.map(tlRow).join('')
+    +(reste>0?`<button class="btn sm" id="tlmore" style="margin-top:10px">Voir plus (${reste})</button>`
+             :(TLGROUPS.length>TLPAGE?'<div class="muted small" style="margin-top:8px">fin de l\'historique</div>':''));
+  el.querySelectorAll('.tlopenable').forEach(r=>r.onclick=()=>{
+    const pre=r.querySelector('.tldet'); if(!pre) return;
+    pre.hidden=!pre.hidden; r.classList.toggle('open',!pre.hidden);
+  });
+  const more=document.getElementById('tlmore');
+  if(more) more.onclick=()=>{ TLSHOWN+=TLPAGE; renderTimeline(); };
+}
+
+// Symboles sans variante emoji : \u2699 et \u26a1 sont rendus en emoji colore
+// par le navigateur (plus gros que la pastille, decentre), meme avec \ufe0e.
+const TLICON={action:'\u25c6',event:'\u25b2',collect:'\u21bb'};
 const TLCRIT=/admin|user_register|set_user_role|grant_super|deleted_user/i;
 const EVLABEL={
   upgrader_process_complete:'Mise \u00e0 jour termin\u00e9e', wp_login:'Connexion administrateur',
