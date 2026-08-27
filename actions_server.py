@@ -70,6 +70,7 @@ ALERTS_LOG = os.path.join(DATA, "alerts.log")
 ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 24 h
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
+PHPERR_PATH = os.path.join(DATA, "php_errors.json")
 # Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
 # extension gelée (parce qu'une version casse le site, ou qu'un client valide
 # avant) reste installée mais n'est jamais mise à jour par le dashboard.
@@ -697,7 +698,7 @@ def viz_available(srv, site):
 
 
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
-                    with_core=False):
+                    with_core=False, dry_run=False):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
@@ -781,6 +782,13 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         if with_core:
             quoi.append(f"cœur WordPress → {core_target}")
         safe_step("À mettre à jour", True, " | ".join(quoi))
+        if dry_run:
+            # Garde-fou : une simulation s'arrête AVANT toute écriture. Sert aux
+            # tests et à la prévisualisation depuis l'interface.
+            safe_step("Simulation", True,
+                      "aucune modification effectuée (sauvegarde, archivage et mise à jour non exécutés)")
+            SAFE["verdict"] = "simulation"
+            return
         # Versions actuelles : sans elles, une archive ne dit pas vers quoi on
         # reviendrait. Le manifeste est écrit à côté des .tgz.
         versions_avant = {}
@@ -1153,6 +1161,25 @@ COLLECT_LOCK = threading.Lock()
 
 # ---------- veille de vulnérabilités (vulns.py, croisement local) ----------
 VULNS = {"running": False, "message": "", "finished": None}
+# ---------- erreurs PHP (lecture des journaux serveur, aucun site modifié) ----------
+PHPERR = {"running": False, "message": "", "finished": None}
+
+
+def phperr_worker(hours=24):
+    PHPERR.update({"running": True, "message": "analyse en cours…", "finished": None})
+    try:
+        r = subprocess.run([sys.executable, os.path.join(BASE, "phperrors.py"),
+                            "--hours", str(int(hours))],
+                           capture_output=True, text=True, timeout=900, cwd=BASE)
+        out = (r.stdout or "").strip().splitlines()
+        PHPERR["message"] = out[-1] if out else ((r.stderr or "").strip()[-200:] or "terminé")
+    except subprocess.TimeoutExpired:
+        PHPERR["message"] = "délai dépassé"
+    except Exception as e:
+        PHPERR["message"] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        PHPERR["running"] = False
+        PHPERR["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 def vulns_worker(refresh=True):
@@ -2976,6 +3003,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
         elif p == "/api/actions/safe_update_status":
             self._send(200, dict(SAFE))
+        elif p == "/api/sec/phperrors":
+            res = load_json(PHPERR_PATH, {"sites": [], "total": 0, "fatals": 0,
+                                          "sites_with_errors": 0})
+            res["running"] = PHPERR["running"]
+            res["run_message"] = PHPERR["message"]
+            self._send(200, res)
         elif p == "/api/sec/vulns":
             # Résultat du dernier croisement local (vulns.py --scan) + état d'avancement.
             res = load_json(VULNS_FOUND_PATH, {"sites": [], "totals": {},
@@ -3343,8 +3376,19 @@ class Handler(BaseHTTPRequestHandler):
                 slugs = [s for s in slugs if isinstance(s, str) and SLUG_RE.match(s)]
             threading.Thread(target=safe_update_run,
                              args=(server, domain, slugs, bool(body.get("backup", True)),
-                                   bool(body.get("viz", True)), bool(body.get("core", False))),
+                                   bool(body.get("viz", True)), bool(body.get("core", False)),
+                                   bool(body.get("dry_run", False))),
                              daemon=True).start()
+            return self._send(200, {"ok": True, "running": True})
+
+        if p == "/api/sec/phperrors/run":
+            if PHPERR["running"]:
+                return self._send(409, {"error": "analyse déjà en cours"})
+            try:
+                heures = max(1, min(720, int(body.get("hours", 24))))
+            except (TypeError, ValueError):
+                heures = 24
+            threading.Thread(target=phperr_worker, args=(heures,), daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
 
         if p == "/api/sec/vulns/run":
