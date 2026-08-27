@@ -1,11 +1,22 @@
 # Dashboard parc WordPress
 
 Un tableau de bord auto-hébergé pour superviser et maintenir un parc de sites
-WordPress : inventaire (cœur, extensions, thèmes, PHP, réglages de sauvegarde
-UpdraftPlus), état de disponibilité live via **Uptime Kuma**, actions de
-maintenance à distance (mises à jour, sauvegardes, vérification des sommes de
-contrôle), volet sécurité (comptes administrateurs, plugins à risque,
-certificats) et **historique des changements** avec bilan quotidien.
+WordPress.
+
+- **Inventaire** de chaque site : cœur, extensions, thèmes, PHP, comptes
+  administrateurs, réglages de sauvegarde UpdraftPlus.
+- **Disponibilité en direct** via **Uptime Kuma**, certificats TLS compris.
+- **Mises à jour sûres** : archivage des fichiers et de la base, mise à jour,
+  contrôle de santé, puis **retour arrière automatique** si le site casse.
+- **Rétablissement d'une version** : depuis l'archive locale (extensions
+  premium comprises) ou depuis n'importe quelle version publiée sur
+  wordpress.org.
+- **Veille de vulnérabilités** : l'inventaire est croisé **en local** avec une
+  base publique ouverte — aucune donnée du parc n'est transmise.
+- **Erreurs PHP** relevées dans les journaux que les serveurs écrivent déjà,
+  sans rien installer sur les sites.
+- **Historique** : tendance du parc et journal des changements d'état, avec
+  bilan quotidien sur Telegram.
 
 Aucune dépendance Python hors bibliothèque standard. Le dashboard parle à vos
 sites de deux façons : en **SSH** (wp-cli), ou via un **agent** léger installé
@@ -42,12 +53,22 @@ Trois composants, tous dans `/opt/wp-dashboard/` :
 | **API** | `actions_server.py` | Service HTTP local (127.0.0.1:8090) : authentification, actions de maintenance sur liste blanche, endpoints de l'interface. Exposé en HTTPS par nginx. |
 | **Interface** | `public/index.html` | Application monopage (aucun build) servie par nginx. |
 
+Et les tâches périodiques, toutes lancées par cron :
+
+| Fichier | Rôle | Cadence |
+|---|---|---|
+| `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 6 h |
+| `phperrors.py` | Lit les journaux d'erreur PHP des serveurs (PHP-FPM sur Plesk, nginx sur les VPS) et regroupe les occurrences par fichier et ligne. Aucun site modifié. | 2 h |
+| `digest.py` | Bilan quotidien des changements, envoyé sur Telegram s'il y en a. | 8 h |
+| `rotate.py` | Rotation des journaux à **rétention différenciée** : courte pour le tout-venant, longue pour ce qui a valeur de preuve (création d'administrateur, échec d'action…). | hebdo |
+
 À côté :
 
 - **Uptime Kuma** (conteneur Docker) fournit l'état de disponibilité. Le
   dashboard lit sa base SQLite en lecture (`docker exec … sqlite3`) pour relier
   chaque site à son moniteur, et proxifie sa status page.
-- **`digest.py`** envoie un bilan quotidien des changements sur Telegram.
+- **`dashboard_config.py`** lit `config.json` : c'est le seul endroit où vivent
+  les valeurs propres à une installation.
 - **[L'agent compagnon](#lagent-compagnon)** (`agent/sumotori-dash-agent/`) est
   le plugin WordPress installé sur les sites sans SSH.
 
@@ -232,17 +253,52 @@ l'URL du dashboard est saisie à l'appairage.
 
 ## Exploitation
 
-- **Collecte** : cron toutes les 30 min → `data/fleet.json`, historisée dans
-  `data/collect_history.jsonl` et `data/changes.jsonl`.
-- **Historique des changements** : à chaque collecte, les changements d'état réel
-  (version installée, admin/extension ajouté…) sont journalisés et visibles dans
-  **Sécurité → Changements** et dans le tiroir de chaque site.
-- **Bilan quotidien** : `digest.py` (cron 8 h) envoie un résumé Telegram s'il y a
-  eu du changement. Configurez le bot dans **Réglages** (jeton + chat_id) ; sans
-  cela le bilan ne fait rien. Test : `python3 digest.py --dry-run`.
+### Les onglets
+
+| Onglet | Contenu |
+|---|---|
+| **Tableau de bord** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées. |
+| **Gestion** | Ajout d'un site par URL, sites supervisés non gérés, serveurs, clés SSH, moniteurs Kuma. |
+| **Sécurité** | Vulnérabilités, erreurs PHP, comptes administrateurs, recherche transversale d'extension, PHP obsolète, certificats, extensions à risque, intégrité du cœur. |
+| **Historique** | Tendance du parc (courbes) et journal des changements d'état. |
+
+### Mettre à jour un site
+
+Le bouton **🛡 MAJ sûre** du tiroir enchaîne : contrôle avant → sauvegarde
+UpdraftPlus → **archivage des fichiers et dump de la base** → mise à jour →
+contrôles (page servie, poids non effondré, WordPress fonctionnel, et scan
+visuel VizProof si la commande est disponible) → **retour arrière automatique**
+si quelque chose casse.
+
+Deux garde-fous : la base n'est **jamais** restaurée automatiquement — elle
+contient ce qui a été écrit pendant l'opération, la commande exacte est donnée
+pour en faire une décision — et une extension **gelée** n'est jamais mise à
+jour, quel que soit le chemin emprunté.
+
+`POST /api/actions/safe_update {"dry_run": true}` simule sans rien écrire.
+
+### Tâches périodiques
+
+Toutes dans `deploy/wp-dashboard.cron`. Chaque script s'exécute aussi à la main :
+
+```bash
+python3 vulns.py --fetch --scan     # veille de vulnérabilités
+python3 phperrors.py --print        # erreurs PHP (--hours 72 pour élargir)
+python3 digest.py --dry-run         # bilan Telegram, sans envoyer
+python3 rotate.py --dry-run         # rotation des journaux, à blanc
+```
+
+Le bilan Telegram exige un bot configuré dans **Réglages** (jeton + chat_id) ;
+sans cela il ne fait rien.
+
+### Divers
+
 - **Mise à jour du code** : `git pull` puis `systemctl restart wp-dashboard-api`.
-- **Logs** : `journalctl -u wp-dashboard-api` (API), `/var/log/wp-dashboard.log`
-  (collecte + bilan).
+- **Journaux** : `journalctl -u wp-dashboard-api` pour l'API,
+  `/var/log/wp-dashboard.log` pour les tâches cron.
+- **Compression** : pensez à activer `gzip_types` dans `nginx.conf`. Sans elle,
+  seul le HTML est compressé et l'inventaire JSON part en clair — sur un parc
+  d'une quarantaine de sites, c'est 234 Ko contre 22 Ko à chaque chargement.
 
 ---
 

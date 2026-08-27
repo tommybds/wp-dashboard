@@ -1,5 +1,10 @@
-# /etc/cron.d/wp-dashboard — collecte du parc + bilan journalier
-# Collecte toutes les 30 min (inventaire de tous les sites).
+# Collecte du parc WordPress — géré depuis le dashboard (Réglages)
 */30 * * * * root cd /opt/wp-dashboard && /usr/bin/python3 collect.py >> /var/log/wp-dashboard.log 2>&1
-# Bilan des changements des dernières 24 h, envoyé sur Telegram si configuré (8 h).
+# Erreurs PHP : lecture des journaux serveurs (toutes les 2 h)
+17 */2 * * * root cd /opt/wp-dashboard && /usr/bin/python3 phperrors.py >> /var/log/wp-dashboard.log 2>&1
+# Veille de vulnérabilités : rafraîchit la base publique puis recroise (6 h)
+0 6 * * * root cd /opt/wp-dashboard && /usr/bin/python3 vulns.py --fetch --scan >> /var/log/wp-dashboard.log 2>&1
+# Bilan journalier des changements → Telegram (8 h, si changement)
 0 8 * * * root cd /opt/wp-dashboard && /usr/bin/python3 digest.py >> /var/log/wp-dashboard.log 2>&1
+# Rotation des journaux, à rétention différenciée (4 h du matin, dimanche)
+30 4 * * 0 root cd /opt/wp-dashboard && /usr/bin/python3 rotate.py >> /var/log/wp-dashboard.log 2>&1
