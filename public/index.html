@@ -421,6 +421,14 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div id="add-body"></div>
   <div style="margin-top:16px"><button class="btn sm" id="add-close">Fermer</button></div>
 </div></div>
+<div class="modal" id="rbmodal"><div class="box" style="max-width:560px">
+  <h2 style="margin-top:0">Rétablir une version</h2>
+  <p id="rb-intro" class="hint"></p>
+  <div id="rb-choices"></div>
+  <div class="actions" style="margin-top:16px;justify-content:flex-end">
+    <button class="btn" id="rb-cancel">Annuler</button>
+  </div>
+</div></div>
 <div class="modal" id="bulkmodal"><div class="box">
   <h2 style="margin-top:0" id="bm-title">Exécution en masse</h2>
   <div class="bar"><div id="bm-bar"></div></div>
@@ -889,35 +897,63 @@ async function loadRollbackPoints(srv,dom){
   list.querySelectorAll('.rbgo').forEach(b=>b.onclick=()=>doRollback(b.dataset.slug,{dir:b.dataset.dir},b));
 }
 async function doRollback(slug,src,btn){
-  const quoi=src.dir?'depuis l\'archive locale (restitution à l\'identique)':`en version ${src.version}`;
-  if(!confirm(`Rétablir « ${slug} » ${quoi} ?\n\n⚠️ Seuls les FICHIERS sont remis en place. Si l'extension a migré ses tables, la base reste dans son nouvel état — vérifiez le site après.`)) return;
-  const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
-  try{
-    const r=await api('/api/actions/plugin_rollback',
-      Object.assign({server:CUR.srv,domain:CUR.domain,slug},src));
-    alert(r.ok?`${slug} rétabli.\n\n${r.output||''}`:`Échec (rc ${r.rc})\n\n${r.output||''}`);
-    if(r.ok) await loadFleet().catch(()=>{});
-  }catch(e){ alert('erreur : '+e); }
-  btn.disabled=false; btn.textContent=lbl;
+  const quoi=src.dir?'depuis l\'archive locale, à l\'identique':`en version ${src.version}`;
+  const intro=document.getElementById('rb-intro'), box=document.getElementById('rb-choices');
+  intro.innerHTML=`Rétablir <b>${H(slug)}</b> ${H(quoi)} ?`;
+  box.innerHTML=`<p class="hint">⚠️ Seuls les <b>fichiers</b> sont remis en place. Si l'extension a migré ses tables,
+      la base reste dans son nouvel état — vérifiez le site après l'opération.</p>
+    <div class="actions" style="margin-top:12px"><button class="btn primary" id="rb-go">Rétablir</button></div>`;
+  document.getElementById('rbmodal').classList.add('open');
+  document.getElementById('rb-go').onclick=async()=>{
+    box.innerHTML='<span class="pill mut">opération en cours…</span>';
+    let r;
+    try{ r=await api('/api/actions/plugin_rollback',
+        Object.assign({server:CUR.srv,domain:CUR.domain,slug},src)); }
+    catch(e){ r={ok:false,rc:'—',output:String(e)}; }
+    intro.innerHTML=r.ok?`<b>${H(slug)}</b> rétabli.`:`Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
+    box.innerHTML=`<div class="logline"><span class="pill ${r.ok?'ok':'err'}">${r.ok?'réussi':'échec'}</span></div>
+      ${r.output?`<pre class="tldet">${H(stripPhpNoise(r.output).slice(-800))}</pre>`:''}
+      <div class="actions" style="margin-top:12px"><button class="btn primary" id="rb-done">Fermer</button></div>`;
+    document.getElementById('rb-done').onclick=()=>{ closeRb(); if(r.ok) loadFleet().catch(()=>{}); };
+  };
 }
-/* choix d'une version publiée sur wordpress.org (comme WP Rollback) */
+/* choix d'une version : modale maison, les versions se cliquent (pas de saisie) */
+function closeRb(){ document.getElementById('rbmodal').classList.remove('open'); }
+document.getElementById('rb-cancel').onclick=closeRb;
+document.getElementById('rbmodal').onclick=e=>{ if(e.target.id==='rbmodal') closeRb(); };
 async function askVersion(slug,btn){
   const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
   let r; try{ r=await api('/api/actions/plugin_versions?slug='+encodeURIComponent(slug)); }
   catch(e){ r=null; }
   btn.disabled=false; btn.textContent=lbl;
-  const vs=(r&&r.versions)||[];
+  const vs=(r&&r.versions)||[], actuelle=(r&&r.current)||'';
   const arc=RBPOINTS.find(p=>p.plugins.includes(slug));
-  if(!vs.length&&!arc){ alert(`Aucune version antérieure disponible pour « ${slug} ».\n\nCette extension n'est pas sur wordpress.org (extension premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`); return; }
-  let msg=`Rétablir « ${slug} » :\n\n`;
-  if(arc) msg+=`• laissez vide pour restaurer l'archive locale (${arc.versions[slug]||'version précédente'}, à l'identique)\n`;
-  if(vs.length) msg+=`• ou saisissez une version wordpress.org parmi :\n  ${vs.slice(0,12).join(', ')}\n`;
-  const rep=prompt(msg,'');
-  if(rep===null) return;
-  const v=rep.trim();
-  if(!v){ if(arc) doRollback(slug,{dir:arc.dir},btn); return; }
-  if(!vs.includes(v)){ alert(`Version « ${v} » inconnue pour cette extension.`); return; }
-  doRollback(slug,{version:v},btn);
+  const intro=document.getElementById('rb-intro'), box=document.getElementById('rb-choices');
+  if(!vs.length&&!arc){
+    intro.innerHTML=`Aucune version antérieure disponible pour <b>${H(slug)}</b> : cette extension n'est pas publiée sur wordpress.org (extension premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`;
+    box.innerHTML='';
+  } else {
+    intro.innerHTML=`Choisissez la version à remettre en place pour <b>${H(slug)}</b>.
+      Seuls les <b>fichiers</b> sont remplacés — la base n'est pas touchée.`;
+    let h='';
+    if(arc){
+      h+=`<div class="glbl" style="margin:10px 0 6px">Archive locale — restitution à l'identique</div>
+        <div class="actions"><button class="btn primary sm rbpick" data-kind="dir" data-val="${H(arc.dir)}">
+          ↺ ${H(arc.versions[slug]||'version précédente')}</button>
+          <span class="muted small">telle qu'elle était avant la mise à jour</span></div>`;
+    }
+    if(vs.length){
+      h+=`<div class="glbl" style="margin:14px 0 6px">Versions publiées sur wordpress.org</div>
+        <div class="actions">`+vs.slice(0,24).map(v=>
+          `<button class="btn sm rbpick" data-kind="version" data-val="${H(v)}">${H(v)}${v===actuelle?' <span class="muted">(actuelle)</span>':''}</button>`).join('')+`</div>`;
+    }
+    box.innerHTML=h;
+    box.querySelectorAll('.rbpick').forEach(b=>b.onclick=()=>{
+      const src=b.dataset.kind==='dir'?{dir:b.dataset.val}:{version:b.dataset.val};
+      closeRb(); doRollback(slug,src,btn);
+    });
+  }
+  document.getElementById('rbmodal').classList.add('open');
 }
 
 /* ---- politique de mise à jour par extension (gel) ---- */
