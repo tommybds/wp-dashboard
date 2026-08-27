@@ -857,7 +857,7 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
     ${autresRows?`<div class="dsec"><h3>Toutes les extensions
         <button class="btn sm" id="pall-toggle" style="float:right">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
-      <p class="hint">Repliée par défaut. <span class="info" title="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
+      <p class="hint" id="pall-hint">Repliée par défaut. <span class="info" title="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
       <table class="ptable" id="pall-tbl" hidden><tbody>${autresRows}</tbody></table></div>`:''}
     <div class="dsec" id="drbsec" style="display:none"><h3>Revenir en arrière</h3>
       <p class="hint">Archives laissées par les mises à jour sûres. <span class="info" title="Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.">?</span></p>
