@@ -752,11 +752,15 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   const v=st(s); document.getElementById('ddot').className='dot '+(v===1?'up':v===0?'down':v===2?'pending':'');
   document.getElementById('dtitle').textContent=kName(s)||s.domain;
   const ud=s.updraft, age=bkAge(s);
-  const plugRows=(s.plugins_list||[]).filter(p=>p.update==='available').map(p=>
-    `<tr data-plug="${H(p.name)}"><td>${H(p.name)}</td><td>${H(p.version)} → ${H(p.to||'?')}</td>
-      <td class="pcell"><button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button>
+  const ligneP=(p,maj)=>`<tr data-plug="${H(p.name)}"><td>${H(p.name)}</td>
+      <td>${maj?`${H(p.version)} → <b>${H(p.to||'?')}</b>`:H(p.version)}
+        ${p.status!=='active'?'<span class="pill mut">inactive</span>':''}</td>
+      <td class="pcell">${maj?`<button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button>`:''}
       <button class="btn sm pfreeze" data-slug="${H(p.name)}" title="Ne plus jamais mettre à jour cette extension sur ce site">Geler</button>
-      <button class="btn sm prb" data-slug="${H(p.name)}" title="Revenir à une version antérieure">↺</button></td></tr>`).join('');
+      <button class="btn sm prb" data-slug="${H(p.name)}" title="Revenir à une version antérieure">↺ Rétablir</button></td></tr>`;
+  const tousP=(s.plugins_list||[]).filter(p=>p.name&&!/\.php$/.test(p.name));
+  const plugRows=tousP.filter(p=>p.update==='available').map(p=>ligneP(p,true)).join('');
+  const autresRows=tousP.filter(p=>p.update!=='available').map(p=>ligneP(p,false)).join('');
   const adm=(s.admins||[]).map(a=>`<span class="tag">${H(a.login)}</span>`).join(' ')||'<span class="muted">—</span>';
   const auto=(()=>{ const n=s.plugins_auto_update, t=s.plugins_total;
     if(n==null||t==null) return {c:'',v:'?',s:'auto-MAJ'};
@@ -812,10 +816,16 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       ${ud&&s.via!=='rest'?'<button class="btn sm" data-act="updraft_backup">Lancer une sauvegarde</button>':''}
       </div></div>`}
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
-    <div class="dsec" id="drbsec" style="display:none"><h3>Points de restauration</h3>
-      <p class="hint">Archives laissées par les mises à jour sûres — restitution <b>à l'identique</b>, y compris pour les extensions premium.
-        Le bouton ↺ de chaque extension permet aussi de choisir n'importe quelle version publiée sur wordpress.org.
-        Dans les deux cas, seuls les <b>fichiers</b> sont remis en place : la base n'est pas touchée.</p>
+    ${autresRows?`<div class="dsec"><h3>Toutes les extensions
+        <button class="btn sm" id="pall-toggle" style="float:right">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
+      <p class="hint" id="pall-hint">Repliée par défaut. Utile pour <b>rétablir</b> une version antérieure d'une extension qui est déjà à jour.</p>
+      <table class="ptable" id="pall-tbl" hidden><tbody>${autresRows}</tbody></table></div>`:''}
+    <div class="dsec" id="drbsec" style="display:none"><h3>Revenir en arrière</h3>
+      <p class="hint">Chaque « MAJ sûre » archive les extensions avant de les mettre à jour.
+        Cliquez sur une pastille ci-dessous pour <b>remettre cette extension dans sa version d'avant</b>, à l'identique
+        (fonctionne aussi pour les extensions premium).<br>
+        Le bouton <b>↺ Rétablir</b> de chaque extension permet en plus de choisir n'importe quelle version publiée sur wordpress.org.
+        Dans les deux cas, seuls les <b>fichiers</b> sont remis en place — la base n'est pas touchée.</p>
       <div id="drblist" class="small"></div></div>
     <div class="dsec" id="dfrozensec" style="display:none"><h3>Extensions gelées</h3>
       <p class="hint">Ces extensions restent installées mais ne sont <b>jamais</b> mises à jour par le dashboard —
@@ -850,6 +860,10 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   loadPolicy(s.srv,s.domain);
   loadRollbackPoints(s.srv,s.domain);
   document.querySelectorAll('#dbody .prb').forEach(b=>b.onclick=()=>askVersion(b.dataset.slug,b));
+  const pt=document.getElementById('pall-toggle');
+  if(pt) pt.onclick=()=>{ const t=document.getElementById('pall-tbl'), hi=document.getElementById('pall-hint');
+    t.hidden=!t.hidden; if(hi) hi.style.display=t.hidden?'':'none';
+    pt.textContent=t.hidden?`Afficher (${t.querySelectorAll('tr').length} à jour)`:'Masquer'; };
   document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
   loadTimeline(s.srv,s.domain);
   drawerVulns(kName(s)||s.domain);
@@ -867,7 +881,8 @@ async function loadRollbackPoints(srv,dom){
     const quand=pt.ts?H(pt.ts.replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2}).*$/,'$3/$2 à $4h$5')):'';
     const items=pt.plugins.map(sl=>{
       const v=pt.versions&&pt.versions[sl];
-      return `<button class="btn sm rbgo" data-dir="${H(pt.dir)}" data-slug="${H(sl)}">${H(sl)}${v?' → '+H(v):''}</button>`;
+      return `<button class="btn sm rbgo" data-dir="${H(pt.dir)}" data-slug="${H(sl)}"
+        title="Remettre ${H(sl)} dans sa version d'avant cette mise à jour">↺ ${H(sl)}${v?' → '+H(v):''}</button>`;
     }).join(' ');
     return `<div class="vulnrow"><span class="muted small">${quand}</span> ${items}</div>`;
   }).join('');
