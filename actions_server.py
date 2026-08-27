@@ -678,7 +678,13 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
 
         # 1. état de départ
         ok, st, size_before, msg = health_probe(site)
-        safe_step("Contrôle avant mise à jour", ok, msg)
+        # Référence WP-CLI : certains sites ont déjà des extensions qui échouent en
+        # CLI (revslider sur ffhbi.fr). On mémorise l'état AVANT pour ne pas
+        # imputer à la mise à jour un défaut qui préexistait.
+        rcw0, _ = remote_bash(srv, site, 'run option get siteurl', timeout=90)
+        wp_ok_before = (rcw0 == 0)
+        safe_step("Contrôle avant mise à jour", ok,
+                  msg + ("" if wp_ok_before else " — WP-CLI déjà en erreur avant l'opération"))
         if not ok:
             safe_step("Interrompu", False,
                       "le site est déjà en erreur avant toute intervention — "
@@ -686,9 +692,19 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
             SAFE["verdict"] = "annulé"
             return
 
-        # 2. liste réelle des extensions à mettre à jour
+        # 2. liste réelle des extensions à mettre à jour.
+        #    --skip-plugins/--skip-themes : lire l'inventaire n'exige pas de charger
+        #    le code des extensions, et l'une d'elles peut être en erreur fatale
+        #    (revslider sur ffhbi.fr fait échouer la commande sans ces options).
         rc, out = remote_bash(srv, site,
-                              'run plugin list --update=available --field=name --format=csv', timeout=120)
+                              'asuser "$base wp plugin list --update=available --field=name '
+                              '--format=csv --skip-plugins --skip-themes $extra --no-color"', timeout=120)
+        if rc != 0:
+            safe_step("Liste des mises à jour", False,
+                      "impossible d'obtenir la liste des extensions à mettre à jour : "
+                      + (out or "")[-300:])
+            SAFE["verdict"] = "annulé"
+            return
         pending = [l.strip() for l in (out or "").splitlines()
                    if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
         if slugs:
@@ -698,7 +714,9 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         core_target = ""
         if with_core:
             rcc, outc = remote_bash(srv, site,
-                                    'run core check-update --field=version --format=csv', timeout=120)
+                                    'asuser "$base wp core check-update --field=version '
+                                    '--format=csv --skip-plugins --skip-themes $extra --no-color"',
+                                    timeout=120)
             cand = [l.strip() for l in (outc or "").splitlines()
                     if re.match(r"^\d+\.\d+(\.\d+)?$", l.strip())]
             core_target = cand[0] if rcc == 0 and cand else ""
@@ -720,7 +738,7 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                       "de base de données (core update-db) ne sont PAS annulées par le retour "
                       "arrière — la sauvegarde UpdraftPlus est le recours pour la base")
 
-        # 3. sauvegarde UpdraftPlus (filet, pas le mécanisme de retour arrière)
+        # 3. sauvegarde UpdraftPlus (filet distant, hors mécanisme de retour arrière)
         if do_backup:
             rc, out = logged_action(server_name, domain, "updraft_backup", None, source="maj-sure")
             safe_step("Sauvegarde UpdraftPlus", rc == 0,
@@ -750,6 +768,15 @@ done
 if [ "{core_arch}" = "oui" ]; then
   besoin=$((besoin + $(du -sm --exclude=wp-content "$D" 2>/dev/null | cut -f1)))
 fi
+# La base est dumpée elle aussi : --skip-plugins évite qu'une extension en
+# erreur (fatale au chargement) empêche le dump, comme c'est le cas sur ffhbi.
+# On ne retient qu'une ligne entièrement numérique : la sortie peut être
+# précédée d'avertissements PHP contenant eux-mêmes des chiffres.
+dbmo=$(asuser "$base wp db size --size_format=mb --skip-plugins --skip-themes $extra --no-color" 2>/dev/null \
+       | grep -Eo '^[0-9]+([.][0-9]+)?$' | tail -1 | cut -d. -f1)
+[ -n "$dbmo" ] || dbmo=200
+echo "DB_MO=$dbmo"
+besoin=$((besoin + dbmo))
 libre=$(df -Pm {sq(SAFE_ROLLBACK_PARENT)} | awk 'NR==2{{print $4}}')
 echo "BESOIN_MO=$besoin"; echo "LIBRE_MO=$libre"
 if [ "$libre" -lt $((besoin * 2 + {SAFE_DISK_MARGIN_MB})) ]; then
@@ -771,6 +798,19 @@ if [ "{core_arch}" = "oui" ]; then
   tar czf {sq(arc)}/core__.tgz -C "$D" --exclude=./wp-content . || exit 84
   echo "archivé (coeur)"
 fi
+# Dump de la base : symétrique de l'archive des fichiers. Indispensable pour le
+# cœur (core update-db migre le schéma, la restauration de fichiers ne l'annule
+# pas) et utile pour les extensions qui migrent leurs tables (WooCommerce,
+# Yoast, ACF, Gravity Forms…). --skip-plugins : le dump doit aboutir même quand
+# une extension est en erreur fatale.
+if asuser "$base wp db export {sq(arc)}/db__.sql --skip-plugins --skip-themes --add-drop-table $extra --no-color" >/dev/null 2>&1 \
+   && [ -s {sq(arc)}/db__.sql ]; then
+  gzip -f {sq(arc)}/db__.sql 2>/dev/null
+  echo "BDD_MO=$(du -sm {sq(arc)}/db__.sql.gz 2>/dev/null | cut -f1)"
+  echo "archivé (base)"
+else
+  echo "BDD_ECHEC"
+fi
 echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
 '''
         rc, out = remote_bash(srv, site, body, timeout=900)
@@ -784,11 +824,26 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             return
         plugdir = next((l.split("=", 1)[1] for l in (out or "").splitlines()
                         if l.startswith("PLUGDIR=")), "")
-        n_arc = sum(1 for l in (out or "").splitlines() if l.startswith("archivé"))
-        safe_step("Archivage avant mise à jour", rc == 0 and n_arc > 0,
-                  f"{n_arc} dossier(s) archivé(s) dans {arc}" if rc == 0 else (out or "")[-300:])
+        n_arc = sum(1 for l in (out or "").splitlines()
+                    if l.startswith("archivé") and "(base)" not in l)
+        db_ok = "archivé (base)" in (out or "")
+        db_mo = next((l.split("=")[1] for l in (out or "").splitlines() if l.startswith("BDD_MO=")), "?")
+        safe_step("Archivage des fichiers", rc == 0 and n_arc > 0,
+                  f"{n_arc} élément(s) archivé(s) dans {arc}" if rc == 0 else (out or "")[-300:])
+        safe_step("Sauvegarde locale de la base", db_ok,
+                  f"{arc}/db__.sql.gz ({db_mo} Mo) — restauration : "
+                  f"gunzip -c db__.sql.gz | wp db import -" if db_ok
+                  else "le dump de la base a échoué")
         if rc != 0 or n_arc == 0:
             safe_step("Interrompu", False, "sans archive, aucun retour arrière possible")
+            SAFE["verdict"] = "annulé"
+            return
+        if with_core and not db_ok:
+            # Le cœur migre le schéma : sans dump, un retour arrière laisserait
+            # d'anciens fichiers sur une base déjà migrée. On refuse.
+            safe_step("Interrompu", False,
+                      "mise à jour du cœur sans sauvegarde de base : refusé "
+                      "(core update-db migre le schéma, la restauration de fichiers ne l'annule pas)")
             SAFE["verdict"] = "annulé"
             return
 
@@ -810,7 +865,11 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         safe_step("Page d'accueil", ok2 and not shrunk,
                   msg2 + (f" — page effondrée ({size_before} → {size_after})" if shrunk else ""))
         rcw, outw = remote_bash(srv, site, 'run option get siteurl', timeout=90)
-        safe_step("WordPress fonctionnel", rcw == 0, (outw or "")[-200:])
+        # On ne retient une régression que si WP-CLI fonctionnait AVANT.
+        wp_regression = wp_ok_before and rcw != 0
+        safe_step("WordPress fonctionnel", not wp_regression,
+                  (outw or "")[-200:] if wp_regression
+                  else ("ok" if rcw == 0 else "en erreur, mais déjà avant l'opération — non imputé"))
 
         viz_ok, viz_used = True, False
         if use_viz and viz_available(srv, site):
@@ -824,7 +883,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             safe_step("Contrôle visuel VizProof", True,
                       "indisponible sur ce site (commande wp vizproof absente) — ignoré")
 
-        sain = (rc == 0) and ok2 and not shrunk and (rcw == 0) and viz_ok
+        sain = (rc == 0) and ok2 and not shrunk and not wp_regression and viz_ok
 
         # 7. retour arrière si nécessaire
         if sain:
@@ -846,9 +905,18 @@ fi
 '''
             rcr, outr = remote_bash(srv, site, rb, timeout=900)
             n_res = sum(1 for l in (outr or "").splitlines() if l.startswith("restauré"))
-            safe_step("Retour arrière", rcr == 0 and n_res > 0,
-                      f"{n_res} élément(s) remis en version précédente"
-                      + (" — base de données NON revenue en arrière" if with_core else ""))
+            safe_step("Retour arrière (fichiers)", rcr == 0 and n_res > 0,
+                      f"{n_res} élément(s) remis en version précédente")
+            # La base n'est JAMAIS restaurée automatiquement : elle contient ce
+            # qui a été écrit pendant la mise à jour (commande, formulaire,
+            # commentaire). La rejouer ferait perdre ces données. On donne la
+            # commande exacte pour que ce soit une décision, pas un effet de bord.
+            if db_ok:
+                safe_step("Base de données : décision à prendre", True,
+                          "la base n'a PAS été restaurée (elle contient ce qui a été écrit "
+                          f"pendant l'opération). Dump disponible : {arc}/db__.sql.gz — "
+                          f"pour l'appliquer : cd {site['path']} && gunzip -c {arc}/db__.sql.gz "
+                          "| wp db import -")
             ok3, _st3, size3, msg3 = health_probe(site)
             safe_step("Contrôle après retour arrière", ok3, msg3)
             SAFE["verdict"] = "annulé (retour arrière)" if ok3 else "ÉCHEC — intervention requise"
