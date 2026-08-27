@@ -176,6 +176,15 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 /* Utilitaires d'espacement : évitent 36 style="margin-top:…" dispersés. */
 .mt0{margin-top:0}.mt1{margin-top:var(--s1)}.mt2{margin-top:var(--s2)}
 .mt3{margin-top:var(--s3)}.mt4{margin-top:var(--s4)}.mt5{margin-top:var(--s5)}
+
+/* Utilitaires : remplacent les declarations en ligne les plus repetees.
+   Les valeurs pointent vers l'echelle de jetons, pour qu'un reglage
+   d'espacement se fasse a un seul endroit. */
+.fr{float:right}.oa{overflow:auto}
+.w100{width:100%}.wrapline{white-space:pre-wrap}
+.jend{justify-content:flex-end}
+.scroll-md{max-height:440px;overflow:auto}.scroll-lg{max-height:520px;overflow:auto}
+.glbl-sep{margin:var(--s3) 0 var(--s2);display:block}
 </style>
 </head>
 <body>
@@ -203,14 +212,14 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   </nav>
 </header>
 
-<div class="collectbox section" id="collectbox" style="display:none;margin:14px 22px 0">
+<div class="collectbox section" id="collectbox" style="display:none; margin:14px 22px 0">
   <b id="cb-title">Collecte en cours…</b> <span id="cb-step" class="muted"></span>
   <div class="bar"><div id="cb-bar"></div></div>
-  <pre id="cb-lines" class="small muted" style="max-height:150px;overflow:auto;white-space:pre-wrap;margin:6px 0 0"></pre>
+  <pre id="cb-lines" class="small muted wrapline" style="max-height:150px; overflow:auto; margin:6px 0 0"></pre>
 </div>
 
 <!-- retour du flux d'autorisation WordPress (/?wpauth=…) -->
-<div class="collectbox section" id="wpauthbox" style="display:none;margin:14px 22px 0">
+<div class="collectbox section" id="wpauthbox" style="display:none; margin:14px 22px 0">
   <span id="wpauth-msg"></span>
 </div>
 
@@ -329,7 +338,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 <div class="page" id="page-sec">
   <div class="section">
     <h2>Vulnérabilités connues <span id="vln-sum" class="small"></span>
-      <button class="btn sm" id="vln-run" style="float:right">↻ Relancer l'analyse</button></h2>
+      <button class="btn sm fr" id="vln-run">↻ Relancer l'analyse</button></h2>
     <p class="hint">Croisement de l'inventaire (cœur, PHP, extensions et leurs versions exactes) avec la base ouverte
       <a href="https://www.wpvulnerability.net/" target="_blank" rel="noopener">WPVulnerability</a>, qui agrège CVE.org, Patchstack, Wordfence et WPScan.
       Le croisement se fait <b>en local</b> : aucune information sur le parc n'est transmise.</p>
@@ -352,7 +361,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   </div>
   <div class="section">
     <h2>Erreurs PHP <span id="phe-sum" class="small"></span>
-      <button class="btn sm" id="phe-run" style="float:right">↻ Relancer</button></h2>
+      <button class="btn sm fr" id="phe-run">↻ Relancer</button></h2>
     <p class="hint">Lecture des journaux que vos serveurs écrivent <b>déjà</b> — aucune modification des sites, aucun mode debug à activer.
       Sur Plesk : les journaux PHP-FPM, étiquetés par domaine ; sur les VPS : les journaux nginx.
       Les occurrences identiques sont regroupées par fichier et ligne.</p>
@@ -366,7 +375,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <div id="phe-body" class="small muted" class="mt2" style="max-height:520px; overflow:auto" >chargement…</div>
   </div>
   <div class="section">
-    <h2>Comptes administrateurs <button class="btn sm" id="baseline-all" style="float:right">Tout marquer comme vu</button></h2>
+    <h2>Comptes administrateurs <button class="btn sm fr" id="baseline-all">Tout marquer comme vu</button></h2>
     <p class="hint">Un admin non présent dans la référence est signalé <span class="new-admin">en rouge</span> — le signal n°1 d'une compromission. « Marquer comme vu » fige la liste actuelle comme référence.</p>
     <div class="wrap"><table><thead><tr><th>Site</th><th>Administrateurs</th><th></th></tr></thead><tbody id="admin-tb"></tbody></table></div>
   </div>
@@ -392,7 +401,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <div id="risky-body" class="small"></div>
   </div>
   <div class="section">
-    <h2>Intégrité du core (checksums) <button class="btn sm primary" id="verify-all" style="float:right">Vérifier tout le parc</button></h2>
+    <h2>Intégrité du core (checksums) <button class="btn sm primary fr" id="verify-all">Vérifier tout le parc</button></h2>
     <p class="hint">Lance <code>wp core verify-checksums</code>. « Vérifier tout le parc » passe sur tous les sites en tâche de fond ; sinon sélectionne des sites dans le tableau de bord puis « Vérifier checksums » dans la barre d'actions, ou lance ici site par site. <span id="verify-msg" class="small"></span></p>
     <div class="wrap"><table><thead><tr><th>Site</th><th>Dernier contrôle</th></tr></thead><tbody id="verify-tb"></tbody></table></div>
   </div>
@@ -449,7 +458,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <h2 class="mt0" id="ask-title"></h2>
   <p class="hint" id="ask-intro"></p>
   <div id="ask-body"></div>
-  <div class="actions" class="mt4" style="justify-content:flex-end" >
+  <div class="actions jend" class="mt4">
     <button class="btn" id="ask-cancel">Annuler</button>
     <button class="btn primary" id="ask-ok">Valider</button>
   </div>
@@ -458,7 +467,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <h2 class="mt0" >Rétablir une version</h2>
   <p id="rb-intro" class="hint"></p>
   <div id="rb-choices"></div>
-  <div class="actions" class="mt4" style="justify-content:flex-end" >
+  <div class="actions jend" class="mt4">
     <button class="btn" id="rb-cancel">Annuler</button>
   </div>
 </div></div>
@@ -867,16 +876,16 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       </div></div>`}
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
     ${autresRows?`<div class="dsec"><h3>Toutes les extensions
-        <button class="btn sm" id="pall-toggle" style="float:right">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
+        <button class="btn sm fr" id="pall-toggle">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
       <p class="hint" id="pall-hint">Repliée par défaut. <span class="info" title="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
       <table class="ptable" id="pall-tbl" hidden><tbody>${autresRows}</tbody></table></div>`:''}
-    <div class="dsec" id="drbsec" style="display:none"><h3>Revenir en arrière</h3>
+    <div class="dsec" style="display:none" id="drbsec"><h3>Revenir en arrière</h3>
       <p class="hint">Archives laissées par les mises à jour sûres. <span class="info" title="Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.">?</span></p>
       <div id="drblist" class="small"></div></div>
-    <div class="dsec" id="dfrozensec" style="display:none"><h3>Extensions gelées</h3>
+    <div class="dsec" style="display:none" id="dfrozensec"><h3>Extensions gelées</h3>
       <p class="hint">Jamais mises à jour par le dashboard. <span class="info" title="Ni par un bouton, ni par une action groupee, ni par la MAJ sure. Utile quand une version casse le site, ou quand un client doit valider avant.">?</span></p>
       <div id="dfrozenlist" class="small"></div></div>
-    <div class="dsec" id="dvulnsec" style="display:none"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
+    <div class="dsec" style="display:none" id="dvulnsec"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
       <div id="dvulnlist" class="small"></div></div>
     <div class="dsec"><h3>Fiche</h3>
     <div class="kv">
@@ -972,7 +981,7 @@ function askOpen(titre,intro,corps,onOk,onCancel){
 }
 function askText(titre,intro,defaut){
   return new Promise(res=>{
-    askOpen(titre,intro,`<input class="inp" id="ask-input" style="width:100%" value="${H(defaut||'')}">`,
+    askOpen(titre,intro,`<input class="inp w100" id="ask-input" value="${H(defaut||'')}">`,
       ()=>{ const v=(document.getElementById('ask-input').value||'').trim();
             if(!v) return false; res(v); },
       ()=>res(null));
@@ -984,7 +993,7 @@ function askChoice(titre,intro,options,defaut){
   return new Promise(res=>{
     if(!options.length){ res(null); return; }
     const opts=options.map(o=>`<option value="${H(o.value)}"${String(o.value)===String(defaut)?' selected':''}>${H(o.label)}</option>`).join('');
-    askOpen(titre,intro,`<select class="inp" id="ask-select" style="width:100%">${opts}</select>`,
+    askOpen(titre,intro,`<select class="inp w100" id="ask-select">${opts}</select>`,
       ()=>res(document.getElementById('ask-select').value), ()=>res(null));
   });
 }
@@ -1094,7 +1103,7 @@ function renderSafe(st){
   const lignes=(st.steps||[]).map(x=>
     `<div class="logline"><span class="pill ${x.ok?'ok':'err'}">${x.ok?'ok':'échec'}</span>
       <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
-      ${x.detail?`<div class="muted small" style="margin-left:8px;white-space:pre-wrap">${H(stripPhpNoise(x.detail))}</div>`:''}</div>`).join('');
+      ${x.detail?`<div class="muted small wrapline" style="margin-left:8px">${H(stripPhpNoise(x.detail))}</div>`:''}</div>`).join('');
   box.innerHTML=`<div style="margin-bottom:6px"><b>🛡 Mise à jour sûre</b> ${st.running?'<span class="pill mut">en cours…</span>':safeVerdictPill(st.verdict)}</div>${lignes}`;
   box.scrollTop=box.scrollHeight;
 }
@@ -1330,7 +1339,7 @@ async function loadMgmt(){
     b.textContent='⏳…'; await api('/api/mgmt/kuma/delete',{monitor_id:+b.dataset.del}); setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
   // docroots
   const dl=document.getElementById('doc-list');
-  dl.innerHTML=(MGMT.extra_docroots||[]).map((d,i)=>`<div class="logline"><b>${H(d.server)}</b> · <code>${H(d.path)}</code> <button class="btn sm danger" data-rmdoc="${i}" style="float:right">retirer</button></div>`).join('')||'<span class="muted small">aucun</span>';
+  dl.innerHTML=(MGMT.extra_docroots||[]).map((d,i)=>`<div class="logline"><b>${H(d.server)}</b> · <code>${H(d.path)}</code> <button class="btn sm danger fr" data-rmdoc="${i}">retirer</button></div>`).join('')||'<span class="muted small">aucun</span>';
   document.getElementById('doc-srv').innerHTML=MGMT.servers.map(s=>`<option>${H(s.name)}</option>`).join('');
   document.querySelectorAll('[data-rmdoc]').forEach(b=>b.onclick=async()=>{ const docs=MGMT.extra_docroots.slice(); docs.splice(+b.dataset.rmdoc,1); await api('/api/mgmt/docroots',{docroots:docs}); loadMgmt(); });
   document.getElementById('srv-json').value=JSON.stringify(MGMT.servers,null,1); }
@@ -1799,7 +1808,7 @@ function sparkline(points, couleur, h=64){
   const y=v=>h-pad-((v-mn)/amp)*(h-2*pad);
   const d=points.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
   const aire=`${d}L${x(points.length-1).toFixed(1)},${h-pad}L${x(0).toFixed(1)},${h-pad}Z`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block">
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px; display:block" class="w100">
     <path d="${aire}" fill="${couleur}" opacity=".12"/>
     <path d="${d}" fill="none" stroke="${couleur}" stroke-width="1.6" stroke-linejoin="round"/>
     <circle cx="${x(points.length-1).toFixed(1)}" cy="${y(points[points.length-1]).toFixed(1)}" r="2.6" fill="${couleur}"/>
@@ -1853,7 +1862,7 @@ function renderChanges(){
   if(!rows.length){ body.innerHTML='<span class="muted">aucun changement ne correspond au filtre.</span>'; return; }
   body.innerHTML=rows.map(c=>{
     const warn=c.severity==='warn';
-    return `<div class="logline"><span class="pill ${warn?'err':'mut'}">${H(c.label)}</span> <b>${H(c.domain)}</b> <span class="muted">${H(c.detail)}</span> <span class="muted small" title="${H(absTime(c.ts))}" style="float:right">${H(relTime(c.ts))}</span></div>`;
+    return `<div class="logline"><span class="pill ${warn?'err':'mut'}">${H(c.label)}</span> <b>${H(c.domain)}</b> <span class="muted">${H(c.detail)}</span> <span class="muted small fr" title="${H(absTime(c.ts))}">${H(relTime(c.ts))}</span></div>`;
   }).join('');
 }
 async function loadSec(){ const S=allSites();

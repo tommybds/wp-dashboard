@@ -23,7 +23,11 @@ LOG = os.path.join(DATA, "actions.log")
 KUMA_DB = CONFIG["kuma_db"]          # chemin de la base Kuma DANS le conteneur
 KUMA_CONTAINER = CONFIG["kuma_container"]
 SLUG = CONFIG["kuma_slug"]           # slug de la status page Kuma du parc
-SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]{0,80}$")
+# Le « / » reste autorisé : un WordPress peut vivre en sous-répertoire
+# (jupiter.com/zavus-calculator). En revanche « .. » est interdit partout,
+# pour que la validation ne repose plus uniquement sur la liste blanche
+# implicite de find_site().
+SLUG_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.\-/]{0,80}$")
 SERVER_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 FLEET_PATH = os.path.join(DATA, "fleet.json")
 # ---- vizproof (produit public : lecture seule, scan visuel et statut) ----
