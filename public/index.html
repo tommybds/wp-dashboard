@@ -38,6 +38,22 @@ a{color:var(--accent)}
 .brand{display:flex;flex-direction:column;gap:1px;min-width:0}
 .brand h1{margin:0;font-size:var(--f-lg);letter-spacing:-.01em}
 .brand .meta{font-size:var(--f-sm)}
+/* Les actions d'en-tete forment UN bloc : sans ce groupe, le flex-wrap les
+   renvoyait a la ligne une par une et laissait le bouton de deconnexion
+   orphelin sous le titre. */
+.topactions{display:flex;align-items:center;gap:10px;flex-wrap:nowrap}
+@media(max-width:820px){
+  .top{gap:8px;padding-left:14px;padding-right:14px}
+  .topactions{width:100%;justify-content:flex-end;order:3}
+  .tabs{padding:0 14px;overflow-x:auto;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .filters{padding-left:14px;padding-right:14px}
+}
+@media(max-width:560px){
+  .brand h1{font-size:var(--f-md)}
+  .brand .meta{font-size:var(--f-xs)}
+  #collectbtn{flex:1}
+}
 .btngroup{display:flex;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
 .btngroup .btn{border:none;border-radius:0;box-shadow:none;border-right:1px solid var(--line)}
 .btngroup .btn:last-child{border-right:none}
@@ -237,13 +253,15 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <span class="meta" id="meta">chargement…</span>
     </div>
     <span class="spacer"></span>
-    <button class="btn primary" id="collectbtn" title="Relancer une collecte complète du parc">↻ Collecter</button>
-    <div class="btngroup">
+    <div class="topactions">
+      <button class="btn primary" id="collectbtn" title="Relancer une collecte complète du parc">↻ Collecter</button>
+      <div class="btngroup">
       <button class="btn icon" id="logbtn" title="Journal des actions" aria-label="Journal des actions">🕘</button>
       <button class="btn icon" id="themebtn" title="Thème : automatique" aria-label="Changer de thème">🌓</button>
       <button class="btn icon" id="setbtn" title="Réglages (clés SSH, alertes)" aria-label="Réglages">⚙️</button>
+      </div>
+      <button class="btn icon danger-hover" id="logoutbtn" title="Se déconnecter" aria-label="Se déconnecter">⏻</button>
     </div>
-    <button class="btn icon danger-hover" id="logoutbtn" title="Se déconnecter" aria-label="Se déconnecter">⏻</button>
   </div>
   <nav class="tabs">
     <button class="tab active" data-tab="dash">Tableau de bord</button>
