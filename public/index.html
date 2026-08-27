@@ -93,7 +93,12 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .pill{display:inline-block;border-radius:var(--r-pill);padding:2px 9px;font-size:var(--f-sm);font-weight:600}
 .pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.warn{background:var(--warn-bg);color:var(--warn)}
 .pill.err{background:var(--err-bg);color:var(--err)} .pill.mut{background:var(--chip);color:var(--muted);font-weight:500}
-.drawer-back,.modal{position:fixed;inset:0;background:rgba(10,15,20,.45);z-index:8;display:none}
+.drawer-back{position:fixed;inset:0;background:rgba(10,15,20,.45);z-index:8;display:none}
+/* Les modales passent AU-DESSUS du tiroir : elles s'ouvrent souvent depuis
+   lui (rétablir une version, choisir une option) et se retrouvaient cachées
+   derrière puisqu'elles partageaient son z-index. La bulle d'info (30) reste
+   encore au-dessus, elle peut s'ouvrir depuis une modale. */
+.modal{position:fixed;inset:0;background:rgba(10,15,20,.45);z-index:20;display:none}
 .drawer-back.open{display:block}
 .drawer{position:fixed;top:0;right:-580px;width:560px;max-width:96vw;height:100vh;background:var(--card);border-left:1px solid var(--line);z-index:9;transition:right .18s ease;display:flex;flex-direction:column}
 .drawer.open{right:0}
