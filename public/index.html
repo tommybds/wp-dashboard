@@ -726,8 +726,9 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
          distantes (mises à jour, backup, checksums, caches) ne sont pas disponibles ici. À faire depuis wp-admin,
          ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>`
       : `<div class="actions" style="margin-top:10px">
+      ${s.plugins_updates?`<button class="btn primary sm" id="safeup" title="Archive chaque extension, met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre (${s.plugins_updates})</button>`:''}
       ${s.core_update?'<button class="btn primary sm" data-act="core_update">MAJ core → '+H(s.core_update)+'</button>':''}
-      ${s.plugins_updates?'<button class="btn primary sm" data-act="plugins_update_all">MAJ '+s.plugins_updates+' plugins</button>':''}
+      ${s.plugins_updates?'<button class="btn sm" data-act="plugins_update_all">MAJ '+s.plugins_updates+' plugins (directe)</button>':''}
       ${s.themes_updates?'<button class="btn sm" data-act="themes_update_all">MAJ thèmes</button>':''}
       ${(vizOf(s)||vizInfo(s))?'':'<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'}
       ${vizConnected(s)?'<button class="btn sm" data-act="viz_scan">Scan visuel</button> <button class="btn sm" data-act="viz_baseline">Capturer une baseline</button>':''}
@@ -754,9 +755,41 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     <h3>Historique</h3>
     <div id="timeline"><span class="muted small">chargement…</span></div>`;
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
+  const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
   document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
   loadTimeline(s.srv,s.domain);
   if(s.via==='rest') loadWpCred(s.srv,s.domain); }
+
+/* ---- mise à jour sûre : archive → MAJ → contrôle → retour arrière si cassé ---- */
+function safeVerdictPill(v){
+  const ok=v==='réussi', neutre=(v==='rien à faire');
+  const cls=ok?'ok':neutre?'mut':(v||'').startsWith('ÉCHEC')?'err':'warn';
+  return `<span class="pill ${cls}">${H(v||'…')}</span>`;
+}
+function renderSafe(st){
+  const box=document.getElementById('console'); if(!box) return;
+  const lignes=(st.steps||[]).map(x=>
+    `<div class="logline"><span class="pill ${x.ok?'ok':'err'}">${x.ok?'ok':'échec'}</span>
+      <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
+      ${x.detail?`<div class="muted small" style="margin-left:8px;white-space:pre-wrap">${H(x.detail)}</div>`:''}</div>`).join('');
+  box.innerHTML=`<div style="margin-bottom:6px"><b>🛡 Mise à jour sûre</b> ${st.running?'<span class="pill mut">en cours…</span>':safeVerdictPill(st.verdict)}</div>${lignes}`;
+  box.scrollTop=box.scrollHeight;
+}
+async function startSafeUpdate(srv,dom,btn){
+  if(!confirm(`Mise à jour sûre de ${dom} ?\n\nDéroulé : sauvegarde UpdraftPlus → archivage de chaque extension → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.\n\nL'opération peut durer plusieurs minutes.`)) return;
+  btn.disabled=true; const lbl=btn.textContent; btn.textContent='en cours…';
+  try{
+    const r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true});
+    if(r.error){ alert(r.error); btn.disabled=false; btn.textContent=lbl; return; }
+  }catch(e){ alert('lancement impossible : '+e); btn.disabled=false; btn.textContent=lbl; return; }
+  const poll=setInterval(async()=>{
+    const st=await api('/api/actions/safe_update_status').catch(()=>null);
+    if(!st) return;
+    renderSafe(st);
+    if(!st.running){ clearInterval(poll); btn.disabled=false; btn.textContent=lbl;
+      loadFleet().then(()=>{}).catch(()=>{}); }
+  },3000);
+}
 
 /* historique du site (non bloquant — le tiroir s'affiche sans attendre) */
 let TLSEQ=0;

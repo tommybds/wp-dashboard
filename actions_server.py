@@ -595,6 +595,196 @@ def logged_action(server, domain, action, arg, source="manuel"):
     return rc, out
 
 
+# --------------------------------------------------------------------------- #
+#  Mise à jour sûre : archive → met à jour → contrôle → restaure si cassé      #
+#                                                                             #
+#  Le retour arrière remet en place le DOSSIER de l'extension archivé juste    #
+#  avant, et non une restauration complète UpdraftPlus : restaurer tout le     #
+#  site ferait perdre ce qui a été écrit depuis la sauvegarde (commandes,      #
+#  entrées de formulaire, commentaires) pour un simple plantage d'extension.   #
+#  L'archive fonctionne en outre pour les extensions premium, que              #
+#  `wp plugin install --version=` ne sait pas retélécharger.                   #
+#                                                                             #
+#  Le contrôle de santé s'appuie sur des signaux toujours disponibles (page    #
+#  d'accueil servie, WordPress fonctionnel). Le contrôle visuel VizProof n'est #
+#  utilisé QUE là où la commande `wp vizproof` existe réellement.              #
+# --------------------------------------------------------------------------- #
+SAFE = {"running": False, "domain": "", "steps": [], "verdict": "", "started": None,
+        "finished": None}
+SAFE_LOCK = threading.Lock()
+SAFE_ROLLBACK_DIR = "/tmp/.wpdash-rollback"
+BODY_MIN_RATIO = 0.5   # une page qui perd plus de la moitié de son poids = suspecte
+
+
+def safe_step(label, ok, detail=""):
+    SAFE["steps"].append({"label": label, "ok": ok, "detail": str(detail or "")[:600],
+                          "ts": datetime.datetime.now().strftime("%H:%M:%S")})
+
+
+def site_home_url(site):
+    return (site.get("siteurl") or ("https://" + site.get("domain", ""))).rstrip("/") + "/"
+
+
+def health_probe(site):
+    """(ok, statut, taille, message) — la page d'accueil est-elle servie normalement ?"""
+    st, body, _final, err = http_get(site_home_url(site), timeout=25,
+                                     headers={"Accept": "text/html"})
+    if err:
+        return False, None, 0, f"injoignable : {err}"
+    size = len(body or b"")
+    return (st == 200), st, size, f"HTTP {st}, {size} octets"
+
+
+def remote_bash(srv, site, body, timeout=300):
+    """Exécute du bash arbitraire côté site (helpers `asuser`/`run` disponibles)."""
+    script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
+                                    owner=sq(site["owner"] or "root"),
+                                    nosu="1" if srv.get("no_su") else "0",
+                                    timeout=timeout, body=body)
+    return run_remote_script(srv, script, timeout)
+
+
+def viz_available(srv, site):
+    rc, _ = remote_bash(srv, site, 'asuser "$base wp vizproof --help $extra --no-color" >/dev/null 2>&1'
+                                  ' && echo oui || exit 1', timeout=60)
+    return rc == 0
+
+
+def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True):
+    """Orchestration complète. `slugs` None = toutes les extensions à mettre à jour."""
+    SAFE.update({"running": True, "domain": domain, "steps": [], "verdict": "",
+                 "started": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 "finished": None})
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    arc = f"{SAFE_ROLLBACK_DIR}/{re.sub(r'[^a-zA-Z0-9._-]', '_', domain)}-{stamp}"
+    try:
+        srv, site = find_site(server_name, domain)
+        if not srv or not site:
+            safe_step("Site introuvable", False,
+                      "site géré sans SSH : la mise à jour sûre exige un accès SSH")
+            SAFE["verdict"] = "impossible"
+            return
+
+        # 1. état de départ
+        ok, st, size_before, msg = health_probe(site)
+        safe_step("Contrôle avant mise à jour", ok, msg)
+        if not ok:
+            safe_step("Interrompu", False,
+                      "le site est déjà en erreur avant toute intervention — "
+                      "on ne met pas à jour un site cassé")
+            SAFE["verdict"] = "annulé"
+            return
+
+        # 2. liste réelle des extensions à mettre à jour
+        rc, out = remote_bash(srv, site,
+                              'run plugin list --update=available --field=name --format=csv', timeout=120)
+        pending = [l.strip() for l in (out or "").splitlines()
+                   if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
+        if slugs:
+            pending = [p for p in pending if p in slugs]
+        if not pending:
+            safe_step("Rien à mettre à jour", True, "aucune extension en attente")
+            SAFE["verdict"] = "rien à faire"
+            return
+        safe_step(f"{len(pending)} extension(s) à mettre à jour", True, ", ".join(pending[:20]))
+
+        # 3. sauvegarde UpdraftPlus (filet, pas le mécanisme de retour arrière)
+        if do_backup:
+            rc, out = logged_action(server_name, domain, "updraft_backup", None, source="maj-sure")
+            safe_step("Sauvegarde UpdraftPlus", rc == 0,
+                      (out or "")[-300:] if rc else "sauvegarde lancée")
+
+        # 4. archivage des dossiers concernés
+        lst = " ".join(sq(p) for p in pending)
+        body = f'''
+set -o pipefail
+PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
+[ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
+mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
+echo "PLUGDIR=$PLUGDIR"
+for s in {lst}; do
+  if [ -d "$PLUGDIR/$s" ]; then
+    tar czf {sq(arc)}/"$s".tgz -C "$PLUGDIR" "$s" || exit 82
+    echo "archivé $s"
+  else
+    echo "absent $s"
+  fi
+done
+'''
+        rc, out = remote_bash(srv, site, body, timeout=300)
+        plugdir = next((l.split("=", 1)[1] for l in (out or "").splitlines()
+                        if l.startswith("PLUGDIR=")), "")
+        n_arc = sum(1 for l in (out or "").splitlines() if l.startswith("archivé"))
+        safe_step("Archivage avant mise à jour", rc == 0 and n_arc > 0,
+                  f"{n_arc} dossier(s) archivé(s) dans {arc}" if rc == 0 else (out or "")[-300:])
+        if rc != 0 or n_arc == 0:
+            safe_step("Interrompu", False, "sans archive, aucun retour arrière possible")
+            SAFE["verdict"] = "annulé"
+            return
+
+        # 5. mise à jour
+        rc, out = remote_bash(srv, site, f'run plugin update {lst}', timeout=900)
+        safe_step("Mise à jour", rc == 0, (out or "")[-500:])
+
+        # 6. contrôles après
+        ok2, st2, size_after, msg2 = health_probe(site)
+        shrunk = bool(size_before and size_after < size_before * BODY_MIN_RATIO)
+        safe_step("Page d'accueil", ok2 and not shrunk,
+                  msg2 + (f" — page effondrée ({size_before} → {size_after})" if shrunk else ""))
+        rcw, outw = remote_bash(srv, site, 'run option get siteurl', timeout=90)
+        safe_step("WordPress fonctionnel", rcw == 0, (outw or "")[-200:])
+
+        viz_ok, viz_used = True, False
+        if use_viz and viz_available(srv, site):
+            viz_used = True
+            rcv, outv = remote_bash(srv, site,
+                                    'run vizproof scan --wait --format=json', timeout=600)
+            viz_ok = (rcv == 0)
+            safe_step("Contrôle visuel VizProof", viz_ok,
+                      "anomalies visuelles détectées" if rcv == VIZ_ANOMALY_RC else (outv or "")[-300:])
+        elif use_viz:
+            safe_step("Contrôle visuel VizProof", True,
+                      "indisponible sur ce site (commande wp vizproof absente) — ignoré")
+
+        sain = (rc == 0) and ok2 and not shrunk and (rcw == 0) and viz_ok
+
+        # 7. retour arrière si nécessaire
+        if sain:
+            remote_bash(srv, site, f'rm -rf {sq(arc)}', timeout=60)
+            safe_step("Terminé", True, "mise à jour conservée, archives supprimées")
+            SAFE["verdict"] = "réussi"
+        else:
+            rb = f'''
+PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
+for f in {sq(arc)}/*.tgz; do
+  [ -f "$f" ] || continue
+  s=$(basename "$f" .tgz)
+  rm -rf "$PLUGDIR/$s" && tar xzf "$f" -C "$PLUGDIR" && echo "restauré $s" || echo "ECHEC $s"
+done
+'''
+            rcr, outr = remote_bash(srv, site, rb, timeout=600)
+            n_res = sum(1 for l in (outr or "").splitlines() if l.startswith("restauré"))
+            safe_step("Retour arrière", rcr == 0 and n_res > 0,
+                      f"{n_res} extension(s) remise(s) en version précédente")
+            ok3, _st3, size3, msg3 = health_probe(site)
+            safe_step("Contrôle après retour arrière", ok3, msg3)
+            SAFE["verdict"] = "annulé (retour arrière)" if ok3 else "ÉCHEC — intervention requise"
+            alert(f"safeupdate:{domain}", None,
+                  f"⛔ <b>{esc_html(domain)}</b> — mise à jour annulée automatiquement "
+                  f"({n_res} extension(s) remise(s) en arrière). Verdict : {esc_html(SAFE['verdict'])}")
+        append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "maj-sure", "server": server_name, "domain": domain,
+                    "action": "safe_update", "arg": ",".join(pending),
+                    "rc": 0 if sain else 2, "duration_s": 0,
+                    "output_tail": f"verdict={SAFE['verdict']}"})
+    except Exception as e:
+        safe_step("Erreur interne", False, f"{type(e).__name__}: {e}")
+        SAFE["verdict"] = "erreur"
+    finally:
+        SAFE["running"] = False
+        SAFE["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ---------- collecte complète ----------
 COLLECT = {"running": False, "lines": [], "rc": None, "started": None, "done_servers": 0, "total_servers": 0}
 COLLECT_LOCK = threading.Lock()
@@ -2410,6 +2600,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
+        elif p == "/api/actions/safe_update_status":
+            self._send(200, dict(SAFE))
         elif p == "/api/sec/vulns":
             # Résultat du dernier croisement local (vulns.py --scan) + état d'avancement.
             res = load_json(VULNS_FOUND_PATH, {"sites": [], "totals": {},
@@ -2737,6 +2929,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "aucun site visible"})
             return self._send(200, {"ok": True, "job": start_bulk(tasks, "continue", False),
                                     "total": len(tasks)})
+
+        if p == "/api/actions/safe_update":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            with SAFE_LOCK:
+                if SAFE["running"]:
+                    return self._send(409, {"error": f"mise à jour sûre déjà en cours sur {SAFE['domain']}"})
+                SAFE["running"] = True   # réservation immédiate : évite deux lancements simultanés
+            slugs = body.get("slugs") or None
+            if slugs is not None:
+                slugs = [s for s in slugs if isinstance(s, str) and SLUG_RE.match(s)]
+            threading.Thread(target=safe_update_run,
+                             args=(server, domain, slugs, bool(body.get("backup", True)),
+                                   bool(body.get("viz", True))), daemon=True).start()
+            return self._send(200, {"ok": True, "running": True})
 
         if p == "/api/sec/vulns/run":
             # Rafraîchit la base publique puis recroise, en tâche de fond :
