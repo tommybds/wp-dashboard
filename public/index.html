@@ -1947,6 +1947,14 @@ async function loadHist(){
       <div class="chartaxis"><span>${H((hist[0].ts||'').slice(5,16))}</span>
         <span>${H((der.ts||'').slice(5,16))}</span></div></div>`;
   }).join('')+'</div>';
+  // La section « Changements » vit dans cet onglet depuis qu'elle a quitté
+  // Sécurité : son chargement doit suivre, sinon elle reste sur « chargement… ».
+  try{ const ch=await api('/api/mgmt/changes?limit=800'); CHANGES=ch.changes||[];
+    const su=ch.summary||{}; const sum=document.getElementById('chg-sum');
+    if(su.day_total){ sum.innerHTML=`<span class="pill ${su.day_warn?'err':'mut'}">${su.day_total} sur 24 h · ${su.day_sites} site${su.day_sites>1?'s':''}${su.day_warn?` · ${su.day_warn} à surveiller ⚠`:''}</span>`; }
+    else sum.innerHTML='<span class="pill ok">rien sur 24 h</span>';
+    renderChanges();
+  }catch(e){ document.getElementById('chg-body').textContent='erreur de chargement : '+e; }
 }
 
 let CHANGES=[];
@@ -1968,12 +1976,6 @@ function renderChanges(){
 async function loadSec(){ const S=allSites();
   loadVulns();   // indépendant : ne bloque pas le reste du volet
   loadPhe();
-  try{ const ch=await api('/api/mgmt/changes?limit=800'); CHANGES=ch.changes||[];
-    const su=ch.summary||{}; const sum=document.getElementById('chg-sum');
-    if(su.day_total){ sum.innerHTML=`<span class="pill ${su.day_warn?'err':'mut'}">${su.day_total} sur 24 h · ${su.day_sites} site${su.day_sites>1?'s':''}${su.day_warn?` · ${su.day_warn} à surveiller ⚠`:''}</span>`; }
-    else sum.innerHTML='<span class="pill ok">rien sur 24 h</span>';
-    renderChanges();
-  }catch(e){ document.getElementById('chg-body').textContent='erreur de chargement : '+e; }
   const bl=await api('/api/sec/baseline'); BASELINE=bl.baseline||{};
   document.getElementById('admin-tb').innerHTML=S.filter(s=>s.admins!==null).map(s=>{ const base=BASELINE[s.domain]?.logins;
     const cells=(s.admins||[]).map(a=>{ const isNew=base&&!base.includes(a.login); return `<span class="tag ${isNew?'new-admin':''}" title="${H(a.email||'')} · inscrit ${H(a.registered||'')}">${isNew?'⚠ ':''}${H(a.login)}</span>`; }).join(' ');
