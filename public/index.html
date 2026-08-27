@@ -119,7 +119,11 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .chart{background:var(--chip);border-radius:var(--r-md);padding:10px 12px 8px}
 .charttop{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--s1)}
 .chartaxis{display:flex;justify-content:space-between;font-size:var(--f-xs);color:var(--muted);margin-top:var(--s1)}
-.spark{width:100%;height:90px;display:block;overflow:visible}
+.chartbody{display:flex;gap:var(--s2);align-items:stretch}
+/* Les graduations vivent en HTML : dans le SVG etire, un <text> serait deforme. */
+.yaxis{display:flex;flex-direction:column;justify-content:space-between;text-align:right;
+  font-size:var(--f-xs);color:var(--muted);min-width:24px;line-height:1;flex:0 0 auto}
+.spark{flex:1;min-width:0;height:90px;display:block;overflow:visible}
 @media(max-width:760px){#hist-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:420px){.dstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .agroup{margin-top:12px}
@@ -1867,6 +1871,11 @@ document.getElementById('phe-run').onclick=async(e)=>{
    ellipse, car vector-effect ne corrige que l'epaisseur du trait, pas la
    geometrie. C'est donc un segment de longueur nulle a bout rond, qui reste
    parfaitement circulaire quelle que soit la largeur. */
+/* Courbe SVG : pas de bibliotheque, 60 points suffisent.
+   Deux contraintes liees a `preserveAspectRatio="none"` (etirement en largeur) :
+   - le trait s'ecraserait sans `vector-effect="non-scaling-stroke"` ;
+   - toute FORME ou TEXTE place dans le SVG serait deforme. Le point final est
+     donc un segment a bout rond, et les ordonnees sont en HTML a cote. */
 function sparkline(points, couleur, h=90){
   if(points.length<2) return '<div class="muted small">pas assez de relevés</div>';
   const w=400, pad=6;
@@ -1875,19 +1884,27 @@ function sparkline(points, couleur, h=90){
   const y=v=>h-pad-((v-mn)/amp)*(h-2*pad);
   const d=points.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
   const aire=`${d}L${x(points.length-1).toFixed(1)},${h-pad}L${x(0).toFixed(1)},${h-pad}Z`;
-  const der=points[points.length-1];
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark" role="img"
+  const der=points[points.length-1], mid=(mn+mx)/2;
+  const ligne=(v,tirets)=>`<line x1="0" y1="${y(v).toFixed(1)}" x2="${w}" y2="${y(v).toFixed(1)}"
+      stroke="var(--line)" stroke-width="1" ${tirets?'stroke-dasharray="3 4"':''}
+      vector-effect="non-scaling-stroke"/>`;
+  const svg=`<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark" role="img"
       aria-label="évolution de ${mn} à ${mx}">
-    <line x1="0" y1="${(h-pad).toFixed(1)}" x2="${w}" y2="${(h-pad).toFixed(1)}"
-      stroke="var(--line)" stroke-width="1" vector-effect="non-scaling-stroke"/>
-    <line x1="0" y1="${pad}" x2="${w}" y2="${pad}"
-      stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
+    ${ligne(mn,false)}${ligne(mid,true)}${ligne(mx,true)}
     <path d="${aire}" fill="${couleur}" opacity=".13"/>
     <path d="${d}" fill="none" stroke="${couleur}" stroke-width="2" stroke-linejoin="round"
       stroke-linecap="round" vector-effect="non-scaling-stroke"/>
     <path d="M${x(points.length-1).toFixed(1)},${y(der).toFixed(1)}L${x(points.length-1).toFixed(1)},${y(der).toFixed(1)}"
       stroke="${couleur}" stroke-width="7" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
   </svg>`;
+  // Graduations en HTML : alignees sur les lignes de reference grace au meme
+  // rembourrage vertical que le SVG (pad), qui est ici a l'echelle 1:1.
+  // Ce sont des décomptes : une graduation à « 182,5 extensions » n'a pas de sens.
+  const entiers=Number.isInteger(mn)&&Number.isInteger(mx);
+  const fmt=v=>entiers?Math.round(v):(Number.isInteger(v)?v:v.toFixed(1));
+  const axe=`<div class="yaxis" style="padding:${pad}px 0">
+    <span>${fmt(mx)}</span><span>${fmt(mid)}</span><span>${fmt(mn)}</span></div>`;
+  return `<div class="chartbody">${axe}${svg}</div>`;
 }
 
 function deltaPill(cur, ref, inverse){
@@ -1925,7 +1942,7 @@ async function loadHist(){
     const mn=Math.min(...pts), mx=Math.max(...pts);
     return `<div class="chart">
       <div class="charttop"><b>${H(m.lbl)}</b>
-        <span class="muted small">${mn} – ${mx}</span></div>
+        <span class="muted small">actuel : <b>${pts[pts.length-1]}</b></span></div>
       ${sparkline(pts, m.c)}
       <div class="chartaxis"><span>${H((hist[0].ts||'').slice(5,16))}</span>
         <span>${H((der.ts||'').slice(5,16))}</span></div></div>`;
