@@ -94,6 +94,38 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dhead h2{margin:0;font-size:17px} .dbody{padding:16px 20px;overflow-y:auto;flex:1}
 .dbody h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
 .kv{display:grid;grid-template-columns:150px 1fr;gap:4px 10px;font-size:13.5px} .kv .k{color:var(--muted)}
+/* --- tiroir : bandeau de synthèse, groupes d'actions, sections --- */
+/* 6 indicateurs sur 2 rangées de 3 : jamais de tuile orpheline en fin de ligne */
+.dstats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:2px 0 14px}
+.dstat{background:var(--chip);border-radius:10px;padding:8px 10px;min-width:0}
+.dstat .lbl,.dstat .val,.dstat .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dstat .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.dstat .val{font-size:15px;font-weight:650;margin-top:2px;line-height:1.25}
+.dstat.ok .val{color:var(--ok)} .dstat.warn .val{color:var(--warn)} .dstat.err .val{color:var(--err)}
+.dstat .sub{font-size:11px;color:var(--muted);margin-top:1px}
+@media(max-width:420px){.dstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.agroup{margin-top:12px}
+.agroup>.glbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
+.dsec{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}
+.dsec>h3{margin:0 0 8px}
+.dhead-links a{font-size:12px;margin-left:10px;white-space:nowrap}
+.ptable td{padding:5px 4px;border-bottom:1px solid var(--line)}
+.ptable tr:last-child td{border-bottom:0}
+.vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
+/* --- journal : une pastille d'icone, un titre, un detail lisible --- */
+.tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
+.tlrow:last-child{border-bottom:0}
+.tlic{flex:0 0 22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+      font-size:11px;background:var(--chip);color:var(--muted);margin-top:1px}
+.tlic.ok{background:var(--ok-bg);color:var(--ok)} .tlic.warn{background:var(--warn-bg);color:var(--warn)}
+.tlic.err{background:var(--err-bg);color:var(--err)}
+.tlmain{min-width:0;flex:1}
+.tltop{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.tlwhen{margin-left:auto;white-space:nowrap}
+.tlsub{margin-top:1px;word-break:break-word}
+.tldet{background:var(--chip);border-radius:6px;padding:6px 8px;margin:4px 0 0;
+       font:11.5px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+       max-height:130px;overflow:auto}
 .actions{display:flex;flex-wrap:wrap;gap:8px} .ptable{width:100%;font-size:13px}
 .console{background:#0d1117;color:#c9d1d9;border-radius:8px;padding:10px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
 .console b.ok{color:#4ade80} .console b.warn{color:#fbbf24} .console b.err{color:#f87171}
@@ -700,65 +732,114 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   const plugRows=(s.plugins_list||[]).filter(p=>p.update==='available').map(p=>
     `<tr><td>${H(p.name)}</td><td>${H(p.version)} → ${H(p.to||'?')}</td><td><button class="btn sm" data-act="plugin_update" data-arg="${H(p.name)}">MAJ</button></td></tr>`).join('');
   const adm=(s.admins||[]).map(a=>`<span class="tag">${H(a.login)}</span>`).join(' ')||'<span class="muted">—</span>';
+  const auto=(()=>{ const n=s.plugins_auto_update, t=s.plugins_total;
+    if(n==null||t==null) return {c:'',v:'?',s:'auto-MAJ'};
+    if(t===0) return {c:'',v:'—',s:'aucune ext.'};
+    if(n===0) return {c:'warn',v:'0/'+t,s:'auto-MAJ off'};
+    if(n>=t)  return {c:'ok',v:n+'/'+t,s:'auto-MAJ'};
+    return {c:'warn',v:n+'/'+t,s:'auto-MAJ'}; })();
+  const bk=(age===null)?{c:'warn',v:'jamais',s:'sauvegarde'}
+    :(age>=48?{c:'warn',v:(age/24).toFixed(1)+' j',s:'sauvegarde'}:{c:'ok',v:Math.round(age)+' h',s:'sauvegarde'});
+  const phpOld=s.php_version&&parseFloat(s.php_version)<8.1;
   document.getElementById('dbody').innerHTML=`
+    <div class="dstats">
+      <div class="dstat ${s.core_update?'warn':'ok'}"><div class="lbl">WordPress</div>
+        <div class="val">${H(s.core_version||'?')}</div>
+        <div class="sub">${s.core_update?'→ '+H(s.core_update):'à jour'}</div></div>
+      <div class="dstat ${s.plugins_updates?'warn':'ok'}"><div class="lbl">Extensions</div>
+        <div class="val">${s.plugins_updates||0}</div>
+        <div class="sub">sur ${s.plugins_total??'?'} installées</div></div>
+      <div class="dstat ${phpOld?'warn':''}"><div class="lbl">PHP</div>
+        <div class="val">${H(s.php_version||'?')}</div>
+        <div class="sub">${phpOld?'obsolète':'à jour'}</div></div>
+      <div class="dstat ${bk.c}"><div class="lbl">Sauvegarde</div>
+        <div class="val">${H(bk.v)}</div><div class="sub">${H(ud?(ud.service||'locale'):'aucune')}</div></div>
+      <div class="dstat ${auto.c}"><div class="lbl">Auto-MAJ</div>
+        <div class="val">${H(auto.v)}</div><div class="sub">extensions</div></div>
+      <div class="dstat" id="dvuln"><div class="lbl">Vulnérab.</div>
+        <div class="val muted">…</div><div class="sub">analyse…</div></div>
+    </div>
+    ${s.via==='rest'
+      ? `<div class="agroup"><span class="glbl">Actions</span><div class="actions" id="rest-actions">
+           <span id="rest-vizslot"></span>
+           <button class="btn sm" data-act="rescan">↻ Re-scan</button></div></div>
+         <p class="hint" id="rest-note" style="margin:8px 0 0">Site géré <b>sans SSH</b> : l'agent est en lecture seule, les actions
+         distantes (mises à jour, sauvegarde, checksums, caches) ne sont pas disponibles ici. À faire depuis wp-admin,
+         ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>`
+      : `${(s.plugins_updates||s.core_update)?`<div class="agroup"><span class="glbl">Mettre à jour</span><div class="actions">
+      <button class="btn primary sm" id="safeup" data-core="${s.core_update?1:0}" data-n="${s.plugins_updates||0}" title="Archive ce qui va changer (fichiers + base), met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre${s.core_update?' — cœur'+(s.plugins_updates?' + '+s.plugins_updates+' ext.':''):' — '+s.plugins_updates+' ext.'}</button>
+      ${s.core_update?'<button class="btn sm" data-act="core_update">Cœur seul (sans filet)</button>':''}
+      ${s.plugins_updates?'<button class="btn sm" data-act="plugins_update_all">Extensions seules (sans filet)</button>':''}
+      ${s.themes_updates?'<button class="btn sm" data-act="themes_update_all">Thèmes</button>':''}
+      </div></div>`:''}
+      <div class="agroup"><span class="glbl">Vérifier</span><div class="actions">
+      <button class="btn sm" data-act="verify_checksums">Intégrité du cœur</button>
+      ${vizConnected(s)?'<button class="btn sm" data-act="viz_scan">Scan visuel</button><button class="btn sm" data-act="viz_baseline">Capturer une baseline</button>':''}
+      ${(vizOf(s)||vizInfo(s))?'':'<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'}
+      <button class="btn sm" data-act="rescan">↻ Re-scan</button>
+      </div></div>
+      <div class="agroup"><span class="glbl">Maintenance</span><div class="actions">
+      <button class="btn sm" data-act="cache_flush">Vider les caches</button>
+      ${(s.plugins_total&&(s.plugins_auto_update??0)<s.plugins_total)
+        ?`<button class="btn sm" data-act="autoupdate_on">Activer les auto-MAJ (${s.plugins_total})</button>`
+        :(s.plugins_total?'<button class="btn sm" data-act="autoupdate_off">Désactiver les auto-MAJ</button>':'')}
+      ${ud&&s.via!=='rest'?'<button class="btn sm" data-act="updraft_backup">Lancer une sauvegarde</button>':''}
+      </div></div>`}
+    ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
+    <div class="dsec" id="dvulnsec" style="display:none"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
+      <div id="dvulnlist" class="small"></div></div>
+    <div class="dsec"><h3>Fiche</h3>
     <div class="kv">
       <span class="k">Nom</span><span>${H(s.blogname||'—')}</span>
-      <span class="k">URL</span><span><a target="_blank" href="${H(s.siteurl||'https://'+s.domain)}">${H(s.siteurl||'—')}</a></span>
-      <span class="k">Serveur</span><span>${srvCell(s)}${s.via==='rest'&&s.srv?' <span class="muted">'+H(s.srv)+'</span>':''}${s.path?' · <code>'+H(s.path)+'</code>':''}</span>
+      <span class="k">URL</span><span><a target="_blank" rel="noopener" href="${H(s.siteurl||'https://'+s.domain)}">${H(s.siteurl||'—')}</a></span>
+      <span class="k">Serveur</span><span>${srvCell(s)}${s.via==='rest'&&s.srv?' <span class="muted">'+H(s.srv)+'</span>':''}</span>
+      ${s.path?'<span class="k">Chemin</span><span><code class="small">'+H(s.path)+'</code></span>':''}
       <span class="k">Client (Kuma)</span><span>${H(s.kuma_group||'—')}</span>
-      <span class="k">PHP</span><span>${H(s.php_version||'?')}</span>
-      <span class="k">Collecté</span><span>${H(s.collected_at||FLEET.generated_at)}</span></div>
-    <h3>WordPress</h3>
-    <div class="kv"><span class="k">Core</span><span>${H(s.core_version||'erreur')}${s.core_update?' → <b>'+H(s.core_update)+'</b>':' (à jour)'}</span>
-      <span class="k">Auto-MAJ plugins</span><span>${(()=>{ const n=s.plugins_auto_update, t=s.plugins_total;
-        if(n==null||t==null) return '<span class="pill mut">inconnu</span>';
-        if(t===0) return '<span class="pill mut">aucun plugin</span>';
-        if(n===0) return `<span class="pill warn">désactivées · 0/${t}</span>`;
-        if(n>=t) return `<span class="pill ok">activées · ${n}/${t}</span>`;
-        return `<span class="pill warn">partielles · ${n}/${t}</span>`; })()}</span>
       <span class="k">Administrateurs</span><span>${adm}</span>
-      ${s.via==='rest'?'<span class="k">Identifiants WordPress</span><span id="wpcred"><span class="muted small">chargement…</span></span>':''}</div>
-    ${s.via==='rest'
-      ? `<div class="actions" style="margin-top:10px" id="rest-actions">
-           <span id="rest-vizslot"></span>
-           <button class="btn sm" data-act="rescan">↻ Re-scan</button></div>
-         <p class="hint" id="rest-note" style="margin:8px 0 0">Site géré <b>sans SSH</b> : l'agent est en lecture seule, les actions
-         distantes (mises à jour, backup, checksums, caches) ne sont pas disponibles ici. À faire depuis wp-admin,
-         ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>`
-      : `<div class="actions" style="margin-top:10px">
-      ${(s.plugins_updates||s.core_update)?`<button class="btn primary sm" id="safeup" data-core="${s.core_update?1:0}" data-n="${s.plugins_updates||0}" title="Archive ce qui va changer, met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre${s.core_update?' (cœur'+(s.plugins_updates?' + '+s.plugins_updates+' ext.':'')+')':' ('+s.plugins_updates+')'}</button>`:''}
-      ${s.core_update?'<button class="btn sm" data-act="core_update">MAJ core → '+H(s.core_update)+' (directe)</button>':''}
-      ${s.plugins_updates?'<button class="btn sm" data-act="plugins_update_all">MAJ '+s.plugins_updates+' plugins (directe)</button>':''}
-      ${s.themes_updates?'<button class="btn sm" data-act="themes_update_all">MAJ thèmes</button>':''}
-      ${(vizOf(s)||vizInfo(s))?'':'<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'}
-      ${vizConnected(s)?'<button class="btn sm" data-act="viz_scan">Scan visuel</button> <button class="btn sm" data-act="viz_baseline">Capturer une baseline</button>':''}
-      <button class="btn sm" data-act="verify_checksums">Checksums</button>
-      <button class="btn sm" data-act="cache_flush">Vider caches</button>
-      ${(s.plugins_total&&(s.plugins_auto_update??0)<s.plugins_total)
-        ?`<button class="btn primary sm" data-act="autoupdate_on">Activer les auto-MAJ (${s.plugins_total} plugins)</button>`
-        :(s.plugins_total?'<button class="btn sm" data-act="autoupdate_off">Désactiver les auto-MAJ</button>':'')}
-      <button class="btn sm" data-act="rescan">↻ Re-scan</button></div>`}
-    ${plugRows?`<h3>Plugins à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table>`:''}
-    <h3>UpdraftPlus</h3>
+      ${s.via==='rest'?'<span class="k">Identifiants WordPress</span><span id="wpcred"><span class="muted small">chargement…</span></span>':''}
+      <span class="k">Collecté</span><span class="muted">${H(s.collected_at||FLEET.generated_at)}</span></div></div>
+    <div class="dsec"><h3>Sauvegardes</h3>
     ${ud?(()=>{ const hF=udHorizon(ud.retain,ud.interval), hD=udHorizon(ud.retain_db,ud.interval_db);
       const rF=udRulesFr(ud.extrarules&&ud.extrarules.files), rD=udRulesFr(ud.extrarules&&ud.extrarules.db);
       return `<div class="kv">
-      <span class="k">Dernier backup</span><span>${age===null?'<span style="color:var(--warn)">jamais ?</span>':(age>=48?`<span style="color:var(--warn)">il y a ${(age/24).toFixed(1)} j</span>`:`il y a ${Math.round(age)} h`)}</span>
-      <span class="k">Fichiers</span><span>sauvegarde ${H(udIntervalFr(ud.interval))} · <b>${H(ud.retain||'?')} jeux conservés</b>${hF?` <span class="muted">(${hF} d'historique glissant)</span>`:''}</span>
-      ${rF?`<span class="k"></span><span class="muted small">puis ${H(rF)}</span>`:''}
-      <span class="k">Base de données</span><span>sauvegarde ${H(udIntervalFr(ud.interval_db))} · <b>${H(ud.retain_db||'?')} jeux conservés</b>${hD?` <span class="muted">(${hD} d'historique glissant)</span>`:''}</span>
-      ${rD?`<span class="k"></span><span class="muted small">puis ${H(rD)}</span>`:''}
-      <span class="k">Destination</span><span>${H(ud.service||'?')}</span></div>
-      ${s.via==='rest'?'':'<div class="actions" style="margin-top:10px"><button class="btn sm" data-act="updraft_backup">Lancer un backup</button></div>'}`; })():'<span class="muted">UpdraftPlus non détecté</span>'}
-    ${Object.keys(s.errors||{}).length?`<h3>Erreurs de collecte</h3><div class="errbox">${H(Object.entries(s.errors).map(([k,v])=>k+': '+v).join('\n\n'))}</div>`:''}
+      <span class="k">Fichiers</span><span>${H(udIntervalFr(ud.interval))} · <b>${H(ud.retain||'?')} jeux</b>${hF?` <span class="muted small">≈ ${hF}</span>`:''}${rF?`<br><span class="muted small">puis ${H(rF)}</span>`:''}</span>
+      <span class="k">Base de données</span><span>${H(udIntervalFr(ud.interval_db))} · <b>${H(ud.retain_db||'?')} jeux</b>${hD?` <span class="muted small">≈ ${hD}</span>`:''}${rD?`<br><span class="muted small">puis ${H(rD)}</span>`:''}</span>
+      <span class="k">Destination</span><span>${H(ud.service||'?')}</span></div>`; })()
+      :'<span class="muted">UpdraftPlus non détecté</span>'}</div>
+    ${Object.keys(s.errors||{}).length?`<div class="dsec"><h3>Erreurs de collecte</h3><div class="errbox">${H(Object.entries(s.errors).map(([k,v])=>k+': '+v).join('\n\n'))}</div></div>`:''}
     <div class="console" id="console"></div>
-    <h3>Historique</h3>
-    <div id="timeline"><span class="muted small">chargement…</span></div>`;
+    <div class="dsec"><h3>Historique</h3>
+    <div id="timeline"><span class="muted small">chargement…</span></div></div>`;
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
   const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
   document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
   loadTimeline(s.srv,s.domain);
+  drawerVulns(kName(s)||s.domain);
   if(s.via==='rest') loadWpCred(s.srv,s.domain); }
+
+/* vulnérabilités du site affiché : réutilise le dernier croisement (aucun recalcul) */
+async function drawerVulns(dom){
+  const tile=document.getElementById('dvuln'); if(!tile) return;
+  try{
+    if(!(VULNS.sites||[]).length) VULNS=await api('/api/sec/vulns');
+    const site=(VULNS.sites||[]).find(x=>x.domain===dom);
+    const n=site?site.count:0, worst=site?site.worst:'';
+    tile.className='dstat '+(worst==='critical'||worst==='high'?'err':n?'warn':'ok');
+    tile.querySelector('.val').className='val';
+    tile.querySelector('.val').textContent=n||'0';
+    tile.querySelector('.sub').textContent=n?(SEVLABEL[worst]||worst||'connues'):'aucune';
+    const sec=document.getElementById('dvulnsec'); if(!sec||!site) return;
+    sec.style.display='';
+    document.getElementById('dvulnsum').innerHTML=sevPill(worst);
+    document.getElementById('dvulnlist').innerHTML=site.findings.slice(0,40).map(v=>{
+      const fix=v.update_to?`<span class="pill ok">MAJ ${H(v.update_to)}</span>`
+        :(v.unfixed?'<span class="pill err">non corrigée</span>':'');
+      const cve=v.cve?`<a href="${H(v.link||'#')}" target="_blank" rel="noopener" class="muted small">${H(v.cve)}</a>`:'';
+      return `<div class="vulnrow">${sevPill(v.severity)}<b>${H(v.component)}</b>
+        <span class="muted small">${H(v.version)}</span>${fix}${cve}</div>`;
+    }).join('')+(site.findings.length>40?`<div class="muted small">… +${site.findings.length-40} autres</div>`:'');
+  }catch(e){ tile.querySelector('.sub').textContent='indisponible'; }
+}
 
 /* ---- mise à jour sûre : archive → MAJ → contrôle → retour arrière si cassé ---- */
 function safeVerdictPill(v){
@@ -771,7 +852,7 @@ function renderSafe(st){
   const lignes=(st.steps||[]).map(x=>
     `<div class="logline"><span class="pill ${x.ok?'ok':'err'}">${x.ok?'ok':'échec'}</span>
       <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
-      ${x.detail?`<div class="muted small" style="margin-left:8px;white-space:pre-wrap">${H(x.detail)}</div>`:''}</div>`).join('');
+      ${x.detail?`<div class="muted small" style="margin-left:8px;white-space:pre-wrap">${H(stripPhpNoise(x.detail))}</div>`:''}</div>`).join('');
   box.innerHTML=`<div style="margin-bottom:6px"><b>🛡 Mise à jour sûre</b> ${st.running?'<span class="pill mut">en cours…</span>':safeVerdictPill(st.verdict)}</div>${lignes}`;
   box.scrollTop=box.scrollHeight;
 }
@@ -807,16 +888,74 @@ async function loadTimeline(srv,dom){
   const ev=(j&&Array.isArray(j.events))?j.events.filter(x=>x&&typeof x==='object'):[];
   if(!ev.length){ put('<span class="muted small">aucun événement enregistré.</span>'); return; }
   ev.sort((a,b)=>((tsMs(b.ts)??0)-(tsMs(a.ts)??0)));
-  put(ev.slice(0,120).map(e=>{
+  // Regroupement des répétitions : une même mise à jour relancée quatre fois
+  // n'a pas à occuper quatre blocs identiques.
+  const groupes=[];
+  for(const e of ev.slice(0,200)){
+    const cle=[e.kind,e.label,e.status,tlDetail(e)].join('|');
+    const last=groupes[groupes.length-1];
+    if(last&&last.cle===cle){ last.n++; continue; }
+    groupes.push({cle,e,n:1});
+  }
+  put(groupes.slice(0,80).map(({e,n})=>{
     const kind=String(e.kind??''), lab=String(e.label??''), stt=String(e.status??'').toLowerCase();
-    const isAdmin=kind==='event'&&/admin/i.test(lab);
+    const det=tlDetail(e);
     let c='mut';
-    if(kind==='action') c=stt?(stt.includes('ok')?'ok':'err'):'mut';
-    else if(kind==='event') c='warn';
-    if(isAdmin) c='err';
-    return `<div class="logline"><span class="pill ${c}">${H(TLKIND[kind]||kind||'—')}</span> <b>${H(lab||'—')}</b>
-      <span class="muted small" title="${H(absTime(e.ts))}">${H(relTime(e.ts))}</span>
-      ${e.detail?`<br><code>${H(String(e.detail).slice(-300))}</code>`:''}</div>`; }).join('')); }
+    if(kind==='action') c=stt.includes('ok')?'ok':(stt.includes('anomal')?'warn':'err');
+    else if(kind==='event') c=TLCRIT.test(lab)?'err':'mut';
+    else if(kind==='collect') c=(stt==='alerte')?'err':'mut';
+    const titre=(kind==='event'?(EVLABEL[lab]||lab):lab)||'—';
+    // Bloc technique réservé aux sorties réellement utiles : jamais un avertissement PHP.
+    const tech=(kind==='action'&&c!=='ok'&&det);
+    return `<div class="tlrow">
+      <span class="tlic ${c}">${TLICON[kind]||'\u2022'}</span>
+      <div class="tlmain">
+        <div class="tltop"><b>${H(titre)}</b>${n>1?`<span class="pill mut">\u00d7${n}</span>`:''}
+          <span class="muted small tlwhen" title="${H(absTime(e.ts))}">${H(relTime(e.ts))}</span></div>
+        ${det?(tech?`<pre class="tldet">${H(det.slice(-400))}</pre>`
+                   :`<div class="muted small tlsub">${H(det)}</div>`):''}
+      </div></div>`; }).join('')); }
+
+const TLICON={action:'\u2699',event:'\u26a1',collect:'\u21bb'};
+const TLCRIT=/admin|user_register|set_user_role|grant_super|deleted_user/i;
+const EVLABEL={
+  upgrader_process_complete:'Mise \u00e0 jour termin\u00e9e', wp_login:'Connexion administrateur',
+  user_register:'Compte cr\u00e9\u00e9', set_user_role:'R\u00f4le modifi\u00e9', deleted_user:'Compte supprim\u00e9',
+  activated_plugin:'Extension activ\u00e9e', deactivated_plugin:'Extension d\u00e9sactiv\u00e9e',
+  switch_theme:'Th\u00e8me chang\u00e9', grant_super_admin:'Super administrateur accord\u00e9',
+  wp_initialize_site:'Sous-site cr\u00e9\u00e9'
+};
+/* Retire le bruit PHP des sorties wp-cli : ces lignes noient l'information utile. */
+function stripPhpNoise(s){
+  return String(s??'').split('\n').filter(l=>{
+    const t=l.trim();
+    return t && !/^(PHP\s+)?(Warning|Notice|Deprecated|Strict Standards)\s*:/i.test(t)
+             && !/is deprecated|Implicitly marking parameter|already defined in phar|^\s*in .+ on line \d+/i.test(t);
+  }).join('\n').trim();
+}
+/* Detail d'un evenement rendu lisible : l'agent pousse du JSON brut. */
+function tlDetail(e){
+  const raw=e.detail; if(raw==null||raw==='') return '';
+  if(e.kind!=='event') return stripPhpNoise(raw);
+  let d; try{ d=JSON.parse(raw); }catch(err){ return stripPhpNoise(raw).slice(0,220); }
+  if(!d||typeof d!=='object') return String(raw).slice(0,220);
+  const slug=f=>String(f).split('/')[0];
+  const lab=String(e.label||'');
+  if(lab==='upgrader_process_complete'){
+    const items=(d.items||[]).map(slug).filter(Boolean);
+    const quoi={plugin:'extension',theme:'th\u00e8me',core:'c\u0153ur',translation:'traduction'}[d.type]||d.type||'\u00e9l\u00e9ment';
+    if(!items.length) return `${quoi} \u00b7 ${d.action||'mise \u00e0 jour'}`;
+    return `${quoi}${items.length>1?'s':''} : ${items.join(', ')}`;
+  }
+  if(lab==='wp_login') return `${d.login||'?'}${d.ip?' \u00b7 depuis '+d.ip:''}`;
+  if(lab==='user_register'||lab==='set_user_role'||lab==='grant_super_admin')
+    return `${d.login||'?'}${d.email?' <'+d.email+'>':''}${(d.roles||[]).length?' \u00b7 '+d.roles.join(', '):''}`;
+  if(lab==='deleted_user') return `${d.login||d.id||'?'}`;
+  if(lab==='activated_plugin'||lab==='deactivated_plugin') return slug(d.plugin||d.file||'?');
+  if(lab==='switch_theme') return d.name||d.stylesheet||'?';
+  return Object.entries(d).filter(([,v])=>v!==null&&v!==''&&v!==undefined)
+    .map(([k,v])=>`${k} : ${Array.isArray(v)?v.map(slug).join(', '):v}`).join(' \u00b7 ').slice(0,220);
+}
 function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); document.getElementById('dback').classList.remove('open'); }
 document.getElementById('dclose').onclick=closeDrawer; document.getElementById('dback').onclick=closeDrawer;
 function confirmRun(btn){ if(btn.dataset.confirm){ runAction(btn); return; }
