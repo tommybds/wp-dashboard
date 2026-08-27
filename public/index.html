@@ -251,6 +251,31 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 <!-- ===================== SÉCURITÉ ===================== -->
 <div class="page" id="page-sec">
   <div class="section">
+    <h2>Vulnérabilités connues <span id="vln-sum" class="small"></span>
+      <button class="btn sm" id="vln-run" style="float:right">↻ Relancer l'analyse</button></h2>
+    <p class="hint">Croisement de l'inventaire (cœur, PHP, extensions et leurs versions exactes) avec la base ouverte
+      <a href="https://www.wpvulnerability.net/" target="_blank" rel="noopener">WPVulnerability</a>, qui agrège CVE.org, Patchstack, Wordfence et WPScan.
+      Le croisement se fait <b>en local</b> : aucune information sur le parc n'est transmise.</p>
+    <div class="filters">
+      <input type="search" id="vln-q" placeholder="Filtrer un site, une extension, un CVE…" style="width:280px">
+      <select id="vln-sev">
+        <option value="">Toutes gravités</option>
+        <option value="critical">Critique</option>
+        <option value="high">Élevée et +</option>
+        <option value="medium">Moyenne et +</option>
+      </select>
+      <label class="small"><input type="checkbox" id="vln-fix"> corrigeable par une MAJ</label>
+      <span class="spacer"></span>
+      <span id="vln-count" class="muted small"></span>
+    </div>
+    <div id="vln-body" class="small muted" style="max-height:520px;overflow:auto;margin-top:8px">chargement…</div>
+    <h3 style="margin-top:14px">Versions de PHP</h3>
+    <p class="hint">Regroupé par version, car une faille PHP se corrige chez l'hébergeur, pas site par site.
+      ⚠️ À lire avec prudence : Debian et Plesk <b>rétroportent</b> les correctifs sans changer le numéro de version —
+      une version signalée ici peut déjà être corrigée. Le signal fiable, c'est une branche en <b>fin de support</b> (7.x, 8.0).</p>
+    <div id="vln-php" class="small muted"></div>
+  </div>
+  <div class="section">
     <h2>Changements <span id="chg-sum" class="small"></span></h2>
     <p class="hint">Historique persistant des changements d'état réel détectés à chaque collecte — version installée qui bouge, admin ou extension ajouté/retiré. Un <span class="new-admin">ajout d'admin ou d'extension</span> sur un site que vous n'avez pas touché est le signal n°1 d'une compromission. Complète les alertes temps réel des sites équipés de l'agent.</p>
     <div class="filters">
@@ -372,7 +397,7 @@ document.getElementById('logoutbtn').onclick=async()=>{ await fetch('/api/auth/l
 /* Fil d'Ariane dans l'URL : #onglet/sous-onglet — partageable et rechargeable. */
 const SUBSLUG={
   mgmt:['sites-non-geres','installs','mode-rest','moniteurs','docroots','serveurs'],
-  sec:['changements','administrateurs','recherche-plugin','php-obsolete','certificats','plugins-a-risque','integrite-core']
+  sec:['vulnerabilites','changements','administrateurs','recherche-plugin','php-obsolete','certificats','plugins-a-risque','integrite-core']
 };
 let NAVLOCK=false;   // évite que l'écriture de l'URL relance la navigation
 
@@ -1180,6 +1205,79 @@ function wpCredActions(has){
 
 /* ===== SÉCURITÉ ===== */
 const RISKY=["wp-file-manager","file-manager-advanced","filester","duplicator","all-in-one-wp-migration","backup-migration","adminer","wp-phpmyadmin-extension","insert-php","php-everywhere","wp-file-upload"];
+/* ---- vulnérabilités connues ---- */
+let VULNS={sites:[]};
+const SEVRANK={critical:4,high:3,medium:2,low:1,'':0};
+const SEVLABEL={critical:'critique',high:'élevée',medium:'moyenne',low:'faible','':'non cotée'};
+function sevPill(s){ const c=s==='critical'?'err':s==='high'?'err':s==='medium'?'warn':'mut';
+  return `<span class="pill ${c}">${H(SEVLABEL[s]||s||'?')}</span>`; }
+function renderVulns(){
+  const q=(document.getElementById('vln-q').value||'').toLowerCase().trim();
+  const minSev=SEVRANK[document.getElementById('vln-sev').value]||0;
+  const fixOnly=document.getElementById('vln-fix').checked;
+  const body=document.getElementById('vln-body'), cnt=document.getElementById('vln-count');
+  if(VULNS.running){ body.innerHTML='<span class="pill mut">analyse en cours…</span> '+H(VULNS.run_message||''); return; }
+  if(!(VULNS.sites||[]).length){
+    body.innerHTML=VULNS.sites_scanned
+      ? '<span class="pill ok">aucune vulnérabilité connue sur le parc</span>'
+      : 'Analyse jamais lancée — cliquez sur « Relancer l\'analyse ».';
+    cnt.textContent=''; return; }
+  let rows=0;
+  const html=VULNS.sites.map(s=>{
+    let f=s.findings.filter(v=>SEVRANK[v.severity]>=minSev);
+    if(fixOnly) f=f.filter(v=>v.update_to);
+    if(q) f=f.filter(v=>(s.domain+' '+v.component+' '+(v.cve||'')+' '+v.title).toLowerCase().includes(q));
+    if(!f.length) return '';
+    rows+=f.length;
+    const lignes=f.map(v=>{
+      const fix=v.update_to?`<span class="pill ok">MAJ ${H(v.update_to)}</span>`
+        :(v.unfixed?'<span class="pill err">non corrigée</span>':'<span class="muted small">pas de MAJ vue</span>');
+      const cve=v.cve?`<a href="${H(v.link||'#')}" target="_blank" rel="noopener" class="muted small">${H(v.cve)}</a>`:'';
+      return `<div class="logline">${sevPill(v.severity)} <b>${H(v.component)}</b>
+        <span class="muted">${H(v.version)}</span> ${fix} ${cve}
+        <span class="muted small" title="${H(v.title)}">— ${H((v.title||'').slice(0,80))}</span></div>`;
+    }).join('');
+    return `<div style="margin-bottom:10px"><b>${H(s.domain)}</b>
+      <span class="muted small">${f.length} sur ce site</span>${lignes}</div>`;
+  }).join('');
+  cnt.textContent=rows?`${rows} affichée${rows>1?'s':''}`:'';
+  body.innerHTML=html||'<span class="muted">aucune vulnérabilité ne correspond au filtre.</span>';
+  const php=document.getElementById('vln-php');
+  php.innerHTML=(VULNS.php||[]).length ? VULNS.php.map(e=>{
+    const eol=/^([0-7]\.|8\.0)/.test(e.version);
+    return `<div class="logline">${sevPill(e.worst)} <b>PHP ${H(e.version)}</b>
+      ${eol?'<span class="pill err">fin de support</span>':''}
+      <span class="muted">${e.count} faille${e.count>1?'s':''} connue${e.count>1?'s':''}</span>
+      <span class="muted small">— ${e.sites.length} site${e.sites.length>1?'s':''} : ${H(e.sites.slice(0,4).join(', '))}${e.sites.length>4?'…':''}</span></div>`;
+  }).join('') : '<span class="muted">aucune version PHP avec faille connue.</span>';
+}
+async function loadVulns(){
+  try{
+    VULNS=await api('/api/sec/vulns');
+    const t=VULNS.totals||{}, sum=document.getElementById('vln-sum');
+    if(VULNS.sites_affected){
+      const bits=[];
+      if(t.critical) bits.push(`${t.critical} critiques`);
+      if(t.high) bits.push(`${t.high} élevées`);
+      if(t.medium) bits.push(`${t.medium} moyennes`);
+      sum.innerHTML=`<span class="pill ${t.critical?'err':t.high?'warn':'mut'}">${VULNS.sites_affected}/${VULNS.sites_scanned} sites — ${bits.join(', ')||'—'}</span>`;
+    } else sum.innerHTML=VULNS.sites_scanned?'<span class="pill ok">parc sain</span>':'';
+    renderVulns();
+  }catch(e){ document.getElementById('vln-body').textContent='erreur de chargement : '+e; }
+}
+document.getElementById('vln-q').addEventListener('input',renderVulns);
+document.getElementById('vln-sev').addEventListener('change',renderVulns);
+document.getElementById('vln-fix').addEventListener('change',renderVulns);
+document.getElementById('vln-run').onclick=async(e)=>{
+  const b=e.currentTarget; b.disabled=true; b.textContent='analyse…';
+  document.getElementById('vln-body').innerHTML='<span class="pill mut">analyse en cours…</span> <span class="muted">~2 min (≈320 extensions à vérifier)</span>';
+  try{ await api('/api/sec/vulns/run',{refresh:true}); }catch(err){}
+  const poll=setInterval(async()=>{
+    const r=await api('/api/sec/vulns').catch(()=>null);
+    if(r&&!r.running){ clearInterval(poll); b.disabled=false; b.textContent="↻ Relancer l'analyse"; loadVulns(); }
+  },5000);
+};
+
 let CHANGES=[];
 function renderChanges(){
   const q=(document.getElementById('chg-q').value||'').toLowerCase().trim();
@@ -1197,6 +1295,7 @@ function renderChanges(){
   }).join('');
 }
 async function loadSec(){ const S=allSites();
+  loadVulns();   // indépendant : ne bloque pas le reste du volet
   try{ const ch=await api('/api/mgmt/changes?limit=800'); CHANGES=ch.changes||[];
     const su=ch.summary||{}; const sum=document.getElementById('chg-sum');
     if(su.day_total){ sum.innerHTML=`<span class="pill ${su.day_warn?'err':'mut'}">${su.day_total} sur 24 h · ${su.day_sites} site${su.day_sites>1?'s':''}${su.day_warn?` · ${su.day_warn} à surveiller ⚠`:''}</span>`; }
@@ -1415,7 +1514,7 @@ function buildSubtabs(pageId, key, shortLabels){
 buildSubtabs('page-mgmt','dashSubMgmt',
   ['Sites non gérés','Installs découverts','Mode REST','Moniteurs Kuma','Docroots','Serveurs']);
 buildSubtabs('page-sec','dashSubSec',
-  ['Changements','Administrateurs','Recherche plugin','PHP obsolète','Certificats SSL','Plugins à risque','Intégrité du core']);
+  ['Vulnérabilités','Changements','Administrateurs','Recherche plugin','PHP obsolète','Certificats SSL','Plugins à risque','Intégrité du core']);
 
 // L'onglet demandé par l'URL n'est appliqué qu'une fois la flotte chargée :
 // Gestion et Sécurité se construisent à partir de ces données.

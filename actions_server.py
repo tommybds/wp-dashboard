@@ -9,7 +9,7 @@ Toute action wp-cli tourne en su utilisateur du site — sauf sur les serveurs
 déclarés "no_su" (mutualisés), où l'utilisateur SSH est déjà le propriétaire.
 Aucun shell libre exposé.
 """
-import json, subprocess, os, re, time, datetime, threading, itertools, hashlib, hmac, base64, secrets, tempfile, http.cookies
+import json, subprocess, os, re, sys, time, datetime, threading, itertools, hashlib, hmac, base64, secrets, tempfile, http.cookies
 import io, ipaddress, socket, urllib.error, urllib.request, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -68,6 +68,7 @@ ALERTS_STATE_PATH = os.path.join(DATA, "alerts_state.json")
 ALERTS_LOG = os.path.join(DATA, "alerts.log")
 ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 24 h
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
+VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 CHECKSUM_SOURCES = ("securite", "bulk", "manuel")  # sources dont on mémorise le résultat
 SECRETS_PATH = os.path.join(DATA, "site_secrets.json")
 EVENTS_PATH = os.path.join(DATA, "events.jsonl")
@@ -597,6 +598,27 @@ def logged_action(server, domain, action, arg, source="manuel"):
 # ---------- collecte complète ----------
 COLLECT = {"running": False, "lines": [], "rc": None, "started": None, "done_servers": 0, "total_servers": 0}
 COLLECT_LOCK = threading.Lock()
+
+# ---------- veille de vulnérabilités (vulns.py, croisement local) ----------
+VULNS = {"running": False, "message": "", "finished": None}
+
+
+def vulns_worker(refresh=True):
+    """Rafraîchit la base publique puis recroise l'inventaire, hors requête HTTP."""
+    VULNS.update({"running": True, "message": "analyse en cours…", "finished": None})
+    try:
+        cmd = [sys.executable, os.path.join(BASE, "vulns.py")]
+        cmd += ["--fetch", "--scan"] if refresh else ["--scan"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200, cwd=BASE)
+        out = (r.stdout or "").strip().splitlines()
+        VULNS["message"] = out[-1] if out else ((r.stderr or "").strip()[-200:] or "terminé")
+    except subprocess.TimeoutExpired:
+        VULNS["message"] = "délai dépassé (l'analyse a été interrompue)"
+    except Exception as e:
+        VULNS["message"] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        VULNS["running"] = False
+        VULNS["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 def collect_worker():
@@ -2388,6 +2410,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
+        elif p == "/api/sec/vulns":
+            # Résultat du dernier croisement local (vulns.py --scan) + état d'avancement.
+            res = load_json(VULNS_FOUND_PATH, {"sites": [], "totals": {},
+                                               "sites_affected": 0, "sites_scanned": 0})
+            res["running"] = VULNS["running"]
+            res["run_message"] = VULNS["message"]
+            self._send(200, res)
         elif p == "/api/sec/baseline":
             self._send(200, {"baseline": load_json(os.path.join(DATA, "admins_baseline.json"), {})})
         elif p == "/api/mgmt/changes":
@@ -2708,6 +2737,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "aucun site visible"})
             return self._send(200, {"ok": True, "job": start_bulk(tasks, "continue", False),
                                     "total": len(tasks)})
+
+        if p == "/api/sec/vulns/run":
+            # Rafraîchit la base publique puis recroise, en tâche de fond :
+            # ~320 slugs à interroger, bien plus long que le délai d'une requête HTTP.
+            if VULNS["running"]:
+                return self._send(409, {"error": "analyse déjà en cours"})
+            full = bool(body.get("refresh", True))
+            threading.Thread(target=vulns_worker, args=(full,), daemon=True).start()
+            return self._send(200, {"ok": True, "running": True})
 
         if p == "/api/sec/baseline":
             base = set_baseline(body.get("domain") or None)
