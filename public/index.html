@@ -1862,7 +1862,11 @@ document.getElementById('phe-run').onclick=async(e)=>{
 /* Courbe SVG simple : pas de bibliothèque, les données tiennent en 60 points. */
 /* Courbe SVG : pas de bibliotheque, 60 points suffisent.
    `vector-effect:non-scaling-stroke` est indispensable — sans lui le trait
-   s'ecrase quand le SVG est etire en largeur (preserveAspectRatio="none"). */
+   s'ecrase quand le SVG est etire en largeur (preserveAspectRatio="none").
+   Le point final n'est PAS un <circle> : l'etirement le deformerait en
+   ellipse, car vector-effect ne corrige que l'epaisseur du trait, pas la
+   geometrie. C'est donc un segment de longueur nulle a bout rond, qui reste
+   parfaitement circulaire quelle que soit la largeur. */
 function sparkline(points, couleur, h=90){
   if(points.length<2) return '<div class="muted small">pas assez de relevés</div>';
   const w=400, pad=6;
@@ -1881,8 +1885,8 @@ function sparkline(points, couleur, h=90){
     <path d="${aire}" fill="${couleur}" opacity=".13"/>
     <path d="${d}" fill="none" stroke="${couleur}" stroke-width="2" stroke-linejoin="round"
       stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    <circle cx="${x(points.length-1).toFixed(1)}" cy="${y(der).toFixed(1)}" r="3" fill="${couleur}"
-      vector-effect="non-scaling-stroke"/>
+    <path d="M${x(points.length-1).toFixed(1)},${y(der).toFixed(1)}L${x(points.length-1).toFixed(1)},${y(der).toFixed(1)}"
+      stroke="${couleur}" stroke-width="7" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
   </svg>`;
 }
 
