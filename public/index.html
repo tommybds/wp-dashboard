@@ -120,7 +120,18 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .dhead-links a{font-size:var(--f-sm);margin-left:10px;white-space:nowrap}
 .ptable td{padding:5px 4px;border-bottom:1px solid var(--line)}
 .ptable tr:last-child td{border-bottom:0}
-.info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--chip);color:var(--muted);font-size:var(--f-xs);font-weight:700;cursor:help;vertical-align:1px}
+.info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+  border-radius:50%;background:var(--chip);color:var(--muted);font-size:var(--f-xs);font-weight:700;
+  cursor:pointer;vertical-align:1px;user-select:none}
+.info:hover,.info.open{background:var(--accent);color:#fff}
+/* La bulle s'ouvre au CLIC : l'attribut title natif ne repond qu'au survol,
+   jamais au clic, et pas du tout sur un ecran tactile. */
+.tipbox{position:absolute;top:calc(100% + 7px);left:-6px;z-index:30;width:min(300px,72vw);
+  background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-md);
+  padding:9px 11px;box-shadow:0 8px 24px rgba(15,30,50,.16);font-size:var(--f-sm);font-weight:400;
+  line-height:1.45;text-align:left;white-space:normal;cursor:auto}
+.tipbox::before{content:"";position:absolute;top:-5px;left:9px;width:9px;height:9px;background:var(--card);
+  border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* --- journal : une pastille d'icone, un titre, un detail lisible --- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line)}
@@ -280,7 +291,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Sites en mode REST (sans SSH) <span class="muted small" id="rest-count"></span></h2>
     <p class="hint">Sites gérés par l'agent Dash à travers l'API REST : l'inventaire remonte sans accès SSH au serveur. L'ajout manuel ci-dessous ne sert que si l'agent est déjà installé et appairé sur le site — sinon passez par « ＋ Ajouter un site ».</p>
     <div id="rest-body" class="small muted">chargement…</div>
-    <div class="filters" class="mt2" >
+    <div class="filters mt2">
       <input class="inp" id="rest-url" placeholder="https://exemple.fr" style="width:300px">
       <input class="inp" id="rest-name" placeholder="nom du site (facultatif)" style="width:220px">
       <button class="btn sm" id="rest-add">＋ Ajouter manuellement</button>
@@ -298,7 +309,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Docroots supplémentaires</h2>
     <p class="hint">Chemins à scanner en plus des patterns par défaut (ex. dev, sous-installs). Le prochain scan les prend en compte.</p>
     <div id="doc-list"></div>
-    <div class="filters" class="mt2" >
+    <div class="filters mt2">
       <select id="doc-srv"></select>
       <input class="inp" id="doc-path" placeholder="/var/www/vhosts/xxx/httpdocs" style="width:360px">
       <button class="btn sm" id="doc-add">＋ Ajouter</button>
@@ -308,7 +319,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Serveurs (avancé)</h2>
     <p class="hint">Liste des serveurs interrogés (JSON). Modifier avec prudence.</p>
     <textarea class="code" id="srv-json"></textarea>
-    <div class="mt2" ><button class="btn sm" id="srv-save">Enregistrer les serveurs</button> <span id="srv-msg" class="small muted"></span></div>
+    <div class="mt2"><button class="btn sm" id="srv-save">Enregistrer les serveurs</button> <span id="srv-msg" class="small muted"></span></div>
   </div>
 </div>
 
@@ -318,7 +329,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div class="section">
     <h2>Tendance du parc <span id="hist-sum" class="small"></span></h2>
     <p class="hint">Relevé à chaque collecte. Montre si la dette de mises à jour se résorbe ou s'accumule.
-      <span class="info" title="Ces chiffres portent sur toutes les installations detectees, y compris celles qui ne sont pas suivies dans Kuma et n'apparaissent donc pas dans le tableau de bord.">?</span></p>
+      <span class="info" data-tip="Ces chiffres portent sur toutes les installations detectees, y compris celles qui ne sont pas suivies dans Kuma et n'apparaissent donc pas dans le tableau de bord.">?</span></p>
     <div class="dstats" id="hist-tiles"></div>
     <div id="hist-charts"></div>
   </div>
@@ -331,7 +342,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
         <span class="spacer"></span>
         <span id="chg-count" class="muted small"></span>
       </div>
-      <div id="chg-body" class="small muted" class="mt2" style="max-height:440px; overflow:auto" >chargement…</div>
+      <div id="chg-body" style="max-height:440px; overflow:auto" class="small muted mt2">chargement…</div>
     </div>
 </div>
 
@@ -354,9 +365,9 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <span class="spacer"></span>
       <span id="vln-count" class="muted small"></span>
     </div>
-    <div id="vln-body" class="small muted" class="mt2" style="max-height:520px; overflow:auto" >chargement…</div>
-    <h3 class="mt4" >Versions de PHP</h3>
-    <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" title="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
+    <div id="vln-body" style="max-height:520px; overflow:auto" class="small muted mt2">chargement…</div>
+    <h3 class="mt4">Versions de PHP</h3>
+    <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" data-tip="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
     <div id="vln-php" class="small muted"></div>
   </div>
   <div class="section">
@@ -372,7 +383,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <select id="phe-h"><option value="24">24 h</option><option value="72">3 jours</option><option value="168">7 jours</option></select>
       <span class="spacer"></span><span id="phe-count" class="muted small"></span>
     </div>
-    <div id="phe-body" class="small muted" class="mt2" style="max-height:520px; overflow:auto" >chargement…</div>
+    <div id="phe-body" style="max-height:520px; overflow:auto" class="small muted mt2">chargement…</div>
   </div>
   <div class="section">
     <h2>Comptes administrateurs <button class="btn sm fr" id="baseline-all">Tout marquer comme vu</button></h2>
@@ -393,7 +404,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <h2>Certificats SSL</h2>
     <p class="hint">Expiration des certificats vue par Uptime Kuma. Alerte sous 21 jours, critique sous 7 jours.</p>
     <div class="wrap"><table><thead><tr><th>Moniteur</th><th>Jours restants</th><th>Expire le</th></tr></thead><tbody id="cert-tb"></tbody></table></div>
-    <div id="cert-msg" class="small muted" class="mt2" ></div>
+    <div id="cert-msg" class="small muted mt2"></div>
   </div>
   <div class="section">
     <h2>Plugins à risque</h2>
@@ -438,9 +449,9 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div class="dbody" id="dbody"></div>
 </div>
 
-<div class="modal" id="logmodal"><div class="box"><h2 class="mt0" >Journal des actions</h2><div id="loglist">…</div></div></div>
+<div class="modal" id="logmodal"><div class="box"><h2 class="mt0">Journal des actions</h2><div id="loglist">…</div></div></div>
 <div class="modal" id="setmodal"><div class="box">
-  <h2 class="mt0" >Réglages</h2>
+  <h2 class="mt0">Réglages</h2>
   <h3>Cadence de collecte</h3>
   <div id="sched-body"><span class="muted small">chargement…</span></div>
   <h3>Clés SSH</h3>
@@ -449,25 +460,25 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <div id="alert-body"><span class="muted small">chargement…</span></div>
 </div></div>
 <div class="modal" id="addmodal"><div class="box">
-  <h2 class="mt0" >Ajouter un WordPress</h2>
+  <h2 class="mt0">Ajouter un WordPress</h2>
   <div id="add-steps" class="small" style="margin-bottom:12px"></div>
   <div id="add-body"></div>
-  <div class="mt4" ><button class="btn sm" id="add-close">Fermer</button></div>
+  <div class="mt4"><button class="btn sm" id="add-close">Fermer</button></div>
 </div></div>
 <div class="modal" id="askmodal"><div class="box" style="max-width:520px">
   <h2 class="mt0" id="ask-title"></h2>
   <p class="hint" id="ask-intro"></p>
   <div id="ask-body"></div>
-  <div class="actions jend" class="mt4">
+  <div class="actions jend mt4">
     <button class="btn" id="ask-cancel">Annuler</button>
     <button class="btn primary" id="ask-ok">Valider</button>
   </div>
 </div></div>
 <div class="modal" id="rbmodal"><div class="box" style="max-width:560px">
-  <h2 class="mt0" >Rétablir une version</h2>
+  <h2 class="mt0">Rétablir une version</h2>
   <p id="rb-intro" class="hint"></p>
   <div id="rb-choices"></div>
-  <div class="actions jend" class="mt4">
+  <div class="actions jend mt4">
     <button class="btn" id="rb-cancel">Annuler</button>
   </div>
 </div></div>
@@ -475,7 +486,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <h2 class="mt0" id="bm-title">Exécution en masse</h2>
   <div class="bar"><div id="bm-bar"></div></div>
   <div id="bm-list" class="small"></div>
-  <div class="mt3" ><button class="btn sm" id="bm-cancel">Annuler la suite</button> <button class="btn sm" id="bm-close">Fermer</button></div>
+  <div class="mt3"><button class="btn sm" id="bm-cancel">Annuler la suite</button> <button class="btn sm" id="bm-close">Fermer</button></div>
 </div></div>
 
 <script>
@@ -521,7 +532,7 @@ function showTab(tab, {ecrire=true}={}){
 }
 
 function currentSub(tab){
-  const nav=document.querySelector(`#page-${tab} > .subtabs`); if(!nav) return -1;
+  const nav=document.querySelector(`#page-${tab}> .subtabs`); if(!nav) return -1;
   return [...nav.querySelectorAll('.subtab')].findIndex(b=>b.classList.contains('active'));
 }
 
@@ -539,7 +550,7 @@ function applyHash(){
   const ok=showTab(tab||'dash',{ecrire:false});
   if(ok&&sub&&SUBSLUG[tab]){
     const i=SUBSLUG[tab].indexOf(sub);
-    const nav=document.querySelector(`#page-${tab} > .subtabs`);
+    const nav=document.querySelector(`#page-${tab}> .subtabs`);
     if(i>=0&&nav){ const b=nav.querySelectorAll('.subtab')[i]; if(b) b.click(); }
   }
   NAVLOCK=false;
@@ -658,7 +669,7 @@ function cards(){ const S=allSites(); let up=0,down=0;
     bk=S.filter(s=>s.updraft&&(bkAge(s)===null||bkAge(s)>48)).length, err=S.filter(s=>Object.keys(s.errors||{}).length).length;
   const defs=[['','sites',S.length,''],['up','en ligne',up,'ok'],['down','down',down,down?'err':'ok'],
     ['core','MAJ core',core,core?'warn':'ok'],['plug','MAJ plugins',plug,plug?'warn':'ok'],
-    ['bk','backups >48h',bk,bk?'warn':'ok'],['err','en erreur',err,err?'err':'ok']];
+    ['bk','backups>48h',bk,bk?'warn':'ok'],['err','en erreur',err,err?'err':'ok']];
   document.getElementById('cards').innerHTML=defs.map(([k,l,v,c])=>
     `<div class="card ${FILT.card===k&&k?'sel':''}" data-card="${k}"><b style="color:var(--${c||'fg'})">${v}</b><small>${l}</small></div>`).join('');
   document.querySelectorAll('.card').forEach(c=>c.onclick=()=>{ FILT.card=(FILT.card===c.dataset.card)?'':c.dataset.card; render(); }); }
@@ -877,13 +888,13 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     ${plugRows?`<div class="dsec"><h3>Extensions à mettre à jour (${s.plugins_updates})</h3><table class="ptable"><tbody>${plugRows}</tbody></table></div>`:''}
     ${autresRows?`<div class="dsec"><h3>Toutes les extensions
         <button class="btn sm fr" id="pall-toggle">Afficher (${tousP.filter(p=>p.update!=='available').length} à jour)</button></h3>
-      <p class="hint" id="pall-hint">Repliée par défaut. <span class="info" title="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
+      <p class="hint" id="pall-hint">Repliée par défaut. <span class="info" data-tip="Utile pour retablir une version anterieure d'une extension deja a jour.">?</span></p>
       <table class="ptable" id="pall-tbl" hidden><tbody>${autresRows}</tbody></table></div>`:''}
     <div class="dsec" style="display:none" id="drbsec"><h3>Revenir en arrière</h3>
-      <p class="hint">Archives laissées par les mises à jour sûres. <span class="info" title="Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.">?</span></p>
+      <p class="hint">Archives laissées par les mises à jour sûres. <span class="info" data-tip="Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.">?</span></p>
       <div id="drblist" class="small"></div></div>
     <div class="dsec" style="display:none" id="dfrozensec"><h3>Extensions gelées</h3>
-      <p class="hint">Jamais mises à jour par le dashboard. <span class="info" title="Ni par un bouton, ni par une action groupee, ni par la MAJ sure. Utile quand une version casse le site, ou quand un client doit valider avant.">?</span></p>
+      <p class="hint">Jamais mises à jour par le dashboard. <span class="info" data-tip="Ni par un bouton, ni par une action groupee, ni par la MAJ sure. Utile quand une version casse le site, ou quand un client doit valider avant.">?</span></p>
       <div id="dfrozenlist" class="small"></div></div>
     <div class="dsec" style="display:none" id="dvulnsec"><h3>Vulnérabilités connues <span id="dvulnsum" class="small"></span></h3>
       <div id="dvulnlist" class="small"></div></div>
@@ -943,27 +954,60 @@ async function loadRollbackPoints(srv,dom){
   list.querySelectorAll('.rbgo').forEach(b=>b.onclick=()=>doRollback(b.dataset.slug,{dir:b.dataset.dir},b));
 }
 async function doRollback(slug,src,btn){
-  const quoi=src.dir?'depuis l\'archive locale, à l\'identique':`en version ${src.version}`;
+  const quoi=src.dir?"depuis l'archive locale, à l'identique":`en version ${src.version}`;
   const intro=document.getElementById('rb-intro'), box=document.getElementById('rb-choices');
+  const pied=document.getElementById('rb-cancel');
   intro.innerHTML=`Rétablir <b>${H(slug)}</b> ${H(quoi)} ?`;
-  box.innerHTML=`<p class="hint">⚠️ Seuls les <b>fichiers</b> sont remis en place. Si l'extension a migré ses tables,
-      la base reste dans son nouvel état — vérifiez le site après l'opération.</p>
-    <div class="actions" class="mt3" ><button class="btn primary" id="rb-go">Rétablir</button></div>`;
-  document.getElementById('rbmodal').classList.add('open');
-  document.getElementById('rb-go').onclick=async()=>{
-    box.innerHTML='<span class="pill mut">opération en cours…</span>';
+  box.innerHTML=`<p class="hint mt2">⚠️ Seuls les <b>fichiers</b> sont remis en place. Si l'extension a migré
+      ses tables, la base reste dans son nouvel état — vérifiez le site après l'opération.</p>`;
+  // Un seul bouton dans le pied, qui change de role selon l'etape : avoir
+  // « Fermer » et « Annuler » cote a cote ne disait pas lequel faisait quoi.
+  pied.textContent='Annuler'; pied.className='btn';
+  const valider=document.createElement('button');
+  valider.className='btn primary'; valider.id='rb-go'; valider.textContent='Rétablir';
+  pied.after(valider);
+  valider.onclick=async()=>{
+    valider.remove(); pied.disabled=true;
+    box.innerHTML='<div class="mt2"><span class="pill mut">opération en cours…</span></div>';
     let r;
     try{ r=await api('/api/actions/plugin_rollback',
         Object.assign({server:CUR.srv,domain:CUR.domain,slug},src)); }
     catch(e){ r={ok:false,rc:'—',output:String(e)}; }
     intro.innerHTML=r.ok?`<b>${H(slug)}</b> rétabli.`:`Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
-    box.innerHTML=`<div class="logline"><span class="pill ${r.ok?'ok':'err'}">${r.ok?'réussi':'échec'}</span></div>
-      ${r.output?`<pre class="tldet">${H(stripPhpNoise(r.output).slice(-800))}</pre>`:''}
-      <div class="actions" class="mt3" ><button class="btn primary" id="rb-done">Fermer</button></div>`;
-    document.getElementById('rb-done').onclick=()=>{ closeRb(); if(r.ok) loadFleet().catch(()=>{}); };
+    const sortie=stripPhpNoise(r.output||'');
+    box.innerHTML=`<div class="mt2"><span class="pill ${r.ok?'ok':'err'}">${r.ok?'réussi':'échec'}</span></div>`
+      +(sortie?`<pre class="tldet mt2">${H(sortie.slice(-800))}</pre>`:'');
+    pied.disabled=false; pied.textContent='Fermer'; pied.className='btn primary';
+    pied.onclick=()=>{ closeRb(); pied.className='btn'; pied.textContent='Annuler';
+      pied.onclick=closeRb; if(r.ok) loadFleet().catch(()=>{}); };
   };
+  document.getElementById('rbmodal').classList.add('open');
 }
 /* ---- modales génériques : remplacent les prompt() du navigateur ---- */
+/* ---- infobulles : ouverture au CLIC ----
+   Delegation sur le document : les pastilles ? sont souvent creees a la volee
+   (tiroir, listes), un binding a l'initialisation les manquerait. */
+function fermerTips(sauf){
+  document.querySelectorAll('.tipbox').forEach(t=>{ if(t.parentNode!==sauf) t.remove(); });
+  document.querySelectorAll('.info.open').forEach(b=>{ if(b!==sauf) b.classList.remove('open'); });
+}
+document.addEventListener('click',e=>{
+  const p=e.target.closest('.info');
+  if(!p){ if(!e.target.closest('.tipbox')) fermerTips(null); return; }
+  e.stopPropagation();
+  const ouverte=p.querySelector('.tipbox');
+  fermerTips(p);
+  if(ouverte){ ouverte.remove(); p.classList.remove('open'); return; }
+  const b=document.createElement('span');
+  b.className='tipbox'; b.textContent=p.dataset.tip||'';
+  p.appendChild(b); p.classList.add('open');
+  // Si la bulle deborde a droite, on la recale sur le bord droit de la pastille.
+  const r=b.getBoundingClientRect();
+  if(r.right>window.innerWidth-8){ b.style.left='auto'; b.style.right='-6px';
+    const fl=b.querySelector('*'); if(fl) fl.remove(); }
+});
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') fermerTips(null); });
+
 function askClose(){ document.getElementById('askmodal').classList.remove('open'); }
 document.getElementById('ask-cancel').onclick=askClose;
 document.getElementById('askmodal').onclick=e=>{ if(e.target.id==='askmodal') askClose(); };
@@ -999,7 +1043,14 @@ function askChoice(titre,intro,options,defaut){
 }
 
 /* choix d'une version : modale maison, les versions se cliquent (pas de saisie) */
-function closeRb(){ document.getElementById('rbmodal').classList.remove('open'); }
+function closeRb(){
+  document.getElementById('rbmodal').classList.remove('open');
+  // Remise a zero du pied : sans elle, une seconde ouverture heriterait de
+  // l'etat « Fermer » laisse par l'operation precedente.
+  const pied=document.getElementById('rb-cancel');
+  if(pied){ pied.textContent='Annuler'; pied.className='btn'; pied.disabled=false; pied.onclick=closeRb; }
+  const g=document.getElementById('rb-go'); if(g) g.remove();
+}
 document.getElementById('rb-cancel').onclick=closeRb;
 document.getElementById('rbmodal').onclick=e=>{ if(e.target.id==='rbmodal') closeRb(); };
 async function askVersion(slug,btn){
@@ -1180,8 +1231,8 @@ function renderTimeline(){
   const vus=TLGROUPS.slice(0,TLSHOWN);
   const reste=TLGROUPS.length-vus.length;
   el.innerHTML=vus.map(tlRow).join('')
-    +(reste>0?`<button class="btn sm" id="tlmore" class="mt3" >Voir plus (${reste})</button>`
-             :(TLGROUPS.length>TLPAGE?'<div class="muted small" class="mt2" >fin de l\'historique</div>':''));
+    +(reste>0?`<button id="tlmore" class="btn sm mt3">Voir plus (${reste})</button>`
+             :(TLGROUPS.length>TLPAGE?'<div class="muted small mt2">fin de l\'historique</div>':''));
   el.querySelectorAll('.tlopenable').forEach(r=>r.onclick=()=>{
     const pre=r.querySelector('.tldet'); if(!pre) return;
     pre.hidden=!pre.hidden; r.classList.toggle('open',!pre.hidden);
@@ -1461,7 +1512,7 @@ function addStep1(){ return `
 
 function addInfo(i){ const shown=i.url_effective||i.home||ADD.url||'', u=safeUrl(shown),
     ns=Array.isArray(i.namespaces)?i.namespaces.join(' · '):'';
-  return `<div class="kv" class="mt4" >
+  return `<div class="kv mt4">
     <span class="k">Site</span><span><b>${H(i.name||'—')}</b></span>
     <span class="k">URL</span><span>${u?`<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(shown)}</a>`:H(shown||'—')}</span>
     <span class="k">WordPress</span><span><span class="pill ${i.is_wordpress?'ok':'err'}">${i.is_wordpress?'détecté':'non détecté'}</span></span>
@@ -1469,8 +1520,8 @@ function addInfo(i){ const shown=i.url_effective||i.home||ADD.url||'', u=safeUrl
     <span class="k">Agent Dash</span><span>${i.has_agent?'<span class="pill ok">déjà installé</span>':'<span class="pill mut">absent</span>'}${i.has_vizproof?' <span class="pill ok">VizProof présent</span>':''}</span>
     <span class="k">Multisite</span><span>${i.multisite?'<span class="pill warn">oui — réglages dans Réseau → Dash Agent</span>':'<span class="pill mut">non</span>'}</span>
     <span class="k">Dans le parc</span><span>${i.already_known?'<span class="pill warn">déjà connu du dashboard</span>':'<span class="pill ok">nouveau</span>'}</span></div>
-  ${i.is_wordpress?'':'<p class="hint" class="mt3" >WordPress n\'a pas été reconnu à cette adresse : vérifiez l\'URL (redirection, sous-dossier, site en maintenance) avant de continuer.</p>'}
-  <div class="actions" class="mt4" ><button class="btn primary sm" id="add-next">${i.is_wordpress?'Continuer':'Continuer quand même'}</button></div>`; }
+  ${i.is_wordpress?'':'<p class="hint mt3">WordPress n\'a pas été reconnu à cette adresse : vérifiez l\'URL (redirection, sous-dossier, site en maintenance) avant de continuer.</p>'}
+  <div class="actions mt4"><button class="btn primary sm" id="add-next">${i.is_wordpress?'Continuer':'Continuer quand même'}</button></div>`; }
 
 async function addDiscover(){ const msg=document.getElementById('add-msg'), res=document.getElementById('add-res');
   const inp=document.getElementById('add-url'); if(inp) ADD.url=inp.value.trim();
@@ -1497,7 +1548,7 @@ function addStep2(){ const i=ADD.info||{}, ssh=i.suggestion==='ssh';
       ${card('ssh','Via SSH',ssh,"Le serveur est déjà connecté : l'agent s'installe en une commande depuis « Installs découverts », sans rien toucher dans wp-admin.")}
       ${card('pair','Sans SSH (appairage)',!ssh,"L'API REST de WordPress n'installe que des extensions publiées sur wordpress.org, or notre agent est privé : on télécharge son ZIP, on l'installe depuis wp-admin, puis on colle un code d'appairage.")}
     </div>
-    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button></div>`; }
+    <div class="actions mt4"><button class="btn sm" id="add-back">← Retour</button></div>`; }
 
 function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
   if(ADD.method==='ssh') return `
@@ -1507,7 +1558,7 @@ function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
       <li>Colonne « Dashboard » : cliquez sur <b>Connecter</b>, puis confirmez le second clic.</li>
       <li>La pastille passe à <span class="pill ok">connecté</span> — le site pousse alors ses événements en temps réel.</li>
     </ol></div>
-    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button>
+    <div class="actions mt4"><button class="btn sm" id="add-back">← Retour</button>
       <button class="btn primary sm" id="add-goinstalls">Aller à la ligne « ${H(dom||'?')} »</button>
       <span id="add-msg3" class="small"></span></div>`;
   return `
@@ -1524,8 +1575,8 @@ function addStep3(){ const i=ADD.info||{}, dom=ADD.domain||hostOf(ADD.url);
       <li>Ouvrez <b>${i.multisite?'Réseau → Dash Agent':'Réglages → Dash Agent'}</b>${i.multisite?' (site multisite : le réglage est au niveau du réseau)':' — en multisite, passez par <b>Réseau → Dash Agent</b>'}.</li>
       <li>Collez le code ci-dessus, puis validez.</li>
     </ol></div>
-    <div id="add-wait" class="small muted" class="mt3" >Générez un code pour démarrer l'appairage.</div>
-    <div class="actions" class="mt4" ><button class="btn sm" id="add-back">← Retour</button></div>`; }
+    <div id="add-wait" class="small muted mt3">Générez un code pour démarrer l'appairage.</div>
+    <div class="actions mt4"><button class="btn sm" id="add-back">← Retour</button></div>`; }
 
 function addWait(html){ const el=document.getElementById('add-wait'); if(el) el.innerHTML=html; }
 function addTick(){ const el=document.getElementById('add-exp');
@@ -1561,9 +1612,9 @@ async function addPoll(){ ADD.poll=null; if(!ADD.open) return;
   const hit=restList(j).some(x=>x&&hostOf(restDomain(x)||x.url)===want);
   if(hit){ addStop();
     addWait(`<span class="pill ok">✅ site appairé</span> <span class="muted small">il apparaît maintenant dans le parc.</span>
-      ${WPAUTH_ENABLED?`<div class="mt3" ><button class="btn primary sm" id="add-wpauth">🔗 Autoriser l'installation d'extensions (1 clic)</button>
+      ${WPAUTH_ENABLED?`<div class="mt3"><button class="btn primary sm" id="add-wpauth">🔗 Autoriser l'installation d'extensions (1 clic)</button>
         <span id="add-wpmsg" class="small"></span>
-        <div class="muted small" class="mt1" ><b>Étape facultative.</b> ${H(WPAUTH_HELP)} Le dashboard pourra alors installer les extensions publiques (VizProof…) sans SSH.</div></div>`:''}`);
+        <div class="muted small mt1"><b>Étape facultative.</b> ${H(WPAUTH_HELP)} Le dashboard pourra alors installer les extensions publiques (VizProof…) sans SSH.</div></div>`:''}`);
     const ab=document.getElementById('add-wpauth');
     if(ab) ab.onclick=()=>wpAuthorize(ab,'',want,(ok,err)=>{ const m=document.getElementById('add-wpmsg'); if(!m) return;
       m.innerHTML=ok?'<span class="pill warn">approuvez dans l\'onglet ouvert…</span>'
@@ -1642,7 +1693,7 @@ function wpCredRender(c,srv,dom,j){
   } else {
     c.innerHTML=`<span class="pill warn">non autorisé</span>
       <button class="btn sm primary" data-wpauth="${H(dom)}">🔗 Autoriser en un clic</button> <span data-wpmsg class="small"></span>
-      <div class="muted small" class="mt1" >${H(WPAUTH_HELP)}</div>`;
+      <div class="muted small mt1">${H(WPAUTH_HELP)}</div>`;
   }
   const msg=c.querySelector('[data-wpmsg]');
   const ab=c.querySelector('[data-wpauth]');
@@ -1843,7 +1894,7 @@ async function loadHist(){
       <div class="val">${der[m.k]??'?'}</div>
       <div class="sub">${deltaPill(der[m.k]??0, ref[m.k], m.inv)} sur 24 h</div></div>`).join('');
   document.getElementById('hist-charts').innerHTML=M.map(m=>
-    `<div class="mt4" ><div class="glbl">${H(m.lbl)}</div>
+    `<div class="mt4"><div class="glbl">${H(m.lbl)}</div>
       ${sparkline(hist.map(x=>x[m.k]??0), m.c)}
       <div class="muted small" style="display:flex;justify-content:space-between">
         <span>${H((hist[0].ts||'').slice(5,16))}</span><span>${H((der.ts||'').slice(5,16))}</span></div></div>`).join('');
@@ -1956,7 +2007,7 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
     <h3>Affectation par serveur</h3>
     <p class="hint">⚠ Assigner une clé non enrôlée casse la collecte du serveur concerné — toujours tester avant d'assigner.</p>
     <div class="wrap"><table><thead><tr><th>Serveur</th><th>Clé</th><th></th></tr></thead><tbody>${asgRows}</tbody></table></div>
-    <div class="filters" class="mt3" ><select id="k-allsel">${keyOpts('')}</select>
+    <div class="filters mt3"><select id="k-allsel">${keyOpts('')}</select>
       <button class="btn sm danger" id="k-all">Assigner cette clé à TOUS les serveurs</button> <span id="k-allmsg" class="small"></span></div>`;
   bd.querySelectorAll('[data-pub]').forEach(b=>b.onclick=()=>{ const r=bd.querySelector(`[data-pubrow="${b.dataset.pub}"]`);
     const show=r.style.display==='none'; r.style.display=show?'':'none'; b.textContent=show?'masquer la clé publique':'voir la clé publique'; });
@@ -2034,8 +2085,8 @@ async function loadAlerts(){ const bd=document.getElementById('alert-body');
     </div>
     <p class="hint" style="margin:10px 0 6px"><b>Déclencheurs</b></p>
     <div>${AL_CHK.map(([k,l])=>`<label class="fld"><input type="checkbox" data-arule="${k}"${r[k]?' checked':''}> ${H(l)}</label>`).join('')}</div>
-    <div class="mt1" >${AL_NUM.map(([k,l,d])=>`<label class="fld">${H(l)} <input class="inp" type="number" min="0" step="1" data-arule="${k}" value="${H(r[k]??d)}" style="width:90px"></label>`).join('')}</div>
-    <div class="filters" class="mt3" >
+    <div class="mt1">${AL_NUM.map(([k,l,d])=>`<label class="fld">${H(l)} <input class="inp" type="number" min="0" step="1" data-arule="${k}" value="${H(r[k]??d)}" style="width:90px"></label>`).join('')}</div>
+    <div class="filters mt3">
       <button class="btn primary sm" id="al-save">Enregistrer</button>
       <button class="btn sm" id="al-test">Envoyer un test</button>
       <span id="al-msg" class="small"></span>
@@ -2061,11 +2112,11 @@ async function loadAlerts(){ const bd=document.getElementById('alert-body');
 /* Sous-onglets : les libellés viennent des <h2> existants — rien à maintenir en double. */
 function buildSubtabs(pageId, key, shortLabels){
   const page=document.getElementById(pageId); if(!page) return;
-  const secs=[...page.querySelectorAll(':scope > .section')];
+  const secs=[...page.querySelectorAll(':scope> .section')];
   if(secs.length<2) return;
-  let nav=page.querySelector(':scope > .subtabs');
+  let nav=page.querySelector(':scope> .subtabs');
   if(!nav){ nav=document.createElement('nav'); nav.className='subtabs';
-    const anchor=page.querySelector(':scope > .filters');
+    const anchor=page.querySelector(':scope> .filters');
     anchor ? anchor.after(nav) : page.prepend(nav); }
   nav.innerHTML=secs.map((s,i)=>{
     const h=s.querySelector('h2');
