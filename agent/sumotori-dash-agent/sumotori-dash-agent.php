@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name: Sumotori Dash Agent
- * Plugin URI: https://sumotori.fr/sumotori-dash-agent/
+ * Plugin URI: https://github.com/tommybds/wp-dashboard
  * Description: Connects this site to a monitoring dashboard of your choice: reports sensitive administration events and answers signed, read-only inventory requests.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Requires at least: 5.2
  * Requires PHP: 7.0
  * Author: Tommy Bordas
@@ -125,7 +125,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		 * Enregistre les accroches WordPress.
 		 */
 		private function __construct() {
-			add_action( 'init', array( $this, 'load_textdomain' ) );
+
 			add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
 
 			if ( is_multisite() ) {
@@ -135,22 +135,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			}
 
 			$this->register_event_hooks();
-		}
-
-		/**
-		 * Charge les traductions embarquées si elles sont présentes.
-		 */
-		public function load_textdomain() {
-			$languages_dir = plugin_dir_path( __FILE__ ) . 'languages';
-			if ( ! is_dir( $languages_dir ) ) {
-				return;
-			}
-
-			load_plugin_textdomain(
-				'sumotori-dash-agent',
-				false,
-				dirname( plugin_basename( __FILE__ ) ) . '/languages'
-			);
 		}
 
 		// ── Configuration ────────────────────────────────────────────────────

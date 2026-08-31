@@ -4,7 +4,7 @@ Tags: maintenance, monitoring, management, inventory, multisite
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.0
-Stable tag: 1.2.0
+Stable tag: 1.2.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -217,6 +217,14 @@ administration (`manage_network_options` capability). The inventory can target
 any sub-site through the `blog_id` parameter.
 
 == Changelog ==
+
+= 1.2.1 =
+
+* Plugin URI corrected to a page that actually resolves.
+* Translation files removed from the package: translations are now handled by
+  translate.wordpress.org, which generates and delivers them automatically.
+* `load_plugin_textdomain()` removed — WordPress has loaded translations by
+  itself for plugins hosted on WordPress.org since version 4.6.
 
 = 1.2.0 =
 
