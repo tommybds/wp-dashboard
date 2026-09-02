@@ -612,6 +612,27 @@ th[aria-sort="descending"]::after{content:"▼"}
 </div></div>
 
 <script>
+/* Filet de diagnostic : une erreur JS non rattrapée (au chargement ou au clic) ne
+   doit jamais rester silencieuse — elle s'affiche en bandeau, avec fichier:ligne. */
+(function(){
+  function montrer(msg){
+    try{
+      let b=document.getElementById('jserr');
+      if(!b){ b=document.createElement('div'); b.id='jserr'; b.setAttribute('role','alert');
+        b.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:99;background:#7f1d1d;color:#fff;font:13px/1.4 system-ui,sans-serif;padding:8px 14px;white-space:pre-wrap;word-break:break-word;box-shadow:0 -2px 8px rgba(0,0,0,.3)';
+        const x=document.createElement('button'); x.textContent='✕'; x.setAttribute('aria-label','Fermer');
+        x.style.cssText='float:right;background:none;border:0;color:#fff;font-size:16px;cursor:pointer;margin-left:10px';
+        x.onclick=()=>b.remove(); b.appendChild(x);
+        const t=document.createElement('span'); t.id='jserr-txt'; b.appendChild(t);
+        (document.body||document.documentElement).appendChild(b); }
+      const t=document.getElementById('jserr-txt'); t.textContent=(t.textContent?t.textContent+'\n':'')+'Erreur JavaScript : '+msg;
+    }catch(e){}
+  }
+  window.addEventListener('error',e=>montrer((e.message||'?')+(e.filename?' — '+e.filename.replace(/^.*\//,'')+':'+e.lineno+':'+e.colno:'')));
+  window.addEventListener('unhandledrejection',e=>{ const r=e.reason; if(r&&r.message==='auth') return; montrer('promesse rejetée : '+(r&&r.message||String(r))); });
+})();
+</script>
+<script>
 const SLUG='parc-x7k2m9';
 let FLEET=null, STATUS={}, MGMT=null, BASELINE={}, HIDDEN=0, CURJOB=null,
     SORT={k:'domain',dir:1}, SEL=new Set(),
