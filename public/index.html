@@ -98,7 +98,9 @@ td.site b{font-weight:600} td .sub{color:var(--muted);font-size:var(--f-sm);max-
 .grouprow td{background:var(--chip);font-weight:700;color:var(--fg);font-size:var(--f-sm);letter-spacing:.03em}
 .rowscan{margin-left:7px;padding:0 5px;border:1px solid transparent;border-radius:var(--r-sm);background:none;
   color:var(--muted);cursor:pointer;font-size:var(--f-sm);line-height:1.4;opacity:0;transition:opacity .12s}
-tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
+/* Au clavier, la ligne n'est jamais survolee : sans :focus-within le bouton de
+   re-scan resterait invisible et donc inatteignable. */
+tbody tr:hover .rowscan,tbody tr:focus-within .rowscan,.rowscan:focus-visible,.rowscan[data-busy]{opacity:1}
 .rowscan:hover{border-color:var(--accent);color:var(--accent)}
 .rowscan.spin{animation:rowspin 1s linear infinite;display:inline-block}
 @keyframes rowspin{to{transform:rotate(360deg)}}
@@ -136,7 +138,9 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 /* Deux colonnes fixes : `auto-fit` donnait 3 colonnes sur un large ecran,
    donc une quatrieme courbe orpheline sur la ligne suivante. */
 .histgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4);margin-top:var(--s3)}
-@media(max-width:760px){.histgrid{grid-template-columns:1fr}}
+/* `1fr` seul garde un minimum automatique : la colonne prenait la largeur
+   intrinsèque du SVG (400 px) et faisait déborder la page sous 480 px. */
+@media(max-width:760px){.histgrid{grid-template-columns:minmax(0,1fr)}}
 .chart{background:var(--chip);border-radius:var(--r-md);padding:10px 12px 8px}
 .charttop{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--s1)}
 .chartaxis{display:flex;justify-content:space-between;font-size:var(--f-xs);color:var(--muted);margin-top:var(--s1)}
@@ -151,21 +155,29 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .agroup>.glbl{font-size:var(--f-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
 .dsec{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}
 .dsec>h3{margin:0 0 8px}
-.dhead-links a{font-size:var(--f-sm);margin-left:10px;white-space:nowrap}
 .ptable td{padding:5px 4px;border-bottom:1px solid var(--line)}
 .ptable tr:last-child td{border-bottom:0}
 .info{position:relative;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
   border-radius:50%;background:var(--chip);color:var(--muted);font-size:var(--f-xs);font-weight:700;
   cursor:pointer;vertical-align:1px;user-select:none}
 .info:hover,.info.open{background:var(--accent);color:#fff}
+[data-tip]{cursor:pointer}
+.pill[data-tip].open{outline:2px solid var(--accent);outline-offset:1px}
 /* La bulle s'ouvre au CLIC : l'attribut title natif ne repond qu'au survol,
-   jamais au clic, et pas du tout sur un ecran tactile. */
-.tipbox{position:absolute;top:calc(100% + 7px);left:-6px;z-index:30;width:min(300px,72vw);
+   jamais au clic, et pas du tout sur un ecran tactile.
+   Elle est montee dans <body> en position:fixed : ancree dans le tiroir (z 9)
+   elle passait SOUS les modales (z 20) — un z-index local ne peut pas sortir du
+   contexte d'empilement de son parent — et `.dbody{overflow-y:auto}` la rognait
+   pres du bas. Les coordonnees sont calculees a l'ouverture (voir ouvrirTip). */
+.tipbox{position:fixed;top:0;left:0;z-index:40;width:min(300px,72vw);
   background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-md);
   padding:9px 11px;box-shadow:0 8px 24px rgba(15,30,50,.16);font-size:var(--f-sm);font-weight:400;
   line-height:1.45;text-align:left;white-space:normal;cursor:auto}
-.tipbox::before{content:"";position:absolute;top:-5px;left:9px;width:9px;height:9px;background:var(--card);
+.tipbox::before{content:"";position:absolute;top:-5px;left:var(--tipx,9px);width:9px;height:9px;background:var(--card);
   border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
+/* bulle retournee (pas la place en dessous) : la fleche passe sous la bulle */
+.tipbox.up::before{top:auto;bottom:-5px;border:0;
+  border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* Vulnerabilites : un en-tete de site repliable, puis une ligne par extension
    (et non par CVE — une extension cumule souvent 20 CVE). */
@@ -194,7 +206,7 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tlwhen{margin-left:auto;white-space:nowrap}
 .tlsub{margin-top:1px;word-break:break-word}
 .tldet{background:var(--chip);border-radius:var(--r-sm);padding:6px 8px;margin:4px 0 0;
-       font:11.5px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+       font:var(--f-xs)/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
        max-height:130px;overflow:auto}
 .tldet[hidden]{display:none}
 .tlopenable{cursor:pointer}
@@ -202,17 +214,21 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .tlchev{color:var(--muted);font-size:var(--f-sm);transition:transform .15s ease;display:inline-block}
 .tlopenable.open .tlchev{transform:rotate(90deg)}
 .actions{display:flex;flex-wrap:wrap;gap:8px} .ptable{width:100%;font-size:var(--f-sm)}
-.console{background:#0d1117;color:#c9d1d9;border-radius:var(--r-md);padding:10px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
+.console{background:#0d1117;color:#c9d1d9;border-radius:var(--r-md);padding:10px 12px;font:var(--f-sm)/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:240px;overflow:auto;margin-top:10px;display:none}
 .console b.ok{color:#4ade80} .console b.warn{color:#fbbf24} .console b.err{color:#f87171}
 .vizrun{text-decoration:none;vertical-align:middle}
-.codebig{font:700 28px/1.3 ui-monospace,Menlo,monospace;letter-spacing:.09em;user-select:all;color:var(--fg)}
+.codebig{font:700 var(--f-xl)/1.3 ui-monospace,Menlo,monospace;letter-spacing:.09em;user-select:all;color:var(--fg)}
 .steps ol{margin:10px 0 0 20px;padding:0;line-height:2}
 .choice{flex:1;min-width:250px} .choice b{font-size:var(--f-md);margin-bottom:4px} .choice small{display:block;line-height:1.55}
 .fld{display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:var(--f-sm)}
-.errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-md);padding:9px 12px;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-md);padding:9px 12px;font:var(--f-sm)/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+/* Meme forme que .errbox, ton avertissement : donnees incompletes plutot que fausses. */
+.warnbox{background:var(--warn-bg);color:var(--warn);border-radius:var(--r-md);padding:9px 12px;line-height:1.5}
+.warnbox code{font:var(--f-xs) ui-monospace,Menlo,monospace;word-break:break-all}
+.warnbox ul{margin:6px 0 0;padding-left:18px}
 .modal.open{display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px}
 .modal .box{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);max-width:900px;width:100%;max-height:82vh;overflow:auto;padding:18px 22px}
-.logline{border-bottom:1px solid var(--line);padding:7px 0;font-size:var(--f-sm)} .logline code{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
+.logline{border-bottom:1px solid var(--line);padding:7px 0;font-size:var(--f-sm)} .logline code{font:var(--f-sm) ui-monospace,Menlo,monospace;color:var(--muted)}
 .bulkbar{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 10px rgba(0,0,0,.12);padding:10px 22px;display:none;align-items:center;gap:10px;flex-wrap:wrap;z-index:7}
 .bulkbar.open{display:flex}
 .bar{height:8px;background:var(--chip);border-radius:var(--r-pill);overflow:hidden;margin:8px 0}
@@ -225,23 +241,32 @@ tbody tr:hover .rowscan,.rowscan[data-busy]{opacity:1}
 .box h3{font-size:var(--f-sm);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
 .tag{display:inline-block;background:var(--chip);border-radius:var(--r-sm);padding:1px 7px;font-size:var(--f-sm);margin:1px}
 .new-admin{color:var(--err);font-weight:600}
-textarea.code{width:100%;min-height:150px;font:12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:var(--r-md);padding:10px;background:var(--bg);color:var(--fg)}
+textarea.code{width:100%;min-height:150px;font:var(--f-sm) ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:var(--r-md);padding:10px;background:var(--bg);color:var(--fg)}
 input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 .muted{color:var(--muted)} .small{font-size:var(--f-sm)}
 @media (max-width:800px){ .kv{grid-template-columns:110px 1fr} th,td{padding:7px 8px} .drawer{width:100%} }
 
 /* Utilitaires d'espacement : évitent 36 style="margin-top:…" dispersés. */
 .mt0{margin-top:0}.mt1{margin-top:var(--s1)}.mt2{margin-top:var(--s2)}
-.mt3{margin-top:var(--s3)}.mt4{margin-top:var(--s4)}.mt5{margin-top:var(--s5)}
+.mt3{margin-top:var(--s3)}.mt4{margin-top:var(--s4)}
 
 /* Utilitaires : remplacent les declarations en ligne les plus repetees.
    Les valeurs pointent vers l'echelle de jetons, pour qu'un reglage
    d'espacement se fasse a un seul endroit. */
-.fr{float:right}.oa{overflow:auto}
+.fr{float:right}
 .w100{width:100%}.wrapline{white-space:pre-wrap}
 .jend{justify-content:flex-end}
 .scroll-md{max-height:440px;overflow:auto}.scroll-lg{max-height:520px;overflow:auto}
 .glbl-sep{margin:var(--s3) 0 var(--s2);display:block}
+
+/* Indicateur de focus clavier : l'application n'en avait aucun, la navigation
+   au clavier etait donc invisible. `:focus-visible` ne s'affiche pas au clic
+   souris, il ne change rien pour la navigation au pointeur. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-sm)}
+.card:focus-visible,tbody tr:focus-visible,th:focus-visible,.vsite:focus-visible{outline-offset:-2px}
+th[aria-sort]::after{content:"";margin-left:5px;opacity:.6}
+th[aria-sort="ascending"]::after{content:"▲"}
+th[aria-sort="descending"]::after{content:"▼"}
 </style>
 </head>
 <body>
@@ -390,7 +415,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
         <span class="spacer"></span>
         <span id="chg-count" class="muted small"></span>
       </div>
-      <div id="chg-body" style="max-height:440px; overflow:auto" class="small muted mt2">chargement…</div>
+      <div id="chg-body" class="small muted mt2 scroll-md">chargement…</div>
     </div>
 </div>
 
@@ -419,14 +444,14 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <span class="spacer"></span>
       <span id="vln-count" class="muted small"></span>
     </div>
-    <div id="vln-body" style="max-height:520px; overflow:auto" class="small muted mt2">chargement…</div>
+    <div id="vln-body" class="small muted mt2 scroll-lg">chargement…</div>
     <h3 class="mt4">Versions de PHP</h3>
     <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" data-tip="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
     <div id="vln-php" class="small muted"></div>
   </div>
   <div class="section">
     <h2>Erreurs PHP <span id="phe-sum" class="small"></span>
-      <button class="btn sm fr" id="phe-run">↻ Relancer</button></h2>
+      <button class="btn sm fr" id="phe-run">↻ Relancer l'analyse</button></h2>
     <p class="hint">Lecture des journaux que vos serveurs écrivent <b>déjà</b> — aucune modification des sites, aucun mode debug à activer.
       Sur Plesk : les journaux PHP-FPM, étiquetés par domaine ; sur les VPS : les journaux nginx.
       Les occurrences identiques sont regroupées par fichier et ligne.</p>
@@ -437,7 +462,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
       <select id="phe-h"><option value="24">24 h</option><option value="72">3 jours</option><option value="168">7 jours</option></select>
       <span class="spacer"></span><span id="phe-count" class="muted small"></span>
     </div>
-    <div id="phe-body" style="max-height:520px; overflow:auto" class="small muted mt2">chargement…</div>
+    <div id="phe-body" class="small muted mt2 scroll-lg">chargement…</div>
   </div>
   <div class="section">
     <h2>Comptes administrateurs <button class="btn sm fr" id="baseline-all">Tout marquer comme vu</button></h2>
@@ -488,7 +513,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <option value="viz_baseline">Capturer une baseline visuelle</option>
     <option value="rescan">Re-scanner</option>
     <option value="dash_connect">Installer l'agent Dash (alertes temps réel)</option>
-      <option value="dash_disconnect">Dissocier l'agent Dash</option>
+    <option value="dash_disconnect">Dissocier l'agent Dash</option>
   </select>
   <label class="small"><input type="checkbox" id="bulk-backup" checked> backup avant MAJ</label>
   <label class="small"><input type="checkbox" id="bulk-stop"> arrêt sur erreur</label>
@@ -498,14 +523,14 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 </div>
 
 <div class="drawer-back" id="dback"></div>
-<div class="drawer" id="drawer">
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle" aria-hidden="true" tabindex="-1">
   <div class="dhead"><span class="dot" id="ddot"></span><h2 id="dtitle"></h2><span class="spacer"></span><button class="btn" id="dclose">✕</button></div>
   <div class="dbody" id="dbody"></div>
 </div>
 
-<div class="modal" id="logmodal"><div class="box"><h2 class="mt0">Journal des actions</h2><div id="loglist">…</div></div></div>
-<div class="modal" id="setmodal"><div class="box">
-  <h2 class="mt0">Réglages</h2>
+<div class="modal" id="logmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="log-title"><h2 class="mt0" id="log-title">Journal des actions</h2><div id="loglist">…</div></div></div>
+<div class="modal" id="setmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="set-title">
+  <h2 class="mt0" id="set-title">Réglages</h2>
   <h3>Cadence de collecte</h3>
   <div id="sched-body"><span class="muted small">chargement…</span></div>
   <h3>Clés SSH</h3>
@@ -513,13 +538,13 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
   <h3>Alertes Telegram</h3>
   <div id="alert-body"><span class="muted small">chargement…</span></div>
 </div></div>
-<div class="modal" id="addmodal"><div class="box">
-  <h2 class="mt0">Ajouter un WordPress</h2>
+<div class="modal" id="addmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="add-title">
+  <h2 class="mt0" id="add-title">Ajouter un WordPress</h2>
   <div id="add-steps" class="small" style="margin-bottom:12px"></div>
   <div id="add-body"></div>
   <div class="mt4"><button class="btn sm" id="add-close">Fermer</button></div>
 </div></div>
-<div class="modal" id="askmodal"><div class="box" style="max-width:520px">
+<div class="modal" id="askmodal"><div class="box" style="max-width:520px" role="dialog" aria-modal="true" aria-labelledby="ask-title">
   <h2 class="mt0" id="ask-title"></h2>
   <p class="hint" id="ask-intro"></p>
   <div id="ask-body"></div>
@@ -528,15 +553,15 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
     <button class="btn primary" id="ask-ok">Valider</button>
   </div>
 </div></div>
-<div class="modal" id="rbmodal"><div class="box" style="max-width:560px">
-  <h2 class="mt0">Rétablir une version</h2>
+<div class="modal" id="rbmodal"><div class="box" style="max-width:560px" role="dialog" aria-modal="true" aria-labelledby="rb-title">
+  <h2 class="mt0" id="rb-title">Rétablir une version</h2>
   <p id="rb-intro" class="hint"></p>
   <div id="rb-choices"></div>
   <div class="actions jend mt4">
     <button class="btn" id="rb-cancel">Annuler</button>
   </div>
 </div></div>
-<div class="modal" id="bulkmodal"><div class="box">
+<div class="modal" id="bulkmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="bm-title">
   <h2 class="mt0" id="bm-title">Exécution en masse</h2>
   <div class="bar"><div id="bm-bar"></div></div>
   <div id="bm-list" class="small"></div>
@@ -572,16 +597,27 @@ const SUBSLUG={
 };
 let NAVLOCK=false;   // évite que l'écriture de l'URL relance la navigation
 
-function showTab(tab, {ecrire=true}={}){
+/* Cache court par chargeur : `showTab` relançait tout le volet à CHAQUE clic
+   d'onglet — pour Sécurité, 5 requêtes dont /api/sec/vulns (~190 Ko, le parc
+   entier). Les boutons « Relancer » et les actions passent `force`. */
+const CACHE_TTL=60000, CACHE_AT={};
+function cacheFrais(k,force){
+  if(!force&&CACHE_AT[k]&&Date.now()-CACHE_AT[k]<CACHE_TTL) return true;
+  CACHE_AT[k]=Date.now(); return false; }
+function cacheVider(k){ delete CACHE_AT[k]; }
+
+function showTab(tab, {ecrire=true,push=false}={}){
   const t=document.querySelector(`.tab[data-tab="${tab}"]`);
   if(!t) return false;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   t.classList.add('active'); document.getElementById('page-'+tab).classList.add('active');
+  // Sondages propres à un volet : inutile de les laisser tourner ailleurs.
+  if(tab!=='sec'){ stopPoll('vulns'); stopPoll('phe'); }
   if(tab==='mgmt') loadMgmt();
   if(tab==='sec') loadSec();
   if(tab==='hist') loadHist();
-  if(ecrire) writeHash(tab);
+  if(ecrire) writeHash(tab,undefined,push);
   return true;
 }
 
@@ -590,12 +626,18 @@ function currentSub(tab){
   return [...nav.querySelectorAll('.subtab')].findIndex(b=>b.classList.contains('active'));
 }
 
-function writeHash(tab, sub){
+/* `push` : seule une navigation VOULUE par l'utilisateur (clic d'onglet ou de
+   sous-onglet) empile une entrée d'historique. Sans elle, `replaceState` seul
+   faisait sortir de l'application au premier clic sur « Précédent ». */
+function writeHash(tab, sub, push){
   if(NAVLOCK) return;
   const i=(sub===undefined)?currentSub(tab):sub;
   const slugs=SUBSLUG[tab]||[];
   const h='#'+tab+(i>=0&&slugs[i]?'/'+slugs[i]:'');
-  if(location.hash!==h) history.replaceState(null,'',h);
+  if(location.hash===h) return;
+  NAVLOCK=true;                        // pushState ne déclenche pas hashchange, ceinture et bretelles
+  try{ history[push?'pushState':'replaceState'](null,'',h); }catch(e){}
+  NAVLOCK=false;
 }
 
 function applyHash(){
@@ -611,20 +653,50 @@ function applyHash(){
   if(!ok) writeHash('dash');
 }
 
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>showTab(t.dataset.tab));
+document.querySelectorAll('.tab').forEach(t=>{ t.onclick=()=>showTab(t.dataset.tab,{push:true}); });
 window.addEventListener('hashchange', applyHash);
 
 /* données */
 function kName(d){ return ('kuma' in d)?d.kuma:d.domain; }
-function allSites(){ const out=[]; HIDDEN=0;
-  (FLEET?.servers||[]).forEach(s=>s.sites.forEach(x=>{
+/* Chaine de recherche pré-calculée : le filtre du tableau sérialisait
+   `plugins_updates_list` en JSON pour CHAQUE site à CHAQUE frappe. Elle est
+   construite une fois par collecte et couvre aussi les extensions déjà à jour
+   (`plugins_list`) et les comptes administrateurs. */
+function siteHaystack(d){
+  const bouts=[d.domain,d.kuma,d.srv,d.blogname,d.kuma_group,d.php_version,d.core_version];
+  (d.plugins_list||[]).forEach(p=>{ bouts.push(p.name); bouts.push(p.version); });
+  (d.plugins_updates_list||[]).forEach(p=>{ bouts.push(typeof p==='string'?p:(p&&(p.name||p.slug))); });
+  (d.admins||[]).forEach(a=>bouts.push(a&&a.login));
+  return bouts.filter(Boolean).join(' ').toLowerCase();
+}
+/* Mémoïsation : `allSites()` était reconstruite 3 fois par rendu (cartes,
+   filtre, méta). Le cache est vidé dès que FLEET change. */
+let SITECACHE=null;
+function allSites(){ if(SITECACHE) return SITECACHE;
+  const out=[]; HIDDEN=0;
+  (FLEET?.servers||[]).forEach(s=>(s.sites||[]).forEach(x=>{
     const d={srv:s.name,...x};
     if(d.visible===false){ HIDDEN++; return; }
     // un site ajouté sans SSH (mode REST) est géré explicitement : toujours visible,
     // même tant qu'aucun moniteur Kuma ne lui correspond.
     if(d.visible!==true && d.via!=='rest' && ('kuma' in d) && !d.kuma){ HIDDEN++; return; }
+    d._q=siteHaystack(d);
+    // État du serveur reporté sur ses sites : `stale` = injoignable à la
+    // dernière collecte, les chiffres affichés datent de la précédente.
+    d._stale=!!s.stale; d._srvErr=s.error||''; d._srvAt=s.last_attempt||'';
     out.push(d); }));
+  SITECACHE=out;
   return out; }
+/* Retrouve le site du parc derrière un nom vu ailleurs (clé Kuma d'un rapport
+   de vulnérabilités, alias…) : `find_site()` côté serveur ne connaît que le
+   vhost réel, pas l'alias de moniteur. */
+function siteByName(nom,srv){ const n=String(nom||'').toLowerCase(); if(!n) return null;
+  const S=allSites();
+  return S.find(s=>String(s.kuma||'').toLowerCase()===n&&(!srv||s.srv===srv))
+      || S.find(s=>String(s.domain||'').toLowerCase()===n&&(!srv||s.srv===srv))
+      || S.find(s=>String(s.kuma||'').toLowerCase()===n)
+      || S.find(s=>String(s.domain||'').toLowerCase()===n)
+      || null; }
 function st(d){ const n=kName(d); return n?STATUS[n]:undefined; }
 function bkAge(s){ const ts=s.updraft?.last_backup_ts; if(!ts) return null; return (Date.now()/1000-ts)/3600; }
 /* — lisibilité UpdraftPlus — */
@@ -653,10 +725,52 @@ function relTime(v){ const t=tsMs(v); if(t===null) return String(v??'');
   if(h<48) return 'il y a '+Math.round(h)+' h'; return 'il y a '+Math.round(h/24)+' j'; }
 function absTime(v){ const t=tsMs(v); return t===null?String(v??''):new Date(t).toLocaleString('fr-FR'); }
 function safeUrl(u){ const s=String(u??'').trim(); return /^(https?:\/\/|\/)[^\s]*$/i.test(s)?s:''; }
+/* Anti-rafale sur les champs de filtre : sans lui, chaque frappe redessine
+   l'integralite du tableau (40 sites x leurs extensions). */
+function debounce(fn,ms=200){ let t=null;
+  return function(...a){ clearTimeout(t); t=setTimeout(()=>fn.apply(this,a),ms); }; }
+
+/* ---- sondages : un seul endroit qui sait s'arreter ----
+   Chaque `setInterval(...api().catch(()=>null))` disperse tournait
+   indefiniment quand le backend tombait : l'appel echouait, le garde
+   `if(!st) return` rendait la main, et l'intervalle repartait — pour toujours.
+   `poll` compte les echecs consecutifs, s'arrete sur `until()`, et se laisse
+   arreter de l'exterieur (fermeture d'une modale, du tiroir, d'un onglet). */
+const POLLS={};
+function stopPoll(nom){ const c=POLLS[nom]; if(c) c.stop(); }
+function poll(nom,fn,{every=3000,maxErrors=5,until=null,onStop=null}={}){
+  stopPoll(nom);                       // un sondage par nom : jamais deux en parallele
+  let arrete=false, errs=0, t=null;
+  const ctl={ get stopped(){ return arrete; },
+    stop(){ if(arrete) return; arrete=true; if(t) clearTimeout(t); t=null;
+      if(POLLS[nom]===ctl) delete POLLS[nom];
+      // `onStop` est appelé QUELLE QUE SOIT la raison (fin normale, abandon sur
+      // erreurs, fermeture) : c'est là qu'on réactive un bouton « analyse… ».
+      if(onStop) try{ onStop(); }catch(e){} } };
+  POLLS[nom]=ctl;
+  const tick=async()=>{
+    if(arrete) return;
+    let r=null, ko=false;
+    try{ r=await fn(); errs=0; }
+    catch(e){ ko=true; if(++errs>=maxErrors){ ctl.stop(); return; } }
+    if(arrete) return;
+    if(!ko&&until&&until(r)){ ctl.stop(); return; }
+    t=setTimeout(tick,every);
+  };
+  tick();
+  return ctl;
+}
 /* domaine normalisé d'une URL (comparaisons site ↔ inventaire) */
 function hostOf(u){ const s=String(u??'').trim(); if(!s) return '';
   try{ return new URL(/^https?:\/\//i.test(s)?s:'https://'+s).hostname.replace(/^www\./i,'').toLowerCase(); }
   catch(e){ return s.replace(/^https?:\/\//i,'').replace(/^www\./i,'').split(/[/?#]/)[0].toLowerCase(); } }
+/* Serveur injoignable à la dernière collecte : les données du site sont celles
+   de la collecte précédente. Une pastille sur la ligne, le détail dans la bulle. */
+function staleBadge(s){ if(!s||!s._stale) return '';
+  const tip='données du '+(s._srvAt||'dernière collecte réussie')+', serveur '+(s.srv||'')+' injoignable'
+    +(s._srvErr?' : '+s._srvErr:'');
+  return ` <span class="pill warn" data-tip="${H(tip)}" role="button" tabindex="0"
+    aria-label="${H(tip)}">⚠ ancien</span>`; }
 /* colonne Serveur : les sites sans SSH sont inventoriés par l'agent via REST */
 function srvCell(s){ return s.via==='rest'
   ? `<span class="pill mut" title="inventaire via l'agent, sans SSH${s.srv?' · '+H(s.srv):''}">REST</span>`
@@ -698,8 +812,18 @@ function vizCell(s){ const v=vizInfo(s), p=vizOf(s), list=s.plugins_list||[];
                 :`<span class="vizrun" title="${ttl}">${body}</span>`); }
   return out; }
 
-async function loadFleet(){ FLEET=await api('fleet.json?'+Date.now());
-  const sel=document.getElementById('fsrv'); sel.innerHTML='<option value="">Tous les serveurs</option>'+FLEET.servers.map(s=>`<option>${s.name}</option>`).join('');
+/* Dédoublonnage : plusieurs actions enchaînées (bulk terminé, re-scan, retour
+   d'autorisation) déclenchaient trois collectes de fleet.json en parallèle. */
+let FLEETP=null;
+function loadFleet(){ if(FLEETP) return FLEETP;
+  FLEETP=chargerFleet().finally(()=>{ FLEETP=null; });
+  return FLEETP; }
+async function chargerFleet(){
+  const f=await api('fleet.json?'+Date.now());
+  FLEET=f; SITECACHE=null;
+  const sel=document.getElementById('fsrv');
+  sel.innerHTML='<option value="">Tous les serveurs</option>'
+    +(FLEET?.servers||[]).map(s=>`<option>${H(s.name)}</option>`).join('');
   const grps=[...new Set(allSites().map(s=>s.kuma_group).filter(Boolean))].sort();
   document.getElementById('fgrp').innerHTML='<option value="">Tous les clients</option>'+grps.map(g=>`<option>${H(g)}</option>`).join('');
   render(); }
@@ -708,12 +832,24 @@ async function loadStatus(){ try{
   const byId={}; (cfg.publicGroupList||[]).forEach(g=>(g.monitorList||[]).forEach(m=>byId[m.id]=m.name));
   STATUS={}; Object.entries(hb.heartbeatList||{}).forEach(([id,arr])=>{ const n=byId[id]; if(n&&arr.length) STATUS[n]=arr[arr.length-1].status; });
   render(); }catch(e){} }
+/* Cadence de collecte lue une fois (Réglages la modifie : loadSched() est rappelé après). */
+let SCHED=null;
+function schedLabel(){ const m=SCHED==null?null:+SCHED;
+  if(m==null) return 'actualisation automatique'; if(!m) return 'actualisation manuelle';
+  if(m===60) return 'actualisation horaire'; if(m<60) return `actualisation toutes les ${m} min`;
+  return m%60?`actualisation toutes les ${Math.floor(m/60)} h ${m%60}`:`actualisation toutes les ${m/60} h`; }
+async function loadSched(){ try{ const s=await api('/api/mgmt/schedule'); SCHED=s.interval_minutes; }catch(e){} updMeta(); }
 function updMeta(){ if(!FLEET) return;
   const rel=relTime(FLEET.generated_at), n=allSites().length;
+  const ko=(FLEET?.servers||[]).filter(x=>x&&x.stale);
+  const koTip=ko.map(x=>x.name+(x.last_attempt?' (essai du '+x.last_attempt+')':'')+(x.error?' : '+x.error:'')).join(' · ');
   document.getElementById('meta').innerHTML=
     `<b>${n}</b> site${n>1?'s':''} suivi${n>1?'s':''}<span class="sep">·</span>`
-    +`collecté ${H(rel)}<span class="sep">·</span>actualisation horaire`
-    +(HIDDEN?`<span class="sep">·</span>${HIDDEN} masqué${HIDDEN>1?'s':''}`:'');
+    +`collecté ${H(rel)}<span class="sep">·</span>${schedLabel()}`
+    +(HIDDEN?`<span class="sep">·</span>${HIDDEN} masqué${HIDDEN>1?'s':''}`:'')
+    // Un serveur muet fausse la lecture de tout le tableau : il se dit en clair.
+    +(ko.length?`<span class="sep">·</span><span class="pill warn" data-tip="${H('Données conservées de la collecte précédente pour : '+koTip)}"
+        role="button" tabindex="0">⚠ ${ko.length} serveur${ko.length>1?'s':''} injoignable${ko.length>1?'s':''}</span>`:'');
   document.getElementById('meta').title='Dernière collecte : '+H(FLEET.generated_at); }
 
 /* cartes */
@@ -725,8 +861,15 @@ function cards(){ const S=allSites(); let up=0,down=0;
     ['core','MAJ core',core,core?'warn':'ok'],['plug','MAJ plugins',plug,plug?'warn':'ok'],
     ['bk','backups>48h',bk,bk?'warn':'ok'],['err','en erreur',err,err?'err':'ok']];
   document.getElementById('cards').innerHTML=defs.map(([k,l,v,c])=>
-    `<div class="card ${FILT.card===k&&k?'sel':''}" data-card="${k}"><b style="color:var(--${c||'fg'})">${v}</b><small>${l}</small></div>`).join('');
-  document.querySelectorAll('.card').forEach(c=>c.onclick=()=>{ FILT.card=(FILT.card===c.dataset.card)?'':c.dataset.card; render(); }); }
+    `<div class="card ${FILT.card===k&&k?'sel':''}" data-card="${H(k)}" tabindex="0" role="button"
+       aria-pressed="${FILT.card===k&&k?'true':'false'}"><b style="color:var(--${c||'fg'})">${H(v)}</b><small>${H(l)}</small></div>`).join('');
+  document.querySelectorAll('#cards .card').forEach(c=>{
+    const act=()=>{ FILT.card=(FILT.card===c.dataset.card)?'':c.dataset.card; render(); };
+    c.onclick=act; c.onkeydown=e=>activeAuClavier(e,act); }); }
+/* Enter/Espace sur un élément rendu cliquable : un <div>/<tr>/<th> ne le fait
+   pas tout seul, contrairement à un <button>. */
+function activeAuClavier(e,fn){
+  if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){ e.preventDefault(); fn(); } }
 
 function rowVals(s){ const v=st(s), age=bkAge(s);
   return { status:v===undefined?2.5:v, domain:kName(s)||s.domain, server:s.srv, core:s.core_version||'',
@@ -734,7 +877,7 @@ function rowVals(s){ const v=st(s), age=bkAge(s);
     err:Object.keys(s.errors||{}).length }; }
 
 function filtered(){ let S=allSites(); const q=FILT.q.toLowerCase();
-  if(q) S=S.filter(s=>((kName(s)||'')+s.domain+s.srv+(s.blogname||'')+JSON.stringify(s.plugins_updates_list||[])).toLowerCase().includes(q));
+  if(q) S=S.filter(s=>(s._q||'').includes(q));
   if(FILT.srv) S=S.filter(s=>s.srv===FILT.srv);
   if(FILT.grp) S=S.filter(s=>s.kuma_group===FILT.grp);
   if(FILT.st) S=S.filter(s=>{ const v=st(s); return FILT.st==='up'?v===1:FILT.st==='down'?v===0:v===undefined; });
@@ -749,11 +892,12 @@ function rowHTML(s){ const v=st(s), age=bkAge(s), dot=v===1?'up':v===0?'down':v=
   let pl='—',plc='mut'; if(s.plugins_total!=null){ pl=`${s.plugins_active}/${s.plugins_total}`; if(s.plugins_updates){ pl+=` · ${s.plugins_updates} MAJ`; plc='warn'; } else { pl+=' · ok'; plc='ok'; } }
   let bk='—',bkc='mut'; if(s.updraft){ if(age===null){ bk='jamais ?'; bkc='warn'; } else { bk=age>=48?`il y a ${(age/24).toFixed(1)} j`:`il y a ${Math.round(age)} h`; bkc=age>=48?'warn':'ok'; } }
   const ne=Object.keys(s.errors||{}).length, label=kName(s)||s.domain, sub=H(s.blogname||'')+(label!==s.domain?` <span class="muted">· ${H(s.domain)}</span>`:'');
-  return `<tr data-d="${H(s.domain)}" data-s="${H(s.srv)}">
-    <td><input type="checkbox" class="rowchk" ${SEL.has(key(s))?'checked':''}></td>
+  return `<tr data-d="${H(s.domain)}" data-s="${H(s.srv)}" tabindex="0" role="button"
+      aria-label="${H('Ouvrir la fiche de '+(label||s.domain))}">
+    <td><input type="checkbox" class="rowchk" ${SEL.has(key(s))?'checked':''} aria-label="${H('Sélectionner '+(label||s.domain))}"></td>
     <td><span class="dot ${dot}"></span></td>
     <td class="site"><b>${H(label)}</b><button class="rowscan" data-rowscan title="Re-scanner ce site maintenant" aria-label="Re-scanner ce site">↻</button><div class="sub">${sub}</div></td>
-    <td>${srvCell(s)}</td>
+    <td>${srvCell(s)}${staleBadge(s)}</td>
     <td><span class="pill ${cc}">${core}</span></td>
     <td><span class="pill ${plc}">${pl}</span></td>
     <td><span class="pill ${s.themes_updates?'warn':'mut'}">${s.themes_updates??'—'}</span></td>
@@ -776,41 +920,74 @@ function render(){ if(!FLEET) return; cards(); updMeta();
     if(vb) vb.onclick=e=>{ e.stopPropagation(); vizInstall(vb,tr.dataset.s,tr.dataset.d); };
     tr.querySelectorAll('[data-vizrun]').forEach(a=>a.onclick=e=>e.stopPropagation());
     const rs=tr.querySelector('[data-rowscan]');
-    if(rs) rs.onclick=e=>{ e.stopPropagation(); rowRescan(rs,tr.dataset.s,tr.dataset.d); };
-    tr.onclick=()=>openDrawer(tr.dataset.s,tr.dataset.d); });
+    if(rs){ rs.dataset.key=tr.dataset.s+'|'+tr.dataset.d;
+      rs.onclick=e=>{ e.stopPropagation(); rowRescan(rs,tr.dataset.s,tr.dataset.d); };
+      rs.onkeydown=e=>e.stopPropagation(); }
+    tr.onclick=()=>openDrawer(tr.dataset.s,tr.dataset.d);
+    tr.onkeydown=e=>{ if(e.target!==tr) return;      // la case à cocher garde sa touche Espace
+      activeAuClavier(e,()=>openDrawer(tr.dataset.s,tr.dataset.d)); }; });
   bulkBar(); }
+/* Après un re-render, le nœud d'origine n'existe plus : on retrouve le bouton
+   de la même ligne par sa clé serveur|domaine. */
+function rowscanFor(k){ return document.querySelector(`#tb [data-rowscan][data-key="${CSS.escape(k)}"]`); }
 
-/* Re-scan d'un seul site depuis sa ligne, sans ouvrir le tiroir. */
+/* Re-scan d'un seul site depuis sa ligne, sans ouvrir le tiroir.
+   `loadFleet()` redessine le tableau et DÉTRUIT le bouton : le ✓/✗ était posé
+   sur un nœud déjà remplacé, donc invisible. On re-cible par data-key après le
+   rendu, et on laisse l'état 2,5 s. */
 async function rowRescan(btn,srv,dom){
   if(btn.dataset.busy) return;
-  btn.dataset.busy='1'; const avant=btn.textContent;
+  const cle=srv+'|'+dom;
+  btn.dataset.busy='1';
   btn.textContent='⏳'; btn.classList.add('spin');
+  let ok=false, titre='erreur réseau';
   try{
     const j=await api('/api/actions/run',{server:srv,domain:dom,action:'rescan'});
-    btn.classList.remove('spin');
-    btn.textContent=j&&j.ok?'✓':'✗';
-    btn.title=j&&j.ok?'site re-scanné':('échec : '+((j&&(j.output||j.error))||'').slice(0,120));
-    if(j&&j.ok) await loadFleet();
-  }catch(e){ btn.classList.remove('spin'); btn.textContent='✗'; btn.title='erreur réseau'; }
-  setTimeout(()=>{ btn.textContent=avant; btn.title='Re-scanner ce site maintenant';
-    delete btn.dataset.busy; },2500);
+    ok=!!(j&&j.ok);
+    titre=ok?'site re-scanné':('échec : '+((j&&(j.output||j.error))||'').slice(0,120));
+    if(ok) await loadFleet();
+  }catch(e){ ok=false; titre='erreur réseau'; }
+  const b2=rowscanFor(cle)||btn;
+  b2.classList.remove('spin'); b2.dataset.busy='1';
+  b2.textContent=ok?'✓':'✗'; b2.title=titre;
+  setTimeout(()=>{ const b3=rowscanFor(cle)||b2;
+    b3.textContent='↻'; b3.title='Re-scanner ce site maintenant';
+    delete b3.dataset.busy; delete b2.dataset.busy; },2500);
 }
 
 async function vizInstall(btn,srv,dom){
   if(!btn.dataset.confirm){ btn.dataset.confirm='1'; btn.dataset.label=btn.textContent; btn.textContent='Confirmer ?'; btn.classList.add('danger');
     setTimeout(()=>{ if(btn.dataset.confirm){ delete btn.dataset.confirm; btn.textContent=btn.dataset.label; btn.classList.remove('danger'); } },4000); return; }
+  const cle=srv+'|'+dom;
   const td=btn.closest('td'); td.innerHTML='<div class="bar indet"><div></div></div>';
+  const echec=t=>{ // après loadFleet la cellule d'origine a disparu : on retrouve la ligne
+    const tr=document.querySelector(`#tb tr[data-s="${CSS.escape(srv)}"][data-d="${CSS.escape(dom)}"]`);
+    const c=(tr&&tr.querySelector('.vizcell'))||td;
+    c.innerHTML=`<span class="pill err" title="${H(t)}">échec</span>`; };
   try{ const j=await api('/api/actions/run',{server:srv,domain:dom,action:'vizproof_install',arg:null});
-    if(!j.ok){ td.innerHTML=`<span class="pill err" title="${H((j.output||'rc '+j.rc).slice(-300))}">échec</span>`; return; }
+    if(!j.ok){ echec((j.output||'rc '+j.rc).slice(-300)); return; }
     await api('/api/actions/run',{server:srv,domain:dom,action:'rescan',arg:null});
     await loadFleet();
-  }catch(e){ td.innerHTML=`<span class="pill err" title="${H(String(e))}">échec</span>`; } }
+    const b=rowscanFor(cle);                      // repère visuel : l'installation a abouti
+    if(b){ b.dataset.busy='1'; b.textContent='✓'; b.title='vizproof-timeline installé';
+      setTimeout(()=>{ const b3=rowscanFor(cle); if(b3){ b3.textContent='↻';
+        b3.title='Re-scanner ce site maintenant'; delete b3.dataset.busy; } },2500); }
+  }catch(e){ echec(String(e)); } }
 
-['q','fsrv','fgrp','fst'].forEach(id=>{ const map={q:'q',fsrv:'srv',fgrp:'grp',fst:'st'};
-  document.getElementById(id)['on'+(id==='q'?'input':'change')]=e=>{ FILT[map[id]]=e.target.value; render(); }; });
+document.getElementById('q').oninput=debounce(e=>{ FILT.q=e.target.value; render(); },200);
+['fsrv','fgrp','fst'].forEach(id=>{ const map={fsrv:'srv',fgrp:'grp',fst:'st'};
+  document.getElementById(id).onchange=e=>{ FILT[map[id]]=e.target.value; render(); }; });
 ['ftodo','fgroupby','fcompact'].forEach(id=>{ const map={ftodo:'todo',fgroupby:'groupby',fcompact:'compact'};
   document.getElementById(id).onchange=e=>{ FILT[map[id]]=e.target.checked; render(); }; });
-document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; if(SORT.k===k) SORT.dir*=-1; else SORT={k,dir:1}; render(); });
+/* En-têtes de tri : atteignables au clavier et annoncés (aria-sort). */
+function majAriaSort(){ document.querySelectorAll('th[data-k]').forEach(th=>{
+  th.setAttribute('aria-sort', th.dataset.k===SORT.k?(SORT.dir>0?'ascending':'descending'):'none'); }); }
+document.querySelectorAll('th[data-k]').forEach(th=>{
+  th.tabIndex=0;
+  if(!th.getAttribute('title')) th.title='Trier sur cette colonne';
+  const act=()=>{ const k=th.dataset.k; if(SORT.k===k) SORT.dir*=-1; else SORT={k,dir:1}; majAriaSort(); render(); };
+  th.onclick=act; th.onkeydown=e=>activeAuClavier(e,act); });
+majAriaSort();
 document.getElementById('selall').onclick=e=>{ filtered().forEach(s=>{ if(e.target.checked) SEL.add(key(s)); else SEL.delete(key(s)); }); render(); };
 
 /* barre d'actions de masse */
@@ -822,28 +999,47 @@ document.getElementById('bulk-run').onclick=async()=>{
   // « MAJ plugins sauf… » retiré : le gel par extension (tiroir du site)
   // exclut désormais automatiquement, et de façon persistante.
   const sites=allSites().filter(s=>SEL.has(key(s)));
-  if(!confirm(`Exécuter « ${document.getElementById('bulk-act').selectedOptions[0].text} » sur ${sites.length} site(s) ?`)) return;
+  const libelle=document.getElementById('bulk-act').selectedOptions[0].text;
+  if(!sites.length){ askInfo('Aucun site sélectionné','Sélectionnez au moins un site dans le tableau.'); return; }
+  if(!await askConfirm(`Exécuter <b>${H(libelle)}</b> sur <b>${sites.length}</b> site(s) ?`,
+      {titre:'Action groupée',ok:'Exécuter'})) return;
   const tasks=sites.map(s=>({server:s.srv,domain:s.domain,action:act,arg}));
-  const r=await api('/api/actions/bulk',{tasks,mode:document.getElementById('bulk-stop').checked?'stop':'continue',
-    backup_first:document.getElementById('bulk-backup').checked,viz_verify:document.getElementById('bulk-viz').checked});
-  if(r.job){ CURJOB=r.job; openBulkModal(); pollBulk(); } };
+  let r; try{ r=await api('/api/actions/bulk',{tasks,mode:document.getElementById('bulk-stop').checked?'stop':'continue',
+    backup_first:document.getElementById('bulk-backup').checked,viz_verify:document.getElementById('bulk-viz').checked}); }
+  catch(e){ r={error:String(e)}; }
+  // Sans ce `else`, une réponse 400 du backend (action refusée, cible invalide)
+  // ne produisait strictement rien à l'écran.
+  if(r&&r.job){ CURJOB=r.job; openBulkModal(); pollBulk(); }
+  else askInfo('Action groupée impossible',(r&&r.error)?H(r.error):'Le serveur n\'a pas renvoyé de tâche.'); };
 let BMTITLE='Exécution en masse';
 function openBulkModal(title){ BMTITLE=title||'Exécution en masse'; document.getElementById('bulkmodal').classList.add('open'); }
-document.getElementById('bm-close').onclick=()=>{ document.getElementById('bulkmodal').classList.remove('open'); loadFleet(); refreshSecIfActive(); };
-document.getElementById('bm-cancel').onclick=()=>{ if(CURJOB) api('/api/actions/bulk_cancel',{job:CURJOB}); };
-function refreshSecIfActive(){ try{ if(document.getElementById('page-sec').classList.contains('active')) loadSec(); }catch(e){} }
+document.getElementById('bm-close').onclick=()=>{
+  document.getElementById('bulkmodal').classList.remove('open');
+  stopPoll('bulk'); CURJOB=null;                 // sinon le rafraîchissement de fond ne repart jamais
+  loadFleet(); refreshSecIfActive(); };
+document.getElementById('bm-cancel').onclick=()=>{ if(CURJOB) api('/api/actions/bulk_cancel',{job:CURJOB}).catch(()=>{}); };
+function refreshSecIfActive(){ try{ if(document.getElementById('page-sec').classList.contains('active')) loadSec(true); }catch(e){} }
 /* verdict VizProof d'une tâche de masse (champ optionnel `viz`) */
 function vizTaskBadge(v){ if(v===null||v===undefined||v==='') return '';
   const s=String(v), m={'ok':['ok','visuel OK'],'anomalies':['err','anomalies'],'échec':['err','visuel échoué'],'non configuré':['mut','visuel non configuré']}[s]||['mut',s];
   return ` <span class="pill ${m[0]}" title="vérification visuelle VizProof">${H(m[1])}</span>`; }
-async function pollBulk(){ if(!CURJOB) return; let j; try{ j=await api('/api/actions/bulk_status?job='+CURJOB); }catch(e){ return; }
-  if(!j||j.error) return;
-  const tasks=Array.isArray(j.tasks)?j.tasks:[], done=j.done||0, total=j.total||0;
-  document.getElementById('bm-bar').style.width=(total?Math.round(100*done/total):0)+'%';
-  document.getElementById('bm-title').textContent=`${BMTITLE} — ${done}/${total}`+(j.running?' (en cours)':j.stopped?' (arrêtée sur erreur)':' (terminée)');
-  document.getElementById('bm-list').innerHTML=tasks.map(t=>{ const c=t.status==='ok'?'ok':t.status==='échec'?'err':t.status==='en cours'?'warn':'mut';
-    return `<div class="logline"><span class="pill ${c}">${H(t.status)}</span> <b>${H(t.domain)}</b>${vizTaskBadge(t.viz)} ${t.backup?`<span class="muted small">backup: ${H(t.backup)}</span>`:''} ${t.output_tail?`<br><code>${H(String(t.output_tail).slice(-180))}</code>`:''}</div>`; }).join('')||'<span class="muted small">aucune tâche.</span>';
-  if(j.running){ setTimeout(pollBulk,2000); } else { CURJOB=j.id; loadFleet(); refreshSecIfActive(); } }
+function pollBulk(){ if(!CURJOB) return;
+  const job=CURJOB;
+  poll('bulk',async()=>{
+    const j=await api('/api/actions/bulk_status?job='+job);
+    if(!j||j.error){ document.getElementById('bm-title').textContent=BMTITLE+' — '+((j&&j.error)||'suivi indisponible');
+      return {fini:true,ko:true}; }
+    const tasks=Array.isArray(j.tasks)?j.tasks:[], done=j.done||0, total=j.total||0;
+    document.getElementById('bm-bar').style.width=(total?Math.round(100*done/total):0)+'%';
+    document.getElementById('bm-title').textContent=`${BMTITLE} — ${done}/${total}`+(j.running?' (en cours)':j.stopped?' (arrêtée sur erreur)':' (terminée)');
+    document.getElementById('bm-list').innerHTML=tasks.map(t=>{ const c=t.status==='ok'?'ok':t.status==='échec'?'err':t.status==='en cours'?'warn':'mut';
+      return `<div class="logline"><span class="pill ${c}">${H(t.status)}</span> <b>${H(t.domain)}</b>${vizTaskBadge(t.viz)} ${t.backup?`<span class="muted small">backup: ${H(t.backup)}</span>`:''} ${t.output_tail?`<br><code>${H(String(t.output_tail).slice(-180))}</code>`:''}</div>`; }).join('')||'<span class="muted small">aucune tâche.</span>';
+    if(!j.running){
+      // La remise à null est indispensable : le rafraîchissement de fond
+      // (setInterval …if(!CURJOB) loadFleet()) restait sinon éteint à vie.
+      CURJOB=null; loadFleet(); refreshSecIfActive(); }
+    return {fini:!j.running};
+  },{every:2000,maxErrors:5,until:r=>!!(r&&r.fini)}); }
 
 /* export CSV */
 document.getElementById('csvbtn').onclick=()=>{ const S=filtered();
@@ -872,7 +1068,15 @@ document.getElementById('views').onchange=e=>{ const v=JSON.parse(localStorage.d
 
 /* tiroir détail + actions unitaires */
 let CUR=null;
+/* Un seul compteur de séquence pour TOUS les chargeurs du tiroir : ouvrir A
+   puis vite B affichait sinon les gels, les points de restauration ou les
+   vulnérabilités de A dans la fiche de B (une seule requête sur six était
+   protégée). Chaque chargeur capture DRAWERSEQ et jette son résultat s'il a
+   été dépassé. */
+let DRAWERSEQ=0, DRAWEROPENER=null;
 function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain===dom); if(!s) return; CUR=s;
+  DRAWERSEQ++; stopPoll('safe');
+  DRAWEROPENER=document.activeElement;
   const v=st(s); document.getElementById('ddot').className='dot '+(v===1?'up':v===0?'down':v===2?'pending':'');
   document.getElementById('dtitle').textContent=kName(s)||s.domain;
   const ud=s.updraft, age=bkAge(s);
@@ -913,6 +1117,9 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       <div class="dstat" id="dvuln"><div class="lbl">Vulnérab.</div>
         <div class="val muted">…</div><div class="sub">analyse…</div></div>
     </div>
+    ${s._stale?`<div class="warnbox small mt2">⚠ <b>Serveur ${H(s.srv)} injoignable</b> à la dernière collecte —
+      les chiffres ci-dessus datent du ${H(s._srvAt||'relevé précédent')} et peuvent avoir changé depuis.
+      ${s._srvErr?`<div class="mt1"><code>${H(s._srvErr)}</code></div>`:''}</div>`:''}
     ${s.via==='rest'
       ? `<div class="agroup"><span class="glbl">Actions</span><div class="actions" id="rest-actions">
            <span id="rest-vizslot"></span>
@@ -955,7 +1162,8 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     <div class="dsec"><h3>Fiche</h3>
     <div class="kv">
       <span class="k">Nom</span><span>${H(s.blogname||'—')}</span>
-      <span class="k">URL</span><span><a target="_blank" rel="noopener" href="${H(s.siteurl||'https://'+s.domain)}">${H(s.siteurl||'—')}</a></span>
+      <span class="k">URL</span><span>${(u=>u?`<a target="_blank" rel="noopener noreferrer" href="${H(u)}">${H(s.siteurl||u)}</a>`
+        :`<span class="muted">${H(s.siteurl||'—')}</span>`)(safeUrl(s.siteurl||'https://'+s.domain))}</span>
       <span class="k">Serveur</span><span>${srvCell(s)}${s.via==='rest'&&s.srv?' <span class="muted">'+H(s.srv)+'</span>':''}</span>
       ${s.path?'<span class="k">Chemin</span><span><code class="small">'+H(s.path)+'</code></span>':''}
       <span class="k">Client (Kuma)</span><span>${H(s.kuma_group||'—')}</span>
@@ -971,28 +1179,36 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       <span class="k">Destination</span><span>${H(ud.service||'?')}</span></div>`; })()
       :'<span class="muted">UpdraftPlus non détecté</span>'}</div>
     ${Object.keys(s.errors||{}).length?`<div class="dsec"><h3>Erreurs de collecte</h3><div class="errbox">${H(Object.entries(s.errors).map(([k,v])=>k+': '+v).join('\n\n'))}</div></div>`:''}
-    <div class="console" id="console"></div>
+    <div class="console" id="console" data-domain="${H(s.domain)}"></div>
     <div class="dsec"><h3>Historique</h3>
     <div id="timeline"><span class="muted small">chargement…</span></div></div>`;
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
   const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
   loadPolicy(s.srv,s.domain);
   loadRollbackPoints(s.srv,s.domain);
+  loadSafeStatus(s.domain);
   document.querySelectorAll('#dbody .prb').forEach(b=>b.onclick=()=>askVersion(b.dataset.slug,b));
   const pt=document.getElementById('pall-toggle');
   if(pt) pt.onclick=()=>{ const t=document.getElementById('pall-tbl'), hi=document.getElementById('pall-hint');
     t.hidden=!t.hidden; if(hi) hi.style.display=t.hidden?'':'none';
     pt.textContent=t.hidden?`Afficher (${t.querySelectorAll('tr').length} à jour)`:'Masquer'; };
-  document.getElementById('drawer').classList.add('open'); document.getElementById('dback').classList.add('open');
+  const dr=document.getElementById('drawer');
+  dr.classList.add('open'); dr.setAttribute('aria-hidden','false');
+  document.getElementById('dback').classList.add('open');
+  document.getElementById('dclose').focus();
   loadTimeline(s.srv,s.domain);
   drawerVulns(kName(s)||s.domain);
   if(s.via==='rest') loadWpCred(s.srv,s.domain); }
 
 /* ---- rétablir une version antérieure d'une extension ---- */
-let RBPOINTS=[];
+let RBPOINTS=[], RBSITE={srv:'',dom:''};
 async function loadRollbackPoints(srv,dom){
+  const seq=DRAWERSEQ;
+  let pts=[];
   try{ const r=await api(`/api/actions/rollback_points?server=${encodeURIComponent(srv)}&domain=${encodeURIComponent(dom)}`);
-       RBPOINTS=r.points||[]; }catch(e){ RBPOINTS=[]; }
+       pts=r.points||[]; }catch(e){ pts=[]; }
+  if(seq!==DRAWERSEQ) return;          // un autre site a été ouvert entre-temps
+  RBPOINTS=pts; RBSITE={srv,dom};
   const sec=document.getElementById('drbsec'), list=document.getElementById('drblist');
   if(!sec||!list) return;
   sec.style.display=RBPOINTS.length?'':'none';
@@ -1008,6 +1224,15 @@ async function loadRollbackPoints(srv,dom){
   list.querySelectorAll('.rbgo').forEach(b=>b.onclick=()=>doRollback(b.dataset.slug,{dir:b.dataset.dir},b));
 }
 async function doRollback(slug,src,btn){
+  const cible={srv:CUR&&CUR.srv, dom:CUR&&CUR.domain};
+  // Garde-fou : une archive appartient au site qui l'a produite. Si le tiroir a
+  // changé de site entre l'affichage de la liste et le clic, on refuse plutôt
+  // que de restaurer les fichiers d'un site sur un autre.
+  if(src.dir&&(RBSITE.srv!==cible.srv||RBSITE.dom!==cible.dom)){
+    askInfo('Point de restauration périmé',
+      `Cette archive appartient à <b>${H(RBSITE.dom||'un autre site')}</b>, or la fiche ouverte est
+       <b>${H(cible.dom||'—')}</b>. Rouvrez le site concerné pour la rétablir.`);
+    return; }
   const quoi=src.dir?"depuis l'archive locale, à l'identique":`en version ${src.version}`;
   const intro=document.getElementById('rb-intro'), box=document.getElementById('rb-choices');
   const pied=document.getElementById('rb-cancel');
@@ -1025,7 +1250,7 @@ async function doRollback(slug,src,btn){
     box.innerHTML='<div class="mt2"><span class="pill mut">opération en cours…</span></div>';
     let r;
     try{ r=await api('/api/actions/plugin_rollback',
-        Object.assign({server:CUR.srv,domain:CUR.domain,slug},src)); }
+        Object.assign({server:cible.srv,domain:cible.dom,slug},src)); }
     catch(e){ r={ok:false,rc:'—',output:String(e)}; }
     intro.innerHTML=r.ok?`<b>${H(slug)}</b> rétabli.`:`Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
     const sortie=stripPhpNoise(r.output||'');
@@ -1041,41 +1266,105 @@ async function doRollback(slug,src,btn){
 /* ---- infobulles : ouverture au CLIC ----
    Delegation sur le document : les pastilles ? sont souvent creees a la volee
    (tiroir, listes), un binding a l'initialisation les manquerait. */
-function fermerTips(sauf){
-  document.querySelectorAll('.tipbox').forEach(t=>{ if(t.parentNode!==sauf) t.remove(); });
-  document.querySelectorAll('.info.open').forEach(b=>{ if(b!==sauf) b.classList.remove('open'); });
+/* La bulle vit dans <body> (position:fixed) : ancrée dans le tiroir elle passait
+   sous les modales, et le défilement de `.dbody` la rognait. Elle est donc
+   positionnée à la main, et refermée dès que la page bouge. */
+let TIPEL=null, TIPFOR=null;
+function fermerTips(){ if(TIPEL){ TIPEL.remove(); TIPEL=null; }
+  if(TIPFOR){ TIPFOR.classList.remove('open'); TIPFOR=null; } }
+function ouvrirTip(p){
+  fermerTips();
+  const b=document.createElement('span');
+  b.className='tipbox'; b.setAttribute('role','tooltip'); b.textContent=p.dataset.tip||'';
+  document.body.appendChild(b);
+  const r=p.getBoundingClientRect(), bw=b.offsetWidth, bh=b.offsetHeight;
+  let left=r.left-6;
+  if(left+bw>window.innerWidth-8) left=window.innerWidth-8-bw;
+  if(left<8) left=8;
+  let top=r.bottom+7, haut=false;
+  if(top+bh>window.innerHeight-8 && r.top-7-bh>8){ top=r.top-7-bh; haut=true; }
+  b.style.left=left+'px'; b.style.top=top+'px';
+  b.style.setProperty('--tipx',Math.max(4,Math.min(bw-14,r.left+r.width/2-left-4.5))+'px');
+  if(haut) b.classList.add('up');
+  TIPEL=b; TIPFOR=p; p.classList.add('open');
 }
 document.addEventListener('click',e=>{
-  const p=e.target.closest('.info');
-  if(!p){ if(!e.target.closest('.tipbox')) fermerTips(null); return; }
+  const p=e.target.closest('[data-tip]');
+  if(!p){ if(!e.target.closest('.tipbox')) fermerTips(); return; }
   e.stopPropagation();
-  const ouverte=p.querySelector('.tipbox');
-  fermerTips(p);
-  if(ouverte){ ouverte.remove(); p.classList.remove('open'); return; }
-  const b=document.createElement('span');
-  b.className='tipbox'; b.textContent=p.dataset.tip||'';
-  p.appendChild(b); p.classList.add('open');
-  // Si la bulle deborde a droite, on la recale sur le bord droit de la pastille.
-  const r=b.getBoundingClientRect();
-  if(r.right>window.innerWidth-8){ b.style.left='auto'; b.style.right='-6px';
-    const fl=b.querySelector('*'); if(fl) fl.remove(); }
+  if(TIPFOR===p){ fermerTips(); return; }
+  ouvrirTip(p);
 });
-document.addEventListener('keydown',e=>{ if(e.key==='Escape') fermerTips(null); });
+document.addEventListener('keydown',e=>{
+  const p=e.target&&e.target.closest&&e.target.closest('[data-tip][tabindex]');
+  if(!p) return;
+  activeAuClavier(e,()=>{ if(TIPFOR===p) fermerTips(); else ouvrirTip(p); });
+});
+/* En position:fixed la bulle ne suit plus son ancre : on la referme. */
+window.addEventListener('scroll',()=>{ if(TIPEL) fermerTips(); },true);
+window.addEventListener('resize',()=>{ if(TIPEL) fermerTips(); });
 
-function askClose(){ document.getElementById('askmodal').classList.remove('open'); }
+/* Échap ferme UNE chose, la plus haute : la bulle, sinon la modale du dessus,
+   sinon le tiroir. */
+function fermerModale(m){
+  if(!m) return;
+  if(m.id==='askmodal'){ document.getElementById('ask-cancel').click(); return; }
+  if(m.id==='rbmodal'){ closeRb(); return; }
+  if(m.id==='addmodal'){ closeAdd(); return; }
+  if(m.id==='bulkmodal'){ document.getElementById('bm-close').click(); return; }
+  m.classList.remove('open');
+}
+/* Ordre de fermeture : l'ordre du DOM ne dit pas laquelle est au-dessus (toutes
+   les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
+   viennent en tête. */
+const MODALES=['askmodal','rbmodal','addmodal','bulkmodal','setmodal','logmodal'];
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  if(TIPEL){ fermerTips(); return; }
+  const id=MODALES.find(x=>{ const m=document.getElementById(x); return m&&m.classList.contains('open'); });
+  if(id){ fermerModale(document.getElementById(id)); return; }
+  if(document.getElementById('drawer').classList.contains('open')) closeDrawer();
+});
+
+let ASKOPENER=null;
+function askClose(){ document.getElementById('askmodal').classList.remove('open');
+  // Le focus revient au bouton qui a ouvert la modale : sans cela il repart en
+  // haut du document et la navigation clavier perd sa place.
+  const o=ASKOPENER; ASKOPENER=null;
+  if(o&&o.isConnected&&typeof o.focus==='function'){ try{ o.focus(); }catch(e){} } }
 document.getElementById('ask-cancel').onclick=askClose;
-document.getElementById('askmodal').onclick=e=>{ if(e.target.id==='askmodal') askClose(); };
+document.getElementById('askmodal').onclick=e=>{ if(e.target.id==='askmodal') document.getElementById('ask-cancel').click(); };
 function askOpen(titre,intro,corps,onOk,onCancel){
+  if(!document.getElementById('askmodal').classList.contains('open')) ASKOPENER=document.activeElement;
   document.getElementById('ask-title').textContent=titre;
   document.getElementById('ask-intro').innerHTML=intro||'';
   document.getElementById('ask-body').innerHTML=corps;
   const ok=document.getElementById('ask-ok'), an=document.getElementById('ask-cancel');
   const ok2=ok.cloneNode(true), an2=an.cloneNode(true);   // purge des handlers précédents
   ok.replaceWith(ok2); an.replaceWith(an2);
-  ok2.onclick=()=>{ if(onOk()!==false) askClose(); };
+  ok2.textContent='Valider'; ok2.className='btn primary';   // état neutre : askConfirm le surcharge
+  an2.textContent='Annuler'; an2.className='btn'; an2.style.display='';
+  ok2.onclick=()=>{ if(!onOk||onOk()!==false) askClose(); };
   an2.onclick=()=>{ askClose(); if(onCancel) onCancel(); };
   document.getElementById('askmodal').classList.add('open');
-  const f=document.querySelector('#ask-body input,#ask-body select'); if(f) f.focus();
+  const f=document.querySelector('#ask-body input,#ask-body select')||ok2; f.focus();
+}
+/* Confirmation : remplace `confirm()`, qui ne sait ni styler, ni afficher du
+   HTML, ni nommer son bouton d'action. */
+function askConfirm(msg,{titre='Confirmer',ok='Valider',danger=false}={}){
+  return new Promise(res=>{
+    askOpen(titre,msg,'',()=>res(true),()=>res(false));
+    const b=document.getElementById('ask-ok');
+    b.textContent=ok; b.className=danger?'btn danger':'btn primary'; b.focus();
+  });
+}
+/* Message d'information : remplace `alert()`. Un seul bouton. */
+function askInfo(titre,msg){
+  return new Promise(res=>{
+    askOpen(titre,msg,'',()=>res(true),()=>res(true));
+    const b=document.getElementById('ask-ok'), a=document.getElementById('ask-cancel');
+    b.textContent='Fermer'; a.style.display='none'; b.focus();
+  });
 }
 function askText(titre,intro,defaut){
   return new Promise(res=>{
@@ -1123,13 +1412,13 @@ async function askVersion(slug,btn){
       Seuls les <b>fichiers</b> sont remplacés — la base n'est pas touchée.`;
     let h='';
     if(arc){
-      h+=`<div class="glbl" style="margin:10px 0 6px">Archive locale — restitution à l'identique</div>
+      h+=`<div class="glbl glbl-sep">Archive locale — restitution à l'identique</div>
         <div class="actions"><button class="btn primary sm rbpick" data-kind="dir" data-val="${H(arc.dir)}">
           ↺ ${H(arc.versions[slug]||'version précédente')}</button>
           <span class="muted small">telle qu'elle était avant la mise à jour</span></div>`;
     }
     if(vs.length){
-      h+=`<div class="glbl" style="margin:14px 0 6px">Versions publiées sur wordpress.org</div>
+      h+=`<div class="glbl glbl-sep">Versions publiées sur wordpress.org</div>
         <div class="actions">`+vs.slice(0,24).map(v=>
           `<button class="btn sm rbpick" data-kind="version" data-val="${H(v)}">${H(v)}${v===actuelle?' <span class="muted">(actuelle)</span>':''}</button>`).join('')+`</div>`;
     }
@@ -1167,17 +1456,23 @@ function renderPolicy(){
   });
 }
 async function loadPolicy(srv,dom){
-  try{ const r=await api('/api/actions/policy?domain='+encodeURIComponent(dom)); FROZEN=r.frozen||[]; }
-  catch(e){ FROZEN=[]; }
+  const seq=DRAWERSEQ;
+  let f=[];
+  try{ const r=await api('/api/actions/policy?domain='+encodeURIComponent(dom)); f=r.frozen||[]; }
+  catch(e){ f=[]; }
+  if(seq!==DRAWERSEQ) return;          // le tiroir affiche un autre site : résultat périmé
+  FROZEN=f;
   renderPolicy();
 }
 
 /* vulnérabilités du site affiché : réutilise le dernier croisement (aucun recalcul) */
 async function drawerVulns(dom){
+  const seq=DRAWERSEQ;
   const tile=document.getElementById('dvuln'); if(!tile) return;
   try{
     // On ne demande que ce site : le parc entier pèse ~190 Ko.
     const r=await api('/api/sec/vulns?domain='+encodeURIComponent(dom));
+    if(seq!==DRAWERSEQ) return;        // fiche d'un autre site entre-temps
     const site=(r.sites||[])[0];
     const n=site?site.count:0, worst=site?site.worst:'';
     tile.className='dstat '+(worst==='critical'||worst==='high'?'err':n?'warn':'ok');
@@ -1190,11 +1485,14 @@ async function drawerVulns(dom){
     document.getElementById('dvulnlist').innerHTML=site.findings.slice(0,40).map(v=>{
       const fix=v.update_to?`<span class="pill ok">MAJ ${H(v.update_to)}</span>`
         :(v.unfixed?'<span class="pill err">non corrigée</span>':'');
-      const cve=v.cve?`<a href="${H(v.link||'#')}" target="_blank" rel="noopener" class="muted small">${H(v.cve)}</a>`:'';
+      // safeUrl : le lien vient d'un flux externe, un `javascript:` passerait H().
+      const lk=safeUrl(v.link);
+      const cve=v.cve?(lk?`<a href="${H(lk)}" target="_blank" rel="noopener noreferrer" class="muted small">${H(v.cve)}</a>`
+                         :`<span class="muted small">${H(v.cve)}</span>`):'';
       return `<div class="vulnrow">${sevPill(v.severity)}<b>${H(v.component)}</b>
         <span class="muted small">${H(v.version)}</span>${fix}${cve}</div>`;
     }).join('')+(site.findings.length>40?`<div class="muted small">… +${site.findings.length-40} autres</div>`:'');
-  }catch(e){ tile.querySelector('.sub').textContent='indisponible'; }
+  }catch(e){ if(seq===DRAWERSEQ) tile.querySelector('.sub').textContent='indisponible'; }
 }
 
 /* ---- mise à jour sûre : archive → MAJ → contrôle → retour arrière si cassé ---- */
@@ -1203,8 +1501,16 @@ function safeVerdictPill(v){
   const cls=ok?'ok':neutre?'mut':(v||'').startsWith('ÉCHEC')?'err':'warn';
   return `<span class="pill ${cls}">${H(v||'…')}</span>`;
 }
-function renderSafe(st){
-  const box=document.getElementById('console'); if(!box) return;
+/* La console est recréée à chaque ouverture du tiroir : la cibler par
+   `#console` faisait écrire la progression du site A dans la console du site B.
+   On exige le `data-domain` du site concerné. */
+function consoleDe(dom){
+  const box=document.getElementById('console');
+  return (box&&box.dataset.domain===dom)?box:null;
+}
+function renderSafe(st,dom){
+  const box=consoleDe(dom); if(!box) return;
+  box.style.display='block';
   const lignes=(st.steps||[]).map(x=>
     `<div class="logline"><span class="pill ${x.ok?'ok':'err'}">${x.ok?'ok':'échec'}</span>
       <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
@@ -1212,24 +1518,51 @@ function renderSafe(st){
   box.innerHTML=`<div style="margin-bottom:6px"><b>🛡 Mise à jour sûre</b> ${st.running?'<span class="pill mut">en cours…</span>':safeVerdictPill(st.verdict)}</div>${lignes}`;
   box.scrollTop=box.scrollHeight;
 }
+/* Suivi d'une MAJ sûre : le bouton et la console sont retrouvés à chaque tour
+   (le tiroir a pu être refermé/rouvert), et le sondage s'arrête tout seul si le
+   site affiché change ou si le backend ne répond plus. */
+function suivreSafe(dom,lbl){
+  poll('safe',async()=>{
+    const st=await api('/api/actions/safe_update_status');
+    const boutonEncore=()=>{ const b=document.getElementById('safeup');
+      return (CUR&&CUR.domain===dom)?b:null; };
+    if(!CUR||CUR.domain!==dom) return {fini:true};   // le job continue côté serveur
+    renderSafe(st,dom);
+    if(!st.running){
+      const b=boutonEncore();
+      if(b){ b.disabled=false; b.textContent=lbl||b.dataset.label||b.textContent; }
+      loadFleet().catch(()=>{});
+      return {fini:true}; }
+    const b=boutonEncore(); if(b){ b.disabled=true; b.textContent='en cours…'; }
+    return {fini:false};
+  },{every:3000,maxErrors:5,until:r=>!!(r&&r.fini)});
+}
+/* À l'ouverture du tiroir : si une MAJ sûre tourne encore sur CE site, on
+   ré-affiche sa progression et on se raccroche au sondage. */
+async function loadSafeStatus(dom){
+  const seq=DRAWERSEQ;
+  let st=null; try{ st=await api('/api/actions/safe_update_status'); }catch(e){ return; }
+  if(seq!==DRAWERSEQ||!st||!st.domain||st.domain!==dom) return;
+  if(!(st.steps||[]).length&&!st.running) return;
+  renderSafe(st,dom);
+  if(st.running){ const b=document.getElementById('safeup');
+    if(b){ b.dataset.label=b.dataset.label||b.textContent; b.disabled=true; b.textContent='en cours…'; }
+    suivreSafe(dom,(b&&b.dataset.label)||'🛡 MAJ sûre'); }
+}
 async function startSafeUpdate(srv,dom,btn){
   const withCore=btn.dataset.core==='1';
-  let msg=`Mise à jour sûre de ${dom} ?\n\nDéroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
-  if(withCore) msg+=`\n\n⚠️ Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
-  msg+=`\n\nL'opération peut durer plusieurs minutes.`;
-  if(!confirm(msg)) return;
-  btn.disabled=true; const lbl=btn.textContent; btn.textContent='en cours…';
-  try{
-    const r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true,core:withCore});
-    if(r.error){ alert(r.error); btn.disabled=false; btn.textContent=lbl; return; }
-  }catch(e){ alert('lancement impossible : '+e); btn.disabled=false; btn.textContent=lbl; return; }
-  const poll=setInterval(async()=>{
-    const st=await api('/api/actions/safe_update_status').catch(()=>null);
-    if(!st) return;
-    renderSafe(st);
-    if(!st.running){ clearInterval(poll); btn.disabled=false; btn.textContent=lbl;
-      loadFleet().then(()=>{}).catch(()=>{}); }
-  },3000);
+  let msg=`Mise à jour sûre de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
+  if(withCore) msg+=`<br><br>⚠️ Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
+  msg+=`<br><br>L'opération peut durer plusieurs minutes.`;
+  if(!await askConfirm(msg,{titre:'Mise à jour sûre',ok:'Lancer'})) return;
+  const lbl=btn.textContent; btn.dataset.label=lbl;
+  btn.disabled=true; btn.textContent='en cours…';
+  let r;
+  try{ r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true,core:withCore}); }
+  catch(e){ r={error:'lancement impossible : '+e}; }
+  if(!r||r.error){ askInfo('Mise à jour sûre impossible',H((r&&r.error)||'réponse vide'));
+    btn.disabled=false; btn.textContent=lbl; return; }
+  suivreSafe(dom,lbl);
 }
 
 /* historique du site (non bloquant — le tiroir s'affiche sans attendre) */
@@ -1337,12 +1670,27 @@ function tlDetail(e){
   return Object.entries(d).filter(([,v])=>v!==null&&v!==''&&v!==undefined)
     .map(([k,v])=>`${k} : ${Array.isArray(v)?v.map(slug).join(', '):v}`).join(' \u00b7 ').slice(0,220);
 }
-function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); document.getElementById('dback').classList.remove('open'); }
+function closeDrawer(){
+  const dr=document.getElementById('drawer');
+  // Le focus doit SORTIR du tiroir avant qu'il ne devienne aria-hidden :
+  // masquer un ancêtre de l'élément focalisé est une erreur d'accessibilité.
+  const o=DRAWEROPENER; DRAWEROPENER=null;
+  if(dr.contains(document.activeElement)){
+    if(o&&o.isConnected&&typeof o.focus==='function'){ try{ o.focus(); }catch(e){} }
+    else if(document.activeElement.blur) document.activeElement.blur();
+  }
+  dr.classList.remove('open'); dr.setAttribute('aria-hidden','true');
+  document.getElementById('dback').classList.remove('open');
+  stopPoll('safe');                    // le job continue côté serveur, pas le sondage
+  DRAWERSEQ++;                         // toute réponse encore en vol devient périmée
+  fermerTips(); }
 document.getElementById('dclose').onclick=closeDrawer; document.getElementById('dback').onclick=closeDrawer;
 /* Seules les actions qui MODIFIENT le site demandent confirmation : un re-scan,
    un scan visuel ou un vidage de cache n'ont rien a confirmer, et tout
    confirmer revient a ne plus rien signaler. */
-const ACT_RISQUE=new Set(['core_update','plugins_update_all','plugins_update_except',
+/* `plugins_update_except` a disparu avec la « MAJ plugins sauf… » : le gel par
+   extension l'a remplacé. */
+const ACT_RISQUE=new Set(['core_update','plugins_update_all',
   'plugin_update','themes_update_all','autoupdate_on','autoupdate_off','vizproof_install']);
 function confirmRun(btn){
   if(!ACT_RISQUE.has(btn.dataset.act)){ runAction(btn); return; }
@@ -1372,33 +1720,54 @@ document.getElementById('logbtn').onclick=async()=>{ document.getElementById('lo
 document.getElementById('logmodal').onclick=e=>{ if(e.target.id==='logmodal') e.target.classList.remove('open'); };
 
 /* collecte manuelle */
-document.getElementById('collectbtn').onclick=async()=>{ await api('/api/actions/collect',{}); pollCollect(); };
-async function pollCollect(){ let j; try{ j=await api('/api/actions/collect_status'); }catch(e){ return; }
-  const box=document.getElementById('collectbox'), btn=document.getElementById('collectbtn');
-  if(!j.running&&j.rc===null){ box.style.display='none'; btn.disabled=false; return; }
-  box.style.display='block'; const pct=j.total?Math.round(100*Math.min(j.done,j.total)/j.total):0;
-  document.getElementById('cb-bar').style.width=(j.running?Math.max(pct,4):100)+'%';
-  document.getElementById('cb-lines').textContent=(j.lines||[]).join('\n');
-  if(j.running){ btn.disabled=true; box.dataset.w='1'; document.getElementById('cb-title').textContent='Collecte en cours…';
-    document.getElementById('cb-step').textContent=`serveur ${Math.min(j.done+1,j.total)}/${j.total} · ${j.started||''}`; setTimeout(pollCollect,2500);
-  } else { btn.disabled=false; if(box.dataset.w!=='1'){ box.style.display='none'; return; }
-    document.getElementById('cb-title').textContent=j.rc===0?'✅ Collecte terminée':'❌ échec (rc '+j.rc+')'; document.getElementById('cb-step').textContent='';
-    loadFleet().then(loadStatus); setTimeout(()=>box.style.display='none',6000); } }
+document.getElementById('collectbtn').onclick=async()=>{
+  const r=await api('/api/actions/collect',{}).catch(e=>({error:String(e)}));
+  if(r&&r.error) askInfo('Collecte impossible',H(r.error));
+  pollCollect(); };
+function pollCollect(){
+  poll('collect',async()=>{
+    const j=await api('/api/actions/collect_status');
+    const box=document.getElementById('collectbox'), btn=document.getElementById('collectbtn');
+    if(!j.running&&j.rc===null){ box.style.display='none'; btn.disabled=false; return {fini:true}; }
+    box.style.display='block'; const pct=j.total?Math.round(100*Math.min(j.done,j.total)/j.total):0;
+    document.getElementById('cb-bar').style.width=(j.running?Math.max(pct,4):100)+'%';
+    document.getElementById('cb-lines').textContent=(j.lines||[]).join('\n');
+    if(j.running){ btn.disabled=true; box.dataset.w='1'; document.getElementById('cb-title').textContent='Collecte en cours…';
+      document.getElementById('cb-step').textContent=`serveur ${Math.min(j.done+1,j.total)}/${j.total} · ${j.started||''}`;
+      return {fini:false}; }
+    btn.disabled=false;
+    if(box.dataset.w!=='1'){ box.style.display='none'; return {fini:true}; }
+    document.getElementById('cb-title').textContent=j.rc===0?'✅ Collecte terminée':'❌ échec (rc '+j.rc+')';
+    document.getElementById('cb-step').textContent='';
+    loadFleet().then(loadStatus).catch(()=>{});
+    setTimeout(()=>{ box.style.display='none'; },6000);
+    return {fini:true};
+  },{every:2500,maxErrors:5,until:r=>!!(r&&r.fini)}); }
 
 /* ===== GESTION ===== */
-async function loadMgmt(){
+async function loadMgmt(force){
+  if(cacheFrais('mgmt',force)) return;
   loadCandidates(); loadRestSites();   /* volontairement non attendus : indépendants de /api/mgmt/state */
-  MGMT=await api('/api/mgmt/state');
+  // Un /api/mgmt/state en échec ne doit pas laisser la page muette ni empêcher
+  // les deux sections ci-dessus de s'afficher.
+  try{ MGMT=await api('/api/mgmt/state'); }
+  catch(e){ cacheVider('mgmt');
+    document.getElementById('mgmt-tb').innerHTML=`<tr><td colspan="7"><span class="pill err">état indisponible</span> <span class="muted small">${H(String(e))}</span></td></tr>`;
+    document.getElementById('mon-tb').innerHTML='<tr><td colspan="4"><span class="muted small">moniteurs indisponibles</span></td></tr>';
+    return; }
+  if(!MGMT||typeof MGMT!=='object'||MGMT.error){ cacheVider('mgmt');
+    document.getElementById('mgmt-tb').innerHTML=`<tr><td colspan="7"><span class="pill err">état indisponible</span> <span class="muted small">${H((MGMT&&MGMT.error)||'réponse vide')}</span></td></tr>`;
+    return; }
+  MGMT.kuma_monitors=MGMT.kuma_monitors||[]; MGMT.kuma_groups=MGMT.kuma_groups||[];
+  MGMT.overrides=MGMT.overrides||{}; MGMT.servers=MGMT.servers||[];
   const monById={}; MGMT.kuma_monitors.forEach(m=>monById[m.id]=m);
-  const grpOpts=MGMT.kuma_groups.map(g=>`<option value="${g.id}">${H(g.name)}</option>`).join('');
-  const monNames=new Set(MGMT.kuma_monitors.map(m=>m.name));
-  const installs=[]; (FLEET?.servers||[]).forEach(s=>s.sites.forEach(x=>installs.push({srv:s.name,...x})));
+  const installs=[]; (FLEET?.servers||[]).forEach(s=>(s.sites||[]).forEach(x=>installs.push({srv:s.name,...x})));
   document.getElementById('mgmt-count').textContent=`(${installs.length})`;
   document.getElementById('mgmt-tb').innerHTML=installs.map(s=>{
     const ov=MGMT.overrides[s.domain]||{}; const vis=ov.visible; const mon=kName(s);
     const monCell=mon?`<span class="pill ok">${H(mon)}</span>`:`<button class="btn sm" data-create="${H(s.domain)}">＋ créer moniteur</button>`;
     return `<tr><td><b>${H(s.domain)}</b><div class="sub">${H(s.blogname||'')}</div></td><td>${H(s.srv)}</td><td>${monCell}</td>
-      <td><select data-vis="${H(s.domain)}"><option value="auto"${vis==null?' selected':''}>auto (Kuma)</option><option value="show"${vis===true?' selected':''}>toujours afficher</option><option value="hide"${vis===false?' selected':''}>masquer</option></select></td>
+      <td><select data-vis="${H(s.domain)}" aria-label="Visibilité"><option value="auto"${vis==null?' selected':''}>auto (Kuma)</option><option value="show"${vis===true?' selected':''}>toujours afficher</option><option value="hide"${vis===false?' selected':''}>masquer</option></select></td>
       <td><input class="inp" data-alias="${H(s.domain)}" value="${H(ov.alias||'')}" placeholder="nom du moniteur" style="width:180px"></td>
       <td><button class="btn sm" data-dashconn="${H(s.domain)}" data-dashsrv="${H(s.srv)}">Connecter</button> <span data-dashres="${H(s.domain)}"></span></td>
       <td><button class="btn sm" data-saveov="${H(s.domain)}">✓</button></td></tr>`; }).join('');
@@ -1428,28 +1797,32 @@ async function loadMgmt(){
          {value:'http',label:"Contrôle HTTP simple de la page d'accueil"}],'keyword');
       if(!type) return;
     b.textContent='⏳ redémarrage Kuma…'; const r=await api('/api/mgmt/kuma/create',{domain:d,group_id:gid,type});
-      askOpen(r.ok?'Moniteur créé':'Échec de la création',
-        r.ok?'Kuma redémarre — le statut apparaîtra dans une quinzaine de secondes.':H(r.output||''),
-        '',()=>true);
-      setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
+      askInfo(r.ok?'Moniteur créé':'Échec de la création',
+        r.ok?'Kuma redémarre — le statut apparaîtra dans une quinzaine de secondes.':H(r.output||r.error||''));
+      setTimeout(()=>{ loadStatus(); loadMgmt(true); },16000); });
   // moniteurs
   document.getElementById('mon-tb').innerHTML=MGMT.kuma_monitors.map(m=>{
     const grp=m.parent?(monById[m.parent]?.name||''):''; return `<tr><td><b>${H(m.name)}</b></td><td>${H(grp)}</td>
       <td>${m.active?'<span class="pill ok">actif</span>':'<span class="pill mut">en pause</span>'}</td>
-      <td><button class="btn sm" data-pause="${m.id}" data-active="${m.active?1:0}">${m.active?'Pause':'Réactiver'}</button>
-      <button class="btn sm danger" data-del="${m.id}" data-name="${H(m.name)}">Suppr.</button></td></tr>`; }).join('');
+      <td><button class="btn sm" data-pause="${H(m.id)}" data-active="${m.active?1:0}">${m.active?'Pause':'Réactiver'}</button>
+      <button class="btn sm danger" data-del="${H(m.id)}" data-name="${H(m.name)}">Retirer</button></td></tr>`; }).join('')
+    ||'<tr><td colspan="4"><span class="muted small">aucun moniteur</span></td></tr>';
   document.querySelectorAll('[data-pause]').forEach(b=>b.onclick=async()=>{ b.textContent='⏳…';
-    await api('/api/mgmt/kuma/pause',{monitor_id:+b.dataset.pause,active:b.dataset.active==='1'?0:1}); setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
-  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{ if(!confirm('Supprimer le moniteur "'+b.dataset.name+'" ? (redémarre Kuma)')) return;
-    b.textContent='⏳…'; await api('/api/mgmt/kuma/delete',{monitor_id:+b.dataset.del}); setTimeout(()=>{ loadStatus(); loadMgmt(); },16000); });
+    await api('/api/mgmt/kuma/pause',{monitor_id:+b.dataset.pause,active:b.dataset.active==='1'?0:1}).catch(()=>{});
+    setTimeout(()=>{ loadStatus(); loadMgmt(true); },16000); });
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+    if(!await askConfirm(`Retirer le moniteur <b>${H(b.dataset.name)}</b> ?<br><br>Kuma redémarre : ~15 s d'interruption du monitoring.`,
+        {titre:'Retirer un moniteur',ok:'Retirer',danger:true})) return;
+    b.textContent='⏳…'; await api('/api/mgmt/kuma/delete',{monitor_id:+b.dataset.del}).catch(()=>{});
+    setTimeout(()=>{ loadStatus(); loadMgmt(true); },16000); });
   // docroots
   const dl=document.getElementById('doc-list');
-  dl.innerHTML=(MGMT.extra_docroots||[]).map((d,i)=>`<div class="logline"><b>${H(d.server)}</b> · <code>${H(d.path)}</code> <button class="btn sm danger fr" data-rmdoc="${i}">retirer</button></div>`).join('')||'<span class="muted small">aucun</span>';
+  dl.innerHTML=(MGMT.extra_docroots||[]).map((d,i)=>`<div class="logline"><b>${H(d.server)}</b> · <code>${H(d.path)}</code> <button class="btn sm danger fr" data-rmdoc="${H(i)}">Retirer</button></div>`).join('')||'<span class="muted small">aucun</span>';
   document.getElementById('doc-srv').innerHTML=MGMT.servers.map(s=>`<option>${H(s.name)}</option>`).join('');
-  document.querySelectorAll('[data-rmdoc]').forEach(b=>b.onclick=async()=>{ const docs=MGMT.extra_docroots.slice(); docs.splice(+b.dataset.rmdoc,1); await api('/api/mgmt/docroots',{docroots:docs}); loadMgmt(); });
+  document.querySelectorAll('[data-rmdoc]').forEach(b=>b.onclick=async()=>{ const docs=(MGMT.extra_docroots||[]).slice(); docs.splice(+b.dataset.rmdoc,1); await api('/api/mgmt/docroots',{docroots:docs}); loadMgmt(true); });
   document.getElementById('srv-json').value=JSON.stringify(MGMT.servers,null,1); }
 document.getElementById('doc-add').onclick=async()=>{ const server=document.getElementById('doc-srv').value, path=document.getElementById('doc-path').value.trim();
-  if(!path) return; const docs=(MGMT.extra_docroots||[]).slice(); docs.push({server,path}); await api('/api/mgmt/docroots',{docroots:docs}); document.getElementById('doc-path').value=''; loadMgmt(); };
+  if(!path) return; const docs=(MGMT.extra_docroots||[]).slice(); docs.push({server,path}); await api('/api/mgmt/docroots',{docroots:docs}); document.getElementById('doc-path').value=''; loadMgmt(true); };
 document.getElementById('srv-save').onclick=async()=>{ let servers; try{ servers=JSON.parse(document.getElementById('srv-json').value); }catch(e){ document.getElementById('srv-msg').textContent='JSON invalide'; return; }
   const r=await api('/api/mgmt/servers',{servers}); document.getElementById('srv-msg').textContent=r.ok?'enregistré ✓':'erreur: '+(r.error||''); };
 
@@ -1472,7 +1845,7 @@ async function loadCandidates(){ const bd=document.getElementById('cand-body'), 
 
 /* ===== SITES EN MODE REST (sans SSH) ===== */
 function restList(j){ if(Array.isArray(j)) return j; if(!j||typeof j!=='object') return [];
-  for(const k of ['sites','rest_sites','list','items']) if(Array.isArray(j[k])) return j[k];
+  for(const k of ['rest_sites','sites']) if(Array.isArray(j[k])) return j[k];   // clés réellement renvoyées par la route
   return []; }
 function restDomain(x){ return String((x&&(x.domain||hostOf(x.url)))||''); }
 /* colonne « WordPress » d'une ligne REST : état des identifiants + autorisation en 1 clic */
@@ -1688,10 +2061,8 @@ function addGoInstalls(){ const dom=ADD.domain||hostOf(ADD.url), msg=document.ge
 /* ===== AUTORISATION WORDPRESS (mot de passe d'application, 1 clic) ===== */
 const WPAUTH_HELP="Vous serez redirigé vers l'administration du site pour approuver la connexion. WordPress crée alors un mot de passe d'application dédié, révocable à tout moment depuis le profil utilisateur.";
 /* ouvre le flux natif authorize-application.php dans un onglet ; after(ok,erreur) pour le retour d'écran */
-/* Autorisation WordPress (mot de passe d'application) : interrupteur global.
-   Tant que les routes /api/mgmt/wp_authorize et /api/wp_callback n'existent pas
-   côté serveur, on n'affiche aucun bouton plutôt que des boutons en erreur.
-   Passer à true le jour où le backend est en place. */
+/* Autorisation WordPress (mot de passe d'application) : interrupteur global,
+   conservé pour pouvoir masquer d'un coup tout le parcours d'autorisation. */
 const WPAUTH_ENABLED=true;
 async function wpAuthorize(btn,server,domain,after){
   const lbl=btn.textContent; btn.disabled=true; btn.textContent='⏳…';
@@ -1852,36 +2223,46 @@ function renderVulnsParExtension(sitesFiltres){
                      :'<span class="pill err">aucun correctif</span>'}
         ${d.via==='rest'?'<span class="pill mut" title="site géré sans SSH : action distante indisponible">REST</span>':''}
       </div>`).join('');
-    return `<div class="vsite${ouvert?' open':''}" data-vext="${H(e.component)}">
+    return `<div class="vsite${ouvert?' open':''}" data-vext="${H(e.component)}"
+        tabindex="0" role="button" aria-expanded="${ouvert?'true':'false'}">
         <span class="tlchev">›</span><b>${H(e.component)}</b>${sevPill(e.worst)}
         <span class="muted small">${e.sites.length} site${e.sites.length>1?'s':''} · ${e.n} faille${e.n>1?'s':''}</span>
         ${bouton}</div>
       <div class="vlist"${ouvert?'':' hidden'}>${lignes}</div>`;
   }).join('');
-  body.querySelectorAll('.vsite').forEach(h=>h.onclick=ev=>{
-    if(ev.target.closest('.vbulk')) return;          // le bouton ne doit pas replier
-    const c=h.dataset.vext, liste=h.nextElementSibling;
-    if(VEXTOPEN.has(c)) VEXTOPEN.delete(c); else VEXTOPEN.add(c);
-    liste.hidden=!VEXTOPEN.has(c); h.classList.toggle('open',VEXTOPEN.has(c));
+  body.querySelectorAll('.vsite').forEach(h=>{
+    const bascule=()=>{ const c=h.dataset.vext, liste=h.nextElementSibling;
+      if(VEXTOPEN.has(c)) VEXTOPEN.delete(c); else VEXTOPEN.add(c);
+      liste.hidden=!VEXTOPEN.has(c); h.classList.toggle('open',VEXTOPEN.has(c));
+      h.setAttribute('aria-expanded',VEXTOPEN.has(c)?'true':'false'); };
+    h.onclick=ev=>{ if(ev.target.closest('.vbulk')) return;   // le bouton ne doit pas replier
+      bascule(); };
+    h.onkeydown=ev=>{ if(ev.target!==h) return; activeAuClavier(ev,bascule); };
   });
   body.querySelectorAll('.vbulk').forEach(b=>b.onclick=async ev=>{
     ev.stopPropagation();
     const ext=b.dataset.ext, e=grp.find(x=>x.component===ext);
     const cibles=e.sites.filter(d=>d.update_to&&d.via!=='rest');
-    const ok=await new Promise(res=>{
-      askOpen(`Mettre à jour « ${ext} »`,
-        `Sur <b>${cibles.length} site(s)</b> où une mise à jour existe :<br>`
-        +cibles.map(d=>`${H(d.domain)} <span class="muted">${H(d.version)} → ${H(d.update_to)}</span>`).join('<br>')
-        +`<br><br>Les extensions <b>gelées</b> sur un site seront ignorées automatiquement.`,
-        '', ()=>res(true), ()=>res(false));
-    });
+    // Le rapport de vulnérabilités nomme les sites par leur clé Kuma (souvent un
+    // ALIAS). `find_site()` côté serveur ne connaît que le vhost réel : sans
+    // cette résolution, tout site aliasé échouait en « cible invalide ».
+    const resolus=cibles.map(d=>{ const s=siteByName(d.domain,d.server);
+      return {...d, cible:{server:(s&&s.srv)||d.server, domain:(s&&s.domain)||d.domain},
+              alias:!!(s&&s.domain!==d.domain)}; });
+    const ok=await askConfirm(
+      `Sur <b>${resolus.length} site(s)</b> où une mise à jour existe :<br>`
+      +resolus.map(d=>`${H(d.domain)}${d.alias?` <span class="muted small">(vhost ${H(d.cible.domain)})</span>`:''} <span class="muted">${H(d.version)} → ${H(d.update_to)}</span>`).join('<br>')
+      +`<br><br>Les extensions <b>gelées</b> sur un site seront ignorées automatiquement.`,
+      {titre:`Mettre à jour « ${ext} »`,ok:'Mettre à jour'});
     if(!ok) return;
     // Le cœur ne se met pas à jour avec `plugin_update` : action distincte, sans argument.
-    const tasks=cibles.map(d=>e.kind==='core'
-      ? {server:d.server,domain:d.domain,action:'core_update',arg:null}
-      : {server:d.server,domain:d.domain,action:'plugin_update',arg:ext});
-    const r=await api('/api/actions/bulk',{tasks,mode:'continue',backup_first:true,viz_verify:false});
-    if(r.job){ CURJOB=r.job; openBulkModal(`Mise à jour de ${ext}`); pollBulk(); }
+    const tasks=resolus.map(d=>e.kind==='core'
+      ? {server:d.cible.server,domain:d.cible.domain,action:'core_update',arg:null}
+      : {server:d.cible.server,domain:d.cible.domain,action:'plugin_update',arg:ext});
+    let r; try{ r=await api('/api/actions/bulk',{tasks,mode:'continue',backup_first:true,viz_verify:false}); }
+    catch(err){ r={error:String(err)}; }
+    if(r&&r.job){ CURJOB=r.job; openBulkModal(`Mise à jour de ${ext}`); pollBulk(); }
+    else askInfo('Mise à jour groupée impossible',(r&&r.error)?H(r.error):'Le serveur n\'a pas renvoyé de tâche.');
   });
 }
 function renderVulns(){
@@ -1893,7 +2274,7 @@ function renderVulns(){
   if(!(VULNS.sites||[]).length){
     body.innerHTML=VULNS.sites_scanned
       ? '<span class="pill ok">aucune vulnérabilité connue sur le parc</span>'
-      : 'Analyse jamais lancée — cliquez sur « Relancer l\'analyse ».';
+      : 'Analyse jamais lancée — cliquez sur « ↻ Relancer l\'analyse ».';
     cnt.textContent=''; return; }
   // Filtrage commun aux deux vues, pour qu'elles restent coherentes.
   const filtres=(VULNS.sites||[]).map(s=>{
@@ -1918,7 +2299,8 @@ function renderVulns(){
     nGrp+=grp.length;
     const corrigeables=grp.filter(e=>e.update_to).length;
     const ouvert=VLNOPEN.has(s.domain)||!!q;
-    const entete=`<div class="vsite${ouvert?' open':''}" data-vsite="${H(s.domain)}">
+    const entete=`<div class="vsite${ouvert?' open':''}" data-vsite="${H(s.domain)}"
+      tabindex="0" role="button" aria-expanded="${ouvert?'true':'false'}">
       <span class="tlchev">›</span><b>${H(s.domain)}</b>
       ${sevPill(s.worst)}
       <span class="muted small">${grp.length} extension${grp.length>1?'s':''} · ${f.length} faille${f.length>1?'s':''}</span>
@@ -1930,8 +2312,11 @@ function renderVulns(){
       // Cinq references suffisent a enqueter ; au-dela la liste noie la ligne,
       // alors que la decision se prend sur le nombre et l'existence d'un correctif.
       const refs=e.cves.filter(c=>c.cve);
+      // safeUrl : `link` vient du flux public de vulnérabilités, pas de nous.
       const cves=refs.slice(0,5)
-        .map(c=>`<a href="${H(c.link||'#')}" target="_blank" rel="noopener">${H(c.cve)}</a>`).join(' ')
+        .map(c=>{ const u=safeUrl(c.link);
+          return u?`<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(c.cve)}</a>`
+                  :`<span class="muted">${H(c.cve)}</span>`; }).join(' ')
         +(refs.length>5?` <span class="muted">+${refs.length-5}</span>`:'');
       return `<div class="vrow">${sevPill(e.worst)}
         <b>${H(e.component)}</b> <span class="muted">${H(e.version)}</span>
@@ -1942,10 +2327,13 @@ function renderVulns(){
   }).join('');
   cnt.textContent=nGrp?`${nSites} site${nSites>1?'s':''} · ${nGrp} extension${nGrp>1?'s':''}`:'';
   body.innerHTML=html||'<span class="muted">aucune vulnérabilité ne correspond au filtre.</span>';
-  body.querySelectorAll('.vsite').forEach(h=>h.onclick=()=>{
-    const d=h.dataset.vsite, liste=h.nextElementSibling;
-    if(VLNOPEN.has(d)) VLNOPEN.delete(d); else VLNOPEN.add(d);
-    liste.hidden=!VLNOPEN.has(d); h.classList.toggle('open',VLNOPEN.has(d));
+  body.querySelectorAll('.vsite').forEach(h=>{
+    const bascule=()=>{ const d=h.dataset.vsite, liste=h.nextElementSibling;
+      if(VLNOPEN.has(d)) VLNOPEN.delete(d); else VLNOPEN.add(d);
+      liste.hidden=!VLNOPEN.has(d); h.classList.toggle('open',VLNOPEN.has(d));
+      h.setAttribute('aria-expanded',VLNOPEN.has(d)?'true':'false'); };
+    h.onclick=bascule;
+    h.onkeydown=ev=>{ if(ev.target!==h) return; activeAuClavier(ev,bascule); };
   });
   renderVulnsPhp();
 }
@@ -1956,11 +2344,12 @@ function renderVulnsPhp(){
     const eol=/^([0-7]\.|8\.0)/.test(e.version);
     return `<div class="vulnrow">${sevPill(e.worst)} <b>PHP ${H(e.version)}</b>
       ${eol?'<span class="pill err">fin de support</span>':''}
-      <span class="muted">${e.count} faille${e.count>1?'s':''} connue${e.count>1?'s':''}</span>
+      <span class="muted">${H(e.count)} faille${e.count>1?'s':''} connue${e.count>1?'s':''}</span>
       <span class="muted small">— ${e.sites.length} site${e.sites.length>1?'s':''} : ${H(e.sites.slice(0,4).join(', '))}${e.sites.length>4?'…':''}</span></div>`;
   }).join('') : '<span class="muted">aucune version PHP avec faille connue.</span>';
 }
-async function loadVulns(){
+async function loadVulns(force){
+  if(cacheFrais('vulns',force)) return;
   try{
     VULNS=await api('/api/sec/vulns');
     // Le chiffre utile n'est pas « 222 failles » mais la repartition entre ce
@@ -1979,20 +2368,24 @@ async function loadVulns(){
         +` <span class="pill mut">${sansFix} sans correctif</span>`;
     } else sum.innerHTML=VULNS.sites_scanned?'<span class="pill ok">parc sain</span>':'';
     renderVulns();
-  }catch(e){ document.getElementById('vln-body').textContent='erreur de chargement : '+e; }
+  }catch(e){ cacheVider('vulns'); document.getElementById('vln-body').textContent='erreur de chargement : '+e; }
 }
-document.getElementById('vln-q').addEventListener('input',renderVulns);
+document.getElementById('vln-q').addEventListener('input',debounce(renderVulns,200));
 document.getElementById('vln-sev').addEventListener('change',renderVulns);
 document.getElementById('vln-fix').addEventListener('change',renderVulns);
 document.getElementById('vln-vue').addEventListener('change',renderVulns);
 document.getElementById('vln-run').onclick=async(e)=>{
   const b=e.currentTarget; b.disabled=true; b.textContent='analyse…';
   document.getElementById('vln-body').innerHTML='<span class="pill mut">analyse en cours…</span> <span class="muted">~2 min (≈320 extensions à vérifier)</span>';
-  try{ await api('/api/sec/vulns/run',{refresh:true}); }catch(err){}
-  const poll=setInterval(async()=>{
-    const r=await api('/api/sec/vulns').catch(()=>null);
-    if(r&&!r.running){ clearInterval(poll); b.disabled=false; b.textContent="↻ Relancer l'analyse"; loadVulns(); }
-  },5000);
+  const fini=()=>{ b.disabled=false; b.textContent="↻ Relancer l'analyse"; };
+  let lancement; try{ lancement=await api('/api/sec/vulns/run',{refresh:true}); }catch(err){ lancement={error:String(err)}; }
+  if(lancement&&lancement.error&&!lancement.running){
+    askInfo('Analyse impossible',H(lancement.error)); fini(); loadVulns(true); return; }
+  poll('vulns',async()=>{
+    const r=await api('/api/sec/vulns');
+    if(r&&!r.running){ loadVulns(true); return {fini:true}; }
+    return {fini:false};
+  },{every:5000,maxErrors:5,until:r=>!!(r&&r.fini),onStop:fini});
 };
 
 /* ---- erreurs PHP ---- */
@@ -2000,13 +2393,34 @@ let PHERR={sites:[]};
 const PHRANK={'Fatal error':4,'Parse error':4,'Warning':3,'Deprecated':2,'Notice':1,'Strict Standards':1};
 function phePill(sev){ const r=PHRANK[sev]||0;
   return `<span class="pill ${r>=4?'err':r>=3?'warn':'mut'}">${H(sev||'?')}</span>`; }
+/* « Aucune erreur » n'a pas le même sens si un journal a été tronqué ou si un
+   serveur n'a pas répondu : l'absence de résultat doit alors se dire.
+   `truncated` = {serveur: [{file, reason}]} ; `servers_failed` = {serveur: raison}. */
+function phePartielle(){
+  const tr=(PHERR.truncated&&typeof PHERR.truncated==='object')?PHERR.truncated:{};
+  const ko=(PHERR.servers_failed&&typeof PHERR.servers_failed==='object')?PHERR.servers_failed:{};
+  const srvTr=Object.keys(tr).filter(k=>Array.isArray(tr[k])&&tr[k].length);
+  const srvKo=Object.keys(ko).filter(k=>ko[k]!==null&&ko[k]!==undefined&&ko[k]!=='');
+  const nTr=srvTr.reduce((a,k)=>a+tr[k].length,0);
+  if(!nTr&&!srvKo.length) return '';
+  const bouts=[];
+  if(nTr) bouts.push(`${nTr} ${nTr>1?'journaux':'journal'} tronqué${nTr>1?'s':''}`);
+  if(srvKo.length) bouts.push(`${srvKo.length} serveur${srvKo.length>1?'s':''} en échec`);
+  let li='';
+  srvKo.forEach(k=>{ li+=`<li><b>${H(k)}</b> — serveur non lu : ${H(String(ko[k]))}</li>`; });
+  srvTr.forEach(k=>tr[k].forEach(x=>{
+    li+=`<li><b>${H(k)}</b> — <code>${H((x&&x.file)||'journal')}</code> : ${H((x&&x.reason)||'tronqué')}</li>`; }));
+  return `<div class="warnbox small mt2">⚠ <b>Analyse partielle</b> — ${H(bouts.join(', '))}.
+    Des erreurs peuvent manquer dans la liste ci-dessous.<ul>${li}</ul></div>`;
+}
 function renderPhe(){
   const q=(document.getElementById('phe-q').value||'').toLowerCase().trim();
   const minR=parseInt(document.getElementById('phe-sev').value||'0',10);
   const body=document.getElementById('phe-body'), cnt=document.getElementById('phe-count');
   if(PHERR.running){ body.innerHTML='<span class="pill mut">analyse en cours…</span> '+H(PHERR.run_message||''); return; }
+  const partielle=phePartielle();
   if(!(PHERR.sites||[]).length){
-    body.innerHTML=PHERR.generated_at?'<span class="pill ok">aucune erreur PHP sur la fenêtre</span>':'Analyse jamais lancée — cliquez sur « Relancer ».';
+    body.innerHTML=(PHERR.generated_at?'<span class="pill ok">aucune erreur PHP sur la fenêtre</span>':'Analyse jamais lancée — cliquez sur « ↻ Relancer l\'analyse ».')+partielle;
     cnt.textContent=''; return; }
   let n=0;
   const html=PHERR.sites.map(s=>{
@@ -2014,35 +2428,40 @@ function renderPhe(){
     if(q) g=g.filter(x=>(s.domain+' '+x.message+' '+(x.short||x.file||'')).toLowerCase().includes(q));
     if(!g.length) return ''; n+=g.length;
     return `<div style="margin-bottom:10px"><b>${H(s.domain)}</b>
-      <span class="muted small">${s.total} occurrence${s.total>1?'s':''}</span>`+
+      <span class="muted small">${H(s.total)} occurrence${s.total>1?'s':''}</span>`+
       g.map(x=>`<div class="logline">${phePill(x.severity)}
-        <span class="pill mut">×${x.count}</span> ${H(x.message)}
-        ${x.short?`<div class="muted small" style="margin-left:6px"><code>${H(x.short)}:${x.line}</code>
+        <span class="pill mut">×${H(x.count)}</span> ${H(x.message)}
+        ${x.short?`<div class="muted small" style="margin-left:6px"><code>${H(x.short)}:${H(x.line)}</code>
           · dernière ${H(relTime(x.last))}</div>`:''}</div>`).join('')+`</div>`;
   }).join('');
   cnt.textContent=n?`${n} groupe${n>1?'s':''}`:'';
-  body.innerHTML=html||'<span class="muted">aucune erreur ne correspond au filtre.</span>';
+  body.innerHTML=partielle+(html||'<span class="muted">aucune erreur ne correspond au filtre.</span>');
 }
-async function loadPhe(){
+async function loadPhe(force){
+  if(cacheFrais('phe',force)) return;
   try{
     PHERR=await api('/api/sec/phperrors');
     const sum=document.getElementById('phe-sum');
     if(PHERR.sites_with_errors) sum.innerHTML=`<span class="pill ${PHERR.fatals?'err':'warn'}">${PHERR.sites_with_errors} site(s) · ${PHERR.total} occurrence(s)${PHERR.fatals?` · ${PHERR.fatals} fatale(s)`:''}</span>`;
     else sum.innerHTML=PHERR.generated_at?'<span class="pill ok">aucune erreur</span>':'';
     renderPhe();
-  }catch(e){ document.getElementById('phe-body').textContent='erreur de chargement : '+e; }
+  }catch(e){ cacheVider('phe'); document.getElementById('phe-body').textContent='erreur de chargement : '+e; }
 }
-document.getElementById('phe-q').addEventListener('input',renderPhe);
+document.getElementById('phe-q').addEventListener('input',debounce(renderPhe,200));
 document.getElementById('phe-sev').addEventListener('change',renderPhe);
 document.getElementById('phe-run').onclick=async(e)=>{
   const b=e.currentTarget, h=document.getElementById('phe-h').value;
   b.disabled=true; b.textContent='analyse…';
   document.getElementById('phe-body').innerHTML='<span class="pill mut">lecture des journaux…</span>';
-  try{ await api('/api/sec/phperrors/run',{hours:parseInt(h,10)}); }catch(err){}
-  const poll=setInterval(async()=>{
-    const r=await api('/api/sec/phperrors').catch(()=>null);
-    if(r&&!r.running){ clearInterval(poll); b.disabled=false; b.textContent='↻ Relancer'; loadPhe(); }
-  },3000);
+  const fini=()=>{ b.disabled=false; b.textContent="↻ Relancer l'analyse"; };
+  let lancement; try{ lancement=await api('/api/sec/phperrors/run',{hours:parseInt(h,10)}); }catch(err){ lancement={error:String(err)}; }
+  if(lancement&&lancement.error&&!lancement.running){
+    askInfo('Analyse impossible',H(lancement.error)); fini(); loadPhe(true); return; }
+  poll('phe',async()=>{
+    const r=await api('/api/sec/phperrors');
+    if(r&&!r.running){ loadPhe(true); return {fini:true}; }
+    return {fini:false};
+  },{every:3000,maxErrors:5,until:r=>!!(r&&r.fini),onStop:fini});
 };
 
 /* ---- onglet Historique : tendance du parc ---- */
@@ -2096,27 +2515,30 @@ function deltaPill(cur, ref, inverse){
   if(!d) return '<span class="pill mut">stable</span>';
   // `inverse` : pour une dette, une baisse est une bonne nouvelle.
   const bon=inverse?d<0:d>0;
-  return `<span class="pill ${bon?'ok':'warn'}">${d>0?'+':''}${d}</span>`;
+  return `<span class="pill ${bon?'ok':'warn'}">${d>0?'+':''}${H(d)}</span>`;
 }
-async function loadHist(){
+async function loadHist(force){
+  if(cacheFrais('hist',force)) return;
   let hist=[];
   try{ hist=(await api('/api/actions/collect_history')).history||[]; }
-  catch(e){ document.getElementById('hist-charts').innerHTML='historique indisponible'; return; }
+  catch(e){ cacheVider('hist'); document.getElementById('hist-charts').innerHTML='historique indisponible'; return; }
   if(!hist.length){ document.getElementById('hist-charts').innerHTML='<span class="muted">aucun relevé.</span>'; return; }
   const der=hist[hist.length-1];
   // référence ≈ 24 h plus tôt : la collecte tourne toutes les 30 min
   const ref=hist[Math.max(0,hist.length-49)];
+  // Couleurs prises dans les jetons du thème : les valeurs en dur (#b45309…)
+  // étaient réglées pour le thème clair et illisibles en sombre.
   const M=[
-    {k:'plugin_updates', lbl:'MAJ extensions', c:'#b45309', inv:true},
-    {k:'core_updates',   lbl:'MAJ cœur',       c:'#2563eb', inv:true},
-    {k:'errors',         lbl:'Sites en erreur',c:'#dc2626', inv:true},
-    {k:'sites',          lbl:'Installations',  c:'#16a34a', inv:false},
+    {k:'plugin_updates', lbl:'MAJ extensions', c:'var(--warn)',   inv:true},
+    {k:'core_updates',   lbl:'MAJ cœur',       c:'var(--accent)', inv:true},
+    {k:'errors',         lbl:'Sites en erreur',c:'var(--err)',    inv:true},
+    {k:'sites',          lbl:'Installations',  c:'var(--ok)',     inv:false},
   ];
   document.getElementById('hist-sum').innerHTML=
-    `<span class="pill mut">${hist.length} relevés · depuis le ${H((hist[0].ts||'').slice(0,10))}</span>`;
+    `<span class="pill mut">${H(hist.length)} relevés · depuis le ${H((hist[0].ts||'').slice(0,10))}</span>`;
   document.getElementById('hist-tiles').innerHTML=M.map(m=>
     `<div class="dstat"><div class="lbl">${H(m.lbl)}</div>
-      <div class="val">${der[m.k]??'?'}</div>
+      <div class="val">${H(der[m.k]??'?')}</div>
       <div class="sub">${deltaPill(der[m.k]??0, ref[m.k], m.inv)} sur 24 h</div></div>`).join('');
   // Grille : sur un large ecran, quatre courbes pleine largeur donnent des
   // rapports hauteur/largeur absurdes. Deux colonnes au-dela de 900 px.
@@ -2125,7 +2547,7 @@ async function loadHist(){
     const mn=Math.min(...pts), mx=Math.max(...pts);
     return `<div class="chart">
       <div class="charttop"><b>${H(m.lbl)}</b>
-        <span class="muted small">actuel : <b>${pts[pts.length-1]}</b></span></div>
+        <span class="muted small">actuel : <b>${H(pts[pts.length-1])}</b></span></div>
       ${sparkline(pts, m.c)}
       <div class="chartaxis"><span>${H((hist[0].ts||'').slice(5,16))}</span>
         <span>${H((der.ts||'').slice(5,16))}</span></div></div>`;
@@ -2134,10 +2556,10 @@ async function loadHist(){
   // Sécurité : son chargement doit suivre, sinon elle reste sur « chargement… ».
   try{ const ch=await api('/api/mgmt/changes?limit=800'); CHANGES=ch.changes||[];
     const su=ch.summary||{}; const sum=document.getElementById('chg-sum');
-    if(su.day_total){ sum.innerHTML=`<span class="pill ${su.day_warn?'err':'mut'}">${su.day_total} sur 24 h · ${su.day_sites} site${su.day_sites>1?'s':''}${su.day_warn?` · ${su.day_warn} à surveiller ⚠`:''}</span>`; }
+    if(su.day_total){ sum.innerHTML=`<span class="pill ${su.day_warn?'err':'mut'}">${H(su.day_total)} sur 24 h · ${H(su.day_sites)} site${su.day_sites>1?'s':''}${su.day_warn?` · ${H(su.day_warn)} à surveiller ⚠`:''}</span>`; }
     else sum.innerHTML='<span class="pill ok">rien sur 24 h</span>';
     renderChanges();
-  }catch(e){ document.getElementById('chg-body').textContent='erreur de chargement : '+e; }
+  }catch(e){ cacheVider('hist'); document.getElementById('chg-body').textContent='erreur de chargement : '+e; }
 }
 
 let CHANGES=[];
@@ -2156,14 +2578,22 @@ function renderChanges(){
     return `<div class="logline"><span class="pill ${warn?'err':'mut'}">${H(c.label)}</span> <b>${H(c.domain)}</b> <span class="muted">${H(c.detail)}</span> <span class="muted small fr" title="${H(absTime(c.ts))}">${H(relTime(c.ts))}</span></div>`;
   }).join('');
 }
-async function loadSec(){ const S=allSites();
-  loadVulns();   // indépendant : ne bloque pas le reste du volet
-  loadPhe();
-  const bl=await api('/api/sec/baseline'); BASELINE=bl.baseline||{};
-  document.getElementById('admin-tb').innerHTML=S.filter(s=>s.admins!==null).map(s=>{ const base=BASELINE[s.domain]?.logins;
+async function loadSec(force){
+  if(cacheFrais('sec',force)) return;
+  const S=allSites();
+  loadVulns(force);   // indépendant : ne bloque pas le reste du volet
+  loadPhe(force);
+  // La référence des admins n'est qu'une des huit sections : son échec ne doit
+  // pas emporter les certificats, les plugins à risque et les checksums.
+  let blErr='';
+  try{ const bl=await api('/api/sec/baseline'); BASELINE=(bl&&bl.baseline)||{}; }
+  catch(e){ BASELINE={}; blErr=String(e); cacheVider('sec'); }
+  document.getElementById('admin-tb').innerHTML=(blErr
+    ? `<tr><td colspan="3"><span class="pill err">référence indisponible</span> <span class="muted small">${H(blErr)}</span></td></tr>`
+    : '')+S.filter(s=>s.admins!==null).map(s=>{ const base=BASELINE[s.domain]?.logins;
     const cells=(s.admins||[]).map(a=>{ const isNew=base&&!base.includes(a.login); return `<span class="tag ${isNew?'new-admin':''}" title="${H(a.email||'')} · inscrit ${H(a.registered||'')}">${isNew?'⚠ ':''}${H(a.login)}</span>`; }).join(' ');
-    return `<tr><td><b>${H(kName(s)||s.domain)}</b></td><td>${cells||'<span class="muted">—</span>'}${base?'':' <span class="muted small">(pas de référence)</span>'}</td><td><button class="btn sm" data-bl="${H(s.domain)}">marquer vu</button></td></tr>`; }).join('');
-  document.querySelectorAll('[data-bl]').forEach(b=>b.onclick=async()=>{ b.textContent='…'; await api('/api/sec/baseline',{domain:b.dataset.bl}); loadSec(); });
+    return `<tr><td><b>${H(kName(s)||s.domain)}</b></td><td>${cells||'<span class="muted">—</span>'}${base?'':' <span class="muted small">(pas de référence)</span>'}</td><td><button class="btn sm" data-bl="${H(s.domain)}">Marquer comme vu</button></td></tr>`; }).join('');
+  document.querySelectorAll('[data-bl]').forEach(b=>b.onclick=async()=>{ b.textContent='…'; await api('/api/sec/baseline',{domain:b.dataset.bl}); loadSec(true); });
   // PHP obsolète
   const old=S.filter(s=>s.php_version&&parseFloat(s.php_version)<8.1).sort((a,b)=>parseFloat(a.php_version)-parseFloat(b.php_version));
   document.getElementById('php-body').innerHTML=old.length?old.map(s=>`<span class="tag"><span class="pill ${parseFloat(s.php_version)<7.4?'err':'warn'}">${H(s.php_version)}</span> ${H(kName(s)||s.domain)}</span>`).join(' '):'<span class="pill ok">tout le parc en PHP ≥ 8.1</span>';
@@ -2180,7 +2610,9 @@ async function loadSec(){ const S=allSites();
     `<div class="logline"><span class="pill ${p.status==='active'?'err':'warn'}">${H(p.status||'inactif')}</span> <b>${H(kName(s)||s.domain)}</b> <span class="muted">·</span> ${H(p.name)} <span class="muted small">${H(p.version||'')}</span></div>`).join('')
     :'<span class="pill ok">aucun plugin à risque détecté</span>';
   // checksums — derniers résultats connus + bouton unitaire
-  let CKS={}; try{ const c=await api('/api/sec/checksums'); if(c&&typeof c==='object'&&!c.error) CKS=c; }catch(e){ CKS={}; }
+  let CKS={}; try{ const c=await api('/api/sec/checksums');
+    // La route renvoie {"checksums": {...}} ; on accepte aussi la forme à plat.
+    if(c&&typeof c==='object'&&!c.error) CKS=(c.checksums&&typeof c.checksums==='object')?c.checksums:c; }catch(e){ CKS={}; }
   document.getElementById('verify-tb').innerHTML=S.filter(s=>s.core_version).map(s=>{
     const ck=CKS[s.domain]; const last=(ck&&typeof ck==='object')
       ? `<span class="pill ${ck.ok?'ok':'err'}" title="${H(String(ck.output_tail??'').slice(-400))}">${ck.ok?'intègre':'anomalie'}</span> <span class="muted small" title="${H(absTime(ck.ts))}">${H(relTime(ck.ts))}</span>`
@@ -2188,24 +2620,30 @@ async function loadSec(){ const S=allSites();
     return `<tr><td><b>${H(kName(s)||s.domain)}</b> <span class="muted small">${H(s.core_version)}</span></td>
       <td><button class="btn sm" data-verify="${H(s.srv)}|${H(s.domain)}">Vérifier</button> <span data-vres="${H(s.domain)}">${last}</span></td></tr>`; }).join('');
   document.querySelectorAll('[data-verify]').forEach(b=>b.onclick=async()=>{ const [srv,dom]=b.dataset.verify.split('|'); b.textContent='⏳…';
-    const j=await api('/api/sec/verify',{server:srv,domain:dom}); b.textContent='Vérifier';
-    document.querySelector(`[data-vres="${CSS.escape(dom)}"]`).innerHTML=j.ok?'<span class="pill ok">intègre</span>':`<span class="pill err">anomalie</span> <span class="muted small">${H((j.output||'').slice(-120))}</span>`; }); }
-document.getElementById('chg-q').addEventListener('input',renderChanges);
+    let j; try{ j=await api('/api/sec/verify',{server:srv,domain:dom}); }catch(e){ j={ok:false,output:String(e)}; }
+    b.textContent='Vérifier';
+    const cell=document.querySelector(`[data-vres="${CSS.escape(dom)}"]`); if(!cell) return;
+    cell.innerHTML=(j&&j.ok)?'<span class="pill ok">intègre</span>':`<span class="pill err">anomalie</span> <span class="muted small">${H(((j&&(j.output||j.error))||'').slice(-120))}</span>`; }); }
+document.getElementById('chg-q').addEventListener('input',debounce(renderChanges,200));
 document.getElementById('chg-warn').addEventListener('change',renderChanges);
-document.getElementById('baseline-all').onclick=async()=>{ if(!confirm('Figer la liste actuelle des admins de TOUS les sites comme référence ?')) return; await api('/api/sec/baseline',{}); loadSec(); };
+document.getElementById('baseline-all').onclick=async()=>{
+  if(!await askConfirm('Figer la liste actuelle des administrateurs de <b>tous les sites</b> comme référence ?<br><br>Tout compte ajouté ensuite sera signalé en rouge.',
+      {titre:'Tout marquer comme vu',ok:'Marquer comme vu'})) return;
+  await api('/api/sec/baseline',{}).catch(()=>{}); loadSec(true); };
 document.getElementById('verify-all').onclick=async()=>{ const btn=document.getElementById('verify-all'), msg=document.getElementById('verify-msg');
-  if(!confirm('Lancer « wp core verify-checksums » sur tout le parc ?\n\nL\'opération passe sur chaque site et peut durer plusieurs minutes.')) return;
+  if(!await askConfirm('Lancer <code>wp core verify-checksums</code> sur tout le parc ?<br><br>L\'opération passe sur chaque site et peut durer plusieurs minutes.',
+      {titre:'Intégrité du cœur',ok:'Lancer'})) return;
   btn.disabled=true; msg.innerHTML='<span class="muted">⏳ lancement…</span>';
   try{ const j=await api('/api/sec/checksums/run',{})||{};
     if(!j.job){ msg.innerHTML=`<span class="pill err">échec</span> <span class="muted">${H(j.error||'aucun job renvoyé')}</span>`; btn.disabled=false; return; }
     msg.innerHTML=''; CURJOB=j.job; openBulkModal('Vérification des checksums'); pollBulk();
   }catch(e){ msg.innerHTML=`<span class="pill err">échec</span> <span class="muted">${H(String(e))}</span>`; }
   btn.disabled=false; };
-document.getElementById('plug-q').oninput=e=>{ const q=e.target.value.toLowerCase().trim(); const tb=document.getElementById('plug-tb'), res=document.getElementById('plug-res');
+document.getElementById('plug-q').oninput=debounce(e=>{ const q=e.target.value.toLowerCase().trim(); const tb=document.getElementById('plug-tb'), res=document.getElementById('plug-res');
   if(!q){ tb.innerHTML=''; res.textContent=''; return; } const hits=[];
   allSites().forEach(s=>(s.plugins_list||[]).forEach(p=>{ if((p.name||'').toLowerCase().includes(q)) hits.push({s,p}); }));
   res.textContent=`${hits.length} occurrence(s) sur ${new Set(hits.map(h=>h.s.domain)).size} site(s)`;
-  tb.innerHTML=hits.map(({s,p})=>`<tr><td><b>${H(kName(s)||s.domain)}</b></td><td>${H(p.name)}</td><td>${H(p.version||'')}</td><td><span class="pill ${p.status==='active'?'ok':'mut'}">${H(p.status||'')}</span></td></tr>`).join(''); };
+  tb.innerHTML=hits.map(({s,p})=>`<tr><td><b>${H(kName(s)||s.domain)}</b></td><td>${H(p.name)}</td><td>${H(p.version||'')}</td><td><span class="pill ${p.status==='active'?'ok':'mut'}">${H(p.status||'')}</span></td></tr>`).join(''); },200);
 
 /* ===== RÉGLAGES — clés SSH ===== */
 let KEYS=null;
@@ -2255,7 +2693,8 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
   bd.querySelectorAll('[data-kassign]').forEach(b=>b.onclick=async()=>{ const n=b.dataset.kassign;
     const k=bd.querySelector(`[data-akey="${CSS.escape(n)}"]`).value, res=bd.querySelector(`[data-kres="${CSS.escape(n)}"]`);
     if(!k) return;
-    if(!confirm(`Assigner cette clé au serveur « ${n} » ?\n\nSi elle n'y est pas enrôlée, la collecte de ce serveur cassera.`)) return;
+    if(!await askConfirm(`Assigner cette clé au serveur <b>${H(n)}</b> ?<br><br>Si elle n'y est pas enrôlée, la collecte de ce serveur cassera.`,
+      {titre:'Assigner une clé',ok:'Assigner',danger:true})) return;
     b.textContent='⏳…';
     try{ const j=await api('/api/mgmt/sshkeys/assign',{server:n,key:k});
       res.innerHTML=j.ok?'<span class="pill ok">assignée</span>':`<span class="pill err">échec</span> <span class="muted small">${H(j.error||'')}</span>`;
@@ -2273,7 +2712,8 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
     }catch(e){ msg.innerHTML=`<span class="pill err">${H(String(e))}</span>`; } };
   document.getElementById('k-all').onclick=async()=>{ const k=document.getElementById('k-allsel').value; if(!k) return;
     const kn=(KEYS.keys||[]).find(x=>x.path===k), msg=document.getElementById('k-allmsg');
-    if(!confirm(`Assigner la clé « ${kn?kn.name:k} » à TOUS les serveurs ?\n\nTout serveur où elle n'est pas enrôlée deviendra injoignable.`)) return;
+    if(!await askConfirm(`Assigner la clé <b>${H(kn?kn.name:k)}</b> à <b>TOUS</b> les serveurs ?<br><br>Tout serveur où elle n'est pas enrôlée deviendra injoignable.`,
+      {titre:'Assigner à tous les serveurs',ok:'Assigner partout',danger:true})) return;
     msg.textContent='⏳…';
     try{ const j=await api('/api/mgmt/sshkeys/assign',{server:'*',key:k});
       msg.innerHTML=j.ok?'<span class="pill ok">assignée partout</span>':`<span class="pill err">échec</span> <span class="muted small">${H(j.error||'')}</span>`;
@@ -2291,7 +2731,7 @@ async function loadSchedule(){ const bd=document.getElementById('sched-body');
   let s; try{ s=await api('/api/mgmt/schedule'); }catch(e){ bd.innerHTML='<span class="pill mut">cadence indisponible</span>'; return; }
   const ch=(s.choices||[0,60]);
   bd.innerHTML=`<div class="filters" style="margin:0">
-      <select id="sched-sel">${ch.map(v=>`<option value="${v}"${v===s.interval_minutes?' selected':''}>${H(SCHED_LABELS[v]||v+' min')}</option>`).join('')}</select>
+      <select id="sched-sel" aria-label="Cadence de collecte">${ch.map(v=>`<option value="${H(v)}"${v===s.interval_minutes?' selected':''}>${H(SCHED_LABELS[v]||v+' min')}</option>`).join('')}</select>
       <button class="btn sm" id="sched-save">Enregistrer</button>
       <span id="sched-msg" class="small muted">${s.cron?'cron actuel : <code>'+H(s.cron)+'</code>':''}</span>
     </div>
@@ -2299,7 +2739,7 @@ async function loadSchedule(){ const bd=document.getElementById('sched-body');
   document.getElementById('sched-save').onclick=async()=>{
     const v=parseInt(document.getElementById('sched-sel').value,10);
     const m=document.getElementById('sched-msg'); m.textContent='…';
-    try{ const r=await api('/api/mgmt/schedule',{interval_minutes:v});
+    try{ const r=await api('/api/mgmt/schedule',{interval_minutes:v}); loadSched();
       m.innerHTML=r.ok?('✓ enregistré — cron : <code>'+H(r.cron||'désactivé')+'</code>'):('✗ '+H(r.error||'échec'));
     }catch(e){ m.textContent='✗ erreur réseau'; } }; }
 
@@ -2309,7 +2749,7 @@ async function loadAlerts(){ const bd=document.getElementById('alert-body');
   catch(e){ bd.innerHTML=`<span class="pill mut">alertes indisponibles</span> <span class="muted small">${H(String(e))}</span>`; return; }
   if(!a||typeof a!=='object'||a.error){ bd.innerHTML=`<span class="pill mut">alertes indisponibles</span> <span class="muted small">${H((a&&a.error)||'réponse vide')}</span>`; return; }
   const r=(a.rules&&typeof a.rules==='object')?a.rules:{};
-  const ph=a.token_set?`token enregistré (${a.token_hint||'…'}) — laisser vide pour le conserver`:'bot_token (ex. 123456789:AA…)';
+  const ph=a.token_set?`token enregistré (${a.token_tail||'…'}) — laisser vide pour le conserver`:'bot_token (ex. 123456789:AA…)';
   bd.innerHTML=`
     <p class="hint">Créez le bot avec <b>@BotFather</b> sur Telegram (commande <code>/newbot</code>) pour obtenir le <code>bot_token</code> ; écrivez ensuite un message au bot et relevez votre <code>chat_id</code> via <b>@userinfobot</b> ou sur <code>api.telegram.org/bot&lt;token&gt;/getUpdates</code>.</p>
     <div class="filters">
@@ -2358,15 +2798,18 @@ function buildSubtabs(pageId, key, shortLabels){
     const label=(shortLabels&&shortLabels[i])||raw.trim().replace(/\s*\(.*$/,'');
     return `<button class="subtab" type="button" data-i="${i}">${H(label)}</button>`;
   }).join('');
-  const sel=i=>{ secs.forEach((s,j)=>{ s.style.display=(j===i)?'':'none'; });
-    nav.querySelectorAll('.subtab').forEach((b,j)=>b.classList.toggle('active',j===i));
+  // `push` : seul un clic de l'utilisateur empile une entrée d'historique ;
+  // la restauration au chargement ou depuis l'URL remplace.
+  const sel=(i,push)=>{ secs.forEach((s,j)=>{ s.style.display=(j===i)?'':'none'; });
+    nav.querySelectorAll('.subtab').forEach((b,j)=>{ b.classList.toggle('active',j===i);
+      b.setAttribute('aria-current',j===i?'true':'false'); });
     try{ localStorage[key]=String(i); }catch(e){}
     const tab=pageId.replace('page-','');
-    if(document.getElementById(pageId).classList.contains('active')) writeHash(tab,i); };
-  nav.querySelectorAll('.subtab').forEach((b,i)=>{ b.onclick=()=>sel(i); });
+    if(document.getElementById(pageId).classList.contains('active')) writeHash(tab,i,push); };
+  nav.querySelectorAll('.subtab').forEach((b,i)=>{ b.onclick=()=>sel(i,true); });
   let start=parseInt((()=>{ try{ return localStorage[key]; }catch(e){ return '0'; } })()||'0',10);
   if(!(start>=0&&start<secs.length)) start=0;
-  sel(start);
+  sel(start,false);
 }
 buildSubtabs('page-mgmt','dashSubMgmt',
   ['Sites non gérés','Installs découverts','Mode REST','Moniteurs Kuma','Docroots','Serveurs']);
@@ -2376,7 +2819,7 @@ buildSubtabs('page-sec','dashSubSec',
 
 // L'onglet demandé par l'URL n'est appliqué qu'une fois la flotte chargée :
 // Gestion et Sécurité se construisent à partir de ces données.
-loadFleet().then(applyHash).catch(()=>applyHash());
+loadFleet().then(applyHash).catch(()=>applyHash()); loadSched();
 loadStatus(); loadViews(); pollCollect(); wpauthBanner();
 setInterval(loadStatus,60000); setInterval(()=>{ if(!CURJOB) loadFleet(); },15*60000);
 </script>

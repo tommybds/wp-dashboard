@@ -12,7 +12,7 @@ Sites sans aucun accès SSH : listés dans data/rest_sites.json et interrogés v
 l'agent (mu-plugin) sur /wp-json/sumotori-dash/v1/inventory, requête signée HMAC.
 Ils sont rangés dans un serveur virtuel « rest » et portent via="rest".
 """
-import json, subprocess, sys, os, re, time, datetime, socket, hmac, hashlib
+import json, subprocess, sys, os, re, time, datetime, socket, hmac, hashlib, html
 import concurrent.futures
 import urllib.error, urllib.parse, urllib.request
 from urllib.parse import urlparse
@@ -412,7 +412,7 @@ def postprocess(raw):
         "collected_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "core_version": scalar("core_version", 30),
         "siteurl": scalar("siteurl"),
-        "blogname": scalar("blogname", 120),
+        "blogname": html.unescape(scalar("blogname", 120) or "") or None,  # WP stocke le titre avec entités (d&#039;)
         "via": "ssh",  # collecté en wp-cli par SSH (voir via="rest" pour l'agent distant)
     }
     cu = extract_json(f.get("core_update", "")) if ok("core_update") else None
@@ -534,7 +534,7 @@ def map_rest_inventory(entry, data, url=None, blog_id=None):
         "collected_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "core_version": str(core.get("version") or d.get("core_version") or "") or None,
         "siteurl": str(d.get("siteurl") or d.get("home") or url or "") or None,
-        "blogname": str(d.get("name") or d.get("blogname") or entry.get("name") or "") or None,
+        "blogname": html.unescape(str(d.get("name") or d.get("blogname") or entry.get("name") or "")) or None,
         "via": "rest", "url": url, "blog_id": blog_id, "multisite": bool(d.get("multisite")),
     }
     site["core_update"] = str(core.get("update") or d.get("core_update") or "") or None
