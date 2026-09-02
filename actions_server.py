@@ -49,6 +49,21 @@ VIZ_SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 VIZ_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~:/+=-]{8,512}$")
 VIZ_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")   # code de connexion à usage unique
 VIZ_SCOPES = ("site", "selected_pages")
+# Jeton de COMPTE enregistré dans les Réglages (« Authorization: Bearer vrt_… »).
+# Plus étroit que VIZ_TOKEN_RE : celui-là accepte tout jeton porteur transmis au
+# coup par coup à `wp vizproof connect`, celui-ci est le format que l'API
+# publique de vizproof.com délivre — on refuse d'enregistrer autre chose.
+VIZ_ACCOUNT_TOKEN_RE = re.compile(r"^vrt_[A-Za-z0-9_-]{8,200}$")
+VIZ_API_BASE_DEFAULT = "https://vizproof.com"
+VIZ_API_TIMEOUT = 20
+VIZ_API_MAX_BYTES = 512 * 1024
+VIZ_PAGE_LIMIT = 100     # `limit` maximal documenté par l'API publique
+VIZ_SITES_MAX = 500      # plafond de parcours : au-delà on renonce plutôt que de boucler
+VIZ_NO_TOKEN_MSG = "aucun token VizProof dans les Réglages"
+# Hôte plausible : au moins un point, étiquettes DNS classiques (déjà en minuscule).
+VIZ_HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+                         r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+VIZ_RESOLVE_RC = 95      # « site VizProof non résolu » : ni SSH ni wp-cli en cause
 VIZ_OLD_RC = 99   # même convention que AGENT_OLD_RC : « le site a une version trop ancienne »
 VIZ_OLD_MSG = "plugin VizProof trop ancien sur ce site : mettre à jour vers 1.3.6"
 VIZ_OLD_RE = re.compile(r"is not a registered (?:sub)?command|"
@@ -821,7 +836,28 @@ SETTINGS_DEFAULTS = {
     # de cookies, carrousel, publicité) et le retour arrière automatique coûtait
     # plus de mises à jour perdues qu'il n'évitait de régressions.
     "viz_anomaly_rollback": False,
+    # Jeton de compte VizProof : sert à retrouver (ou créer) le site VizProof
+    # d'après l'URL WordPress, puis à relier le plugin. Le fichier est en 0600
+    # et la valeur n'est JAMAIS renvoyée par l'API : cf. settings_public().
+    "vizproof_token": "",
+    "vizproof_api_base": VIZ_API_BASE_DEFAULT,
 }
+# Réglages qui sont des secrets : exclus de toute réponse HTTP et de tout journal.
+SETTINGS_SECRETS = ("vizproof_token",)
+
+
+def settings_public(cfg=None):
+    """Réglages tels qu'ils sortent de l'API : aucun secret, juste un témoin.
+
+    Même modèle que le jeton Telegram de `/api/mgmt/alerts` : un booléen
+    « enregistré » et les 4 derniers caractères, jamais la valeur.
+    """
+    cfg = dict(cfg if cfg is not None else settings_cfg())
+    for k in SETTINGS_SECRETS:
+        val = str(cfg.pop(k, "") or "")
+        cfg[k + "_set"] = bool(val)
+        cfg[k + "_tail"] = val[-4:] if val else ""
+    return cfg
 
 
 def settings_cfg():
@@ -845,6 +881,8 @@ def coerce_setting(key, value):
             return int(value)
         except (TypeError, ValueError):
             return ref
+    if isinstance(ref, str):
+        return str("" if value is None else value).strip()
     return value
 
 
@@ -860,6 +898,17 @@ def settings_write(patch):
 
     update_json(SETTINGS_PATH, _muter, {})
     return settings_cfg()
+
+
+def viz_token_stored():
+    """Jeton de compte VizProof enregistré dans les Réglages (« » s'il n'y en a pas)."""
+    return str(settings_cfg().get("vizproof_token") or "")
+
+
+def viz_api_base(override=None):
+    """Base de l'API VizProof : surcharge ponctuelle, réglage, puis défaut."""
+    base = str(override or "").strip() or str(settings_cfg().get("vizproof_api_base") or "").strip()
+    return (base or VIZ_API_BASE_DEFAULT).rstrip("/")
 
 
 # ---------- vizproof : lecture du couple (rc, sortie) ----------
@@ -1033,11 +1082,13 @@ def viz_connect_script(site_id, api_base=None, scope=None, token=None, code=None
 
 
 def viz_connect_run(server_name, domain, site_id, api_base=None, scope=None,
-                    token=None, code=None, source="ui"):
+                    token=None, code=None, source="ui", site_created=False):
     """Exécute `wp vizproof connect` sur un site → (rc, sortie MASQUÉE).
 
     Journalise l'action `viz_connect` avec la même sortie masquée : ni le
     jeton ni le code de connexion ne doivent apparaître dans actions.log.
+    `arg` porte l'identifiant du site VizProof (jamais le jeton) et
+    `site_created` dit si ce site vient d'être créé par la résolution d'URL.
     """
     t0 = time.time()
     secret = str(token or code or "")
@@ -1047,6 +1098,7 @@ def viz_connect_run(server_name, domain, site_id, api_base=None, scope=None,
         append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "source": source, "server": server_name, "domain": domain,
                     "action": "viz_connect", "arg": site_id, "rc": rc,
+                    "site_created": bool(site_created),
                     "duration_s": round(time.time() - t0, 1),
                     "output_tail": out[-2000:]})
         return rc, out
@@ -2573,6 +2625,198 @@ def _open_no_redirect(req, timeout=20, max_bytes=HTTP_MAX_BYTES, ssrf_guard=True
         return status, resp.read(max_bytes)
 
 
+# --------------------------------------------------------------------------- #
+#  API publique de VizProof (vizproof.com) — jeton de COMPTE en Bearer.         #
+#                                                                              #
+#  Sert au « flux en un clic » : le site VizProof est retrouvé par l'HÔTE de    #
+#  l'URL WordPress, ou créé s'il n'existe pas. Le jeton n'apparaît ni en        #
+#  réponse, ni dans actions.log : il ne sort d'ici que dans l'en-tête           #
+#  Authorization, et `_open_no_redirect` garantit qu'aucune redirection ne le   #
+#  transporte ailleurs que sur l'hôte visé.                                    #
+# --------------------------------------------------------------------------- #
+def viz_api_error(code, detail=""):
+    """Message court et lisible pour un statut HTTP de l'API VizProof."""
+    detail = re.sub(r"\s+", " ", str(detail or "")).strip()[:160]
+    if code in (301, 302, 303, 307, 308):
+        return f"redirection refusée ({code}) : vérifiez la base API"
+    if code in (401, 403):
+        return f"jeton refusé par VizProof ({code})"
+    if code == 404:
+        return "route introuvable (404) : base API incorrecte ?"
+    if code == 429:
+        return "trop d'appels (429) : réessayez dans un instant"
+    return f"HTTP {code}" + (f" : {detail}" if detail else "")
+
+
+def viz_api_call(path, token, base=None, data=None, timeout=VIZ_API_TIMEOUT):
+    """Appel de l'API VizProof → (statut, objet JSON ou None, erreur).
+
+    `data` non nul = POST JSON. Toujours via `_open_no_redirect` : un 30x
+    remonte en erreur au lieu de rejouer l'en-tête Authorization ailleurs.
+    """
+    url = viz_api_base(base) + str(path)
+    u, err = validate_public_url(url)
+    if err:
+        return None, None, f"base API refusée : {err}"
+    if u.scheme != "https":
+        return None, None, "base API : https exigé"
+    entetes = {"Authorization": "Bearer " + str(token or ""),
+               "Accept": "application/json", "User-Agent": USER_AGENT}
+    corps = None
+    if data is not None:
+        corps = json.dumps(data).encode()
+        entetes["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=corps, headers=entetes,
+                                 method="POST" if data is not None else "GET")
+    try:
+        st, raw = _open_no_redirect(req, timeout=timeout, max_bytes=VIZ_API_MAX_BYTES)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = (e.read(4096) or b"").decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        finally:
+            try:
+                e.close()
+            except Exception:
+                pass
+        # le corps d'erreur pourrait recopier le jeton : il ne ressortira pas d'ici
+        return e.code, None, mask_secret(viz_api_error(e.code, detail), str(token or ""))
+    except Exception as e:
+        return None, None, mask_secret(f"{type(e).__name__}: {e}"[:200], str(token or ""))
+    try:
+        return st, json.loads(raw.decode("utf-8", "replace")), None
+    except ValueError:
+        return st, None, "réponse illisible (JSON attendu)"
+
+
+def viz_hostname(value):
+    """Hôte d'une URL ou d'un domaine : minuscule, sans schéma, sans port, « www. » CONSERVÉ."""
+    h = str(value or "").strip().lower()
+    if "//" in h:
+        h = h.split("//", 1)[1]
+    return h.split("/")[0].split("@")[-1].split(":")[0].strip()
+
+
+def viz_site_hosts(site):
+    """Hôtes déclarés sur une fiche VizProof → [(hôte, valeur brute)].
+
+    `domains` est une CHAÎNE JSON contenant une liste (« ["a.fr","www.a.fr"] »),
+    nulle tant qu'aucune page n'a été ajoutée au site. Tout ce qui n'est pas
+    exploitable rend une liste vide plutôt qu'une exception.
+    """
+    raw = (site or {}).get("domains")
+    if isinstance(raw, str):
+        try:
+            vals = json.loads(raw)
+        except ValueError:
+            vals = [raw]              # tolérance : un hôte nu, pas du JSON
+    else:
+        vals = raw
+    if isinstance(vals, (str, bytes)):
+        vals = [vals]
+    if not isinstance(vals, list):
+        return []
+    out = []
+    for v in vals:
+        if isinstance(v, dict):       # forme {"domain": "a.fr"} tolérée
+            v = v.get("domain") or v.get("host") or ""
+        h = viz_hostname(v)
+        if h:
+            out.append((h, str(v)))
+    return out
+
+
+def viz_resolve_site(domain, siteurl, token, base=None, create=True):
+    """Retrouve — ou crée — le site VizProof correspondant à une URL WordPress.
+
+    → {"ok", "site_id", "name", "created", "matched_domain", "ambiguous",
+       "host", "error"}. Ne touche à RIEN côté WordPress : c'est de la lecture
+    (plus, au besoin, une création côté VizProof), pas une connexion.
+    """
+    # Le siteurl fait foi (un vhost peut différer de l'URL réelle), mais un
+    # siteurl aberrant — « javascript:… » vu en base sur un site compromis — ne
+    # doit pas devenir le nom d'un site créé chez VizProof : repli sur le domaine.
+    host = next((h for h in (norm_domain(siteurl), norm_domain(domain))
+                 if VIZ_HOST_RE.match(h or "")), "")
+    res = {"ok": False, "site_id": "", "name": "", "created": False,
+           "matched_domain": "", "ambiguous": False, "host": host, "error": None}
+    if not host:
+        res["error"] = "hôte introuvable pour ce site"
+        return res
+    if not token:
+        res["error"] = VIZ_NO_TOKEN_MSG
+        return res
+    variantes = {host, "www." + host}
+    trouves, vus, page = [], 0, 1
+    while vus < VIZ_SITES_MAX:
+        st, j, err = viz_api_call(f"/api/sites?limit={VIZ_PAGE_LIMIT}&page={page}", token, base)
+        if err:
+            res["error"] = err
+            return res
+        lot = (j or {}).get("data") if isinstance(j, dict) else j
+        if not isinstance(lot, list):
+            res["error"] = "réponse inattendue de /api/sites (liste attendue)"
+            return res
+        if not lot:
+            break
+        for s in lot:
+            vus += 1
+            if not isinstance(s, dict):
+                continue
+            for h, brut in viz_site_hosts(s):
+                if h in variantes:
+                    trouves.append((s, brut))
+                    break
+            if vus >= VIZ_SITES_MAX:
+                break
+        total = (j or {}).get("total") if isinstance(j, dict) else None
+        if len(lot) < VIZ_PAGE_LIMIT:
+            break
+        if isinstance(total, int) and vus >= total:
+            break
+        page += 1
+    if trouves:
+        s, brut = trouves[0]
+        sid = str(s.get("id") or "")
+        if not VIZ_SITE_ID_RE.match(sid):
+            res["error"] = "identifiant de site VizProof inexploitable"
+            return res
+        # Plusieurs SITES distincts revendiquant l'hôte : on prend le premier et
+        # on le signale — c'est à l'utilisateur de trancher, pas au dashboard.
+        distincts = {str(x.get("id") or "") for x, _ in trouves}
+        res.update(ok=True, site_id=sid, name=str(s.get("name") or "") or host,
+                   matched_domain=brut, ambiguous=len(distincts) > 1)
+        return res
+    if not create:
+        # Aperçu : on dit ce qui SERAIT créé, sans le créer. Seule la connexion crée.
+        res.update(ok=True, would_create=True)
+        return res
+    st, j, err = viz_api_call("/api/sites", token, base, data={"name": host})
+    if err:
+        res["error"] = err
+        return res
+    site = j.get("site") if isinstance(j, dict) and isinstance(j.get("site"), dict) else j
+    sid = str((site or {}).get("id") or "") if isinstance(site, dict) else ""
+    if not VIZ_SITE_ID_RE.match(sid):
+        res["error"] = "site créé mais identifiant absent de la réponse"
+        return res
+    res.update(ok=True, site_id=sid, created=True,
+               name=str(site.get("name") or "") or host)
+    return res
+
+
+def viz_site_url(server_name, domain):
+    """URL publique connue d'un site du parc (fleet.json), repli sur son domaine."""
+    for srv in load_json(FLEET_PATH, {"servers": []}).get("servers", []):
+        if server_name and srv.get("name") != server_name:
+            continue
+        for s in srv.get("sites", []):
+            if s.get("domain") == domain:
+                return str(s.get("siteurl") or s.get("url") or "") or str(domain)
+    return str(domain)
+
+
 def known_domains():
     """Domaines déjà gérés : sites SSH de fleet.json + sites REST."""
     known = set()
@@ -3426,6 +3670,23 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("corps trop volumineux")
         return json.loads(self.rfile.read(length)) if length else {}
 
+    @staticmethod
+    def _viz_api_base(body):
+        """Surcharge ponctuelle de la base API VizProof → (base ou None, erreur).
+
+        Même garde SSRF que le sondage d'URL : le champ est saisi dans
+        l'interface, il ne doit pas pouvoir viser un réseau interne.
+        """
+        base = str((body or {}).get("api_base") or "").strip()
+        if not base:
+            return None, None
+        u, err = validate_public_url(base)
+        if err:
+            return None, f"base API refusée : {err}"
+        if u.scheme != "https":
+            return None, "base API : https exigé"
+        return base, None
+
     def log_message(self, *a):
         pass
 
@@ -3499,7 +3760,10 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/mgmt/schedule":
             self._send(200, read_schedule())
         elif p == "/api/mgmt/settings":
-            self._send(200, {"settings": settings_cfg(), "defaults": SETTINGS_DEFAULTS})
+            # settings_public() retire le jeton VizProof : il ne sort jamais d'ici
+            self._send(200, {"settings": settings_public(),
+                             "defaults": {k: v for k, v in SETTINGS_DEFAULTS.items()
+                                          if k not in SETTINGS_SECRETS}})
         elif p == "/api/mgmt/alerts":
             # le token n'est jamais renvoyé en clair : booléen + 4 derniers caractères
             cfg = alerts_cfg()
@@ -3680,37 +3944,66 @@ class Handler(BaseHTTPRequestHandler):
                               {"ok": rc == 0, "rc": rc, "viz_anomaly": anomaly, "output": out,
                                "error": None if rc == 0 else out})
 
+        if p == "/api/actions/viz_resolve":
+            # Aperçu : quel site VizProof recevra ce WordPress. Rien n'est écrit
+            # côté WordPress ; côté VizProof, un site peut être CRÉÉ (c'est le
+            # propre du flux « en un clic » : la résolution est la création).
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            jeton = viz_token_stored()
+            if not jeton:
+                return self._send(200, {"ok": False, "error": VIZ_NO_TOKEN_MSG})
+            api_base, err = self._viz_api_base(body)
+            if err:
+                return self._send(400, {"error": err})
+            r = viz_resolve_site(domain, viz_site_url(server, domain), jeton, api_base, create=False)
+            return self._send(200, r)
+
         if p == "/api/actions/viz_connect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
             if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
                 return self._send(400, {"error": "cible invalide"})
             site_id = str(body.get("site_id", "")).strip()
-            if not VIZ_SITE_ID_RE.match(site_id):
-                return self._send(400, {"error": "identifiant de site invalide "
-                                                 "(lettres, chiffres, « _ » et « - », 80 max)"})
             token = str(body.get("token") or "").strip()
             code = str(body.get("code") or "").strip()
             if token and code:
                 return self._send(400, {"error": "jeton et code de connexion sont exclusifs"})
-            if not token and not code:
-                return self._send(400, {"error": "jeton ou code de connexion requis"})
             if token and not VIZ_TOKEN_RE.match(token):
                 return self._send(400, {"error": "jeton invalide (une ligne, 8 à 512 caractères)"})
             if code and not VIZ_CODE_RE.match(code):
                 return self._send(400, {"error": "code de connexion invalide"})
+            enregistre = viz_token_stored()
+            if not token and not code:
+                # Repli sur le jeton des Réglages : c'est le cas courant depuis
+                # que le jeton est enregistré une fois pour tout le parc.
+                token = enregistre
+                if not token:
+                    return self._send(400, {"error": "jeton ou code de connexion requis ("
+                                                     + VIZ_NO_TOKEN_MSG + ")"})
             scope = str(body.get("scope") or "").strip() or None
             if scope and scope not in VIZ_SCOPES:
                 return self._send(400, {"error": "portée invalide (site ou selected_pages)"})
-            api_base = str(body.get("api_base") or "").strip() or None
-            if api_base:
-                # Même garde SSRF que le sondage d'URL : le champ est saisi dans
-                # l'interface, il ne doit pas pouvoir viser un réseau interne.
-                u, err = validate_public_url(api_base)
-                if err:
-                    return self._send(400, {"error": f"base API refusée : {err}"})
-                if u.scheme != "https":
-                    return self._send(400, {"error": "base API : https exigé"})
-            rc, out = viz_connect_run(server, domain, site_id, api_base, scope, token, code)
+            api_base, err = self._viz_api_base(body)
+            if err:
+                return self._send(400, {"error": err})
+            site_created, site_name = False, ""
+            if not site_id:
+                # Résolution par URL. Le jeton de COMPTE est celui des Réglages ;
+                # un jeton ponctuel du corps ne sert qu'à l'appel wp-cli, sauf
+                # s'il a lui-même le format d'un jeton de compte.
+                jeton_api = enregistre or (token if VIZ_ACCOUNT_TOKEN_RE.match(token) else "")
+                r = viz_resolve_site(domain, viz_site_url(server, domain), jeton_api, api_base)
+                if not r["ok"]:
+                    return self._send(200, {"ok": False, "rc": VIZ_RESOLVE_RC,
+                                            "output": r["error"], "error": r["error"],
+                                            "site_id": "", "site_created": False, "site_name": ""})
+                site_id, site_created, site_name = r["site_id"], r["created"], r["name"]
+            if not VIZ_SITE_ID_RE.match(site_id):
+                return self._send(400, {"error": "identifiant de site invalide "
+                                                 "(lettres, chiffres, « _ » et « - », 80 max)"})
+            rc, out = viz_connect_run(server, domain, site_id, api_base, scope, token, code,
+                                      site_created=site_created)
             if rc == 0:
                 try:   # la colonne VizProof doit refléter l'état tout de suite
                     logged_action(server, domain, "rescan", None, source="viz_connect")
@@ -3721,7 +4014,9 @@ class Handler(BaseHTTPRequestHandler):
             soft = rc in (VIZ_OLD_RC, REST_UNSUPPORTED_RC)
             return self._send(200 if (rc == 0 or soft) else 500,
                               {"ok": rc == 0, "rc": rc, "output": out,
-                               "error": None if rc == 0 else out})
+                               "error": None if rc == 0 else out,
+                               "site_id": site_id, "site_created": site_created,
+                               "site_name": site_name})
 
         if p == "/api/actions/viz_disconnect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
@@ -4040,7 +4335,45 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(patch, dict):
                 # tolérance : les réglages peuvent aussi arriver à plat
                 patch = {k: v for k, v in body.items() if k in SETTINGS_DEFAULTS}
-            return self._send(200, {"ok": True, "settings": settings_write(patch)})
+            patch = dict(patch)
+            # Jeton VizProof : absent ou vide = INCHANGÉ (le champ du formulaire
+            # reste vide quand on ne veut pas le retoucher). L'effacement est un
+            # geste explicite : "" accompagné de vizproof_token_clear.
+            efface = bool(patch.pop("vizproof_token_clear", body.get("vizproof_token_clear")))
+            jeton = patch.pop("vizproof_token", None)
+            if efface:
+                patch["vizproof_token"] = ""
+            elif jeton is not None and str(jeton).strip():
+                jeton = str(jeton).strip()
+                if not VIZ_ACCOUNT_TOKEN_RE.match(jeton):
+                    return self._send(400, {"error": "jeton VizProof invalide "
+                                                     "(vrt_… , 8 à 200 caractères après le préfixe)"})
+                patch["vizproof_token"] = jeton
+            if "vizproof_api_base" in patch:
+                base = str(patch.get("vizproof_api_base") or "").strip() or VIZ_API_BASE_DEFAULT
+                u, err = validate_public_url(base)   # même garde anti-SSRF que le sondage d'URL
+                if err:
+                    return self._send(400, {"error": f"base API refusée : {err}"})
+                if u.scheme != "https":
+                    return self._send(400, {"error": "base API : https exigé"})
+                patch["vizproof_api_base"] = base.rstrip("/")
+            return self._send(200, {"ok": True, "settings": settings_public(settings_write(patch))})
+
+        if p == "/api/mgmt/vizproof/test":
+            # Vérifie le jeton ENREGISTRÉ : rien n'est accepté depuis le corps,
+            # pour qu'un jeton ne transite pas ici sans être stocké.
+            jeton = viz_token_stored()
+            if not jeton:
+                return self._send(200, {"ok": False, "total": None, "error": VIZ_NO_TOKEN_MSG})
+            _st, j, err = viz_api_call("/api/sites?limit=1", jeton)
+            if err:
+                return self._send(200, {"ok": False, "total": None, "error": err})
+            total = (j or {}).get("total") if isinstance(j, dict) else None
+            if not isinstance(total, int):
+                lot = (j or {}).get("data") if isinstance(j, dict) else j
+                total = len(lot) if isinstance(lot, list) else None
+            return self._send(200, {"ok": True, "total": total, "error": None,
+                                    "api_base": viz_api_base()})
 
         if p == "/api/mgmt/alerts":
             cfg = alerts_cfg()

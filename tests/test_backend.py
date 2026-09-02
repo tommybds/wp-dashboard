@@ -26,6 +26,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -967,7 +968,9 @@ class TestVizConnectRoute(BaseTmp):
             c.close()
 
     def test_site_id_invalide_refuse_avant_tout_ssh(self):
-        for mauvais in ("", "a b", "a'; id", "a" * 81, "a.fr"):
+        # « » ne figure plus ici : un identifiant vide déclenche désormais la
+        # résolution par URL (cf. TestVizConnectSansSiteId).
+        for mauvais in ("a b", "a'; id", "a" * 81, "a.fr"):
             st, j = self.post("/api/actions/viz_connect", dict(self.BON, site_id=mauvais))
             self.assertEqual(st, 400, mauvais)
             self.assertIn("identifiant", j["error"])
@@ -1062,7 +1065,8 @@ class TestSettings(BaseTmp):
 
     def test_defaut_avertir_sans_annuler(self):
         self.assertFalse(A.SETTINGS_DEFAULTS["viz_anomaly_rollback"])
-        self.assertEqual(A.settings_cfg(), {"viz_anomaly_rollback": False})
+        self.assertIs(A.settings_cfg()["viz_anomaly_rollback"], False)
+        self.assertEqual(A.settings_cfg(), dict(A.SETTINGS_DEFAULTS))
 
     def test_ecriture_et_relecture(self):
         self.assertTrue(A.settings_write({"viz_anomaly_rollback": True})["viz_anomaly_rollback"])
@@ -1089,6 +1093,516 @@ class TestSettings(BaseTmp):
     def test_fichier_en_0600(self):
         A.settings_write({"viz_anomaly_rollback": True})
         self.assertEqual(mode_of(A.SETTINGS_PATH), 0o600)
+
+
+# --------------------------------------------------------------------------- #
+#  VizProof : jeton de compte enregistré + résolution du site par l'URL         #
+#                                                                              #
+#  Tout le réseau est bouché au niveau de `_open_no_redirect` : on inspecte     #
+#  donc l'URL, la méthode, l'en-tête Authorization et le corps réellement       #
+#  construits par viz_api_call().                                              #
+# --------------------------------------------------------------------------- #
+VRT = "vrt_abcdefghij0123456789"
+
+
+def page_sites(sites, total=None):
+    """Réponse paginée de GET /api/sites, telle que docs/API.md la décrit."""
+    return {"data": sites, "total": len(sites) if total is None else total,
+            "page": 1, "limit": A.VIZ_PAGE_LIMIT}
+
+
+class VizApiBase(BaseTmp):
+    """Transport HTTP et garde DNS bouchés ; data/settings.json jetable."""
+
+    def setUp(self):
+        super().setUp()
+        self._sp, self._fp = A.SETTINGS_PATH, A.FLEET_PATH
+        A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
+        A.FLEET_PATH = os.path.join(self.data, "fleet.json")
+        self.addCleanup(lambda: (setattr(A, "SETTINGS_PATH", self._sp),
+                                 setattr(A, "FLEET_PATH", self._fp)))
+        self.appels = []        # requêtes sortantes observées
+        self.reponses = []      # file de (statut, objet JSON) ou d'exceptions
+        for cible, valeur in (("_open_no_redirect", self._transport),
+                              ("validate_public_url", self._url_ok)):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+
+    @staticmethod
+    def _url_ok(url):
+        """Pas de DNS dans les tests : l'URL est acceptée telle quelle."""
+        return urllib.parse.urlsplit(str(url or "")), None
+
+    def _transport(self, req, timeout=20, max_bytes=None, ssrf_guard=True):
+        self.appels.append({"method": req.get_method(), "url": req.full_url,
+                            "auth": req.get_header("Authorization"),
+                            "body": json.loads(req.data.decode()) if req.data else None,
+                            "timeout": timeout})
+        if not self.reponses:
+            raise AssertionError("appel HTTP non prévu : " + req.full_url)
+        r = self.reponses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        st, obj = r
+        return st, json.dumps(obj).encode()
+
+    @staticmethod
+    def http_error(code, corps=b'{"error":"nope"}'):
+        return urllib.error.HTTPError("https://vizproof.com/api/sites", code,
+                                      "erreur", {}, io.BytesIO(corps))
+
+    def poser_fleet(self, domain="elwave.fr", siteurl="https://www.elwave.fr"):
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "sites": [
+            {"domain": domain, "siteurl": siteurl, "path": "/var/www/x", "owner": "www"}]}]})
+
+
+class TestVizResolveSite(VizApiBase):
+
+    ELWAVE = {"id": "clx_elwave", "name": "Elwave", "domains": '["elwave.fr","www.elwave.fr"]'}
+    AUTRE = {"id": "clx_autre", "name": "Autre", "domains": '["autre.fr"]'}
+
+    def test_correspondance_exacte(self):
+        self.reponses = [(200, page_sites([self.AUTRE, self.ELWAVE]))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["site_id"], "clx_elwave")
+        self.assertEqual(r["name"], "Elwave")
+        self.assertEqual(r["matched_domain"], "elwave.fr")
+        self.assertFalse(r["created"])
+        self.assertFalse(r["ambiguous"])
+
+    def test_la_requete_est_un_get_bearer_pagine(self):
+        self.reponses = [(200, page_sites([self.ELWAVE]))]
+        A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        a = self.appels[0]
+        self.assertEqual(a["method"], "GET")
+        self.assertEqual(a["auth"], "Bearer " + VRT)
+        self.assertEqual(a["url"], f"https://vizproof.com/api/sites?limit={A.VIZ_PAGE_LIMIT}&page=1")
+        self.assertEqual(a["timeout"], 20)
+        self.assertIsNone(a["body"])
+
+    def test_www_du_site_contre_domaine_nu(self):
+        self.reponses = [(200, page_sites([{"id": "s2", "name": "E", "domains": '["elwave.fr"]'}]))]
+        r = A.viz_resolve_site("elwave.fr", "https://www.elwave.fr/blog/", VRT)
+        self.assertEqual(r["site_id"], "s2")
+        self.assertEqual(r["matched_domain"], "elwave.fr")
+
+    def test_domaine_nu_contre_www_declare(self):
+        self.reponses = [(200, page_sites([{"id": "s3", "name": "E", "domains": '["www.elwave.fr"]'}]))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertEqual(r["site_id"], "s3")
+        self.assertEqual(r["matched_domain"], "www.elwave.fr")
+
+    def test_domains_null_ou_illisible_n_explose_pas(self):
+        lot = [{"id": "a", "name": "Neuf", "domains": None},
+               {"id": "b", "name": "Cassé", "domains": "{pas du json"},
+               {"id": "c", "name": "Nombre", "domains": 12},
+               "pas un objet",
+               dict(self.ELWAVE)]
+        self.reponses = [(200, page_sites(lot))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertEqual(r["site_id"], "clx_elwave")
+
+    def test_aucune_correspondance_cree_le_site(self):
+        self.reponses = [(200, page_sites([self.AUTRE])),
+                         (201, {"id": "clx_neuf", "name": "elwave.fr", "domains": None})]
+        r = A.viz_resolve_site("elwave.fr", "https://www.elwave.fr/", VRT)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["created"])
+        self.assertEqual(r["site_id"], "clx_neuf")
+        self.assertEqual(r["name"], "elwave.fr")
+        self.assertEqual(r["matched_domain"], "")
+        creation = self.appels[1]
+        self.assertEqual(creation["method"], "POST")
+        self.assertEqual(creation["url"], "https://vizproof.com/api/sites")
+        self.assertEqual(creation["body"], {"name": "elwave.fr"})   # l'hôte, sans www
+        self.assertEqual(creation["auth"], "Bearer " + VRT)
+
+    def test_pagination_sur_deux_pages(self):
+        pleine = [{"id": f"s{i}", "name": str(i), "domains": '["x%d.fr"]' % i}
+                  for i in range(A.VIZ_PAGE_LIMIT)]
+        self.reponses = [(200, page_sites(pleine, total=A.VIZ_PAGE_LIMIT + 1)),
+                         (200, page_sites([self.ELWAVE], total=A.VIZ_PAGE_LIMIT + 1))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertEqual(r["site_id"], "clx_elwave")
+        self.assertEqual(len(self.appels), 2)
+        self.assertIn("page=2", self.appels[1]["url"])
+
+    def test_plafond_a_500_sites_puis_creation(self):
+        pleine = [{"id": f"s{i}", "name": str(i), "domains": '["x%d.fr"]' % i}
+                  for i in range(A.VIZ_PAGE_LIMIT)]
+        pages = A.VIZ_SITES_MAX // A.VIZ_PAGE_LIMIT
+        self.reponses = [(200, page_sites(pleine, total=10000)) for _ in range(pages)]
+        self.reponses.append((201, {"id": "clx_neuf", "name": "elwave.fr"}))
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertTrue(r["created"])
+        self.assertEqual(len(self.appels), pages + 1)   # pas de 6e page
+
+    def test_ambiguite_prend_le_premier_et_le_signale(self):
+        self.reponses = [(200, page_sites([
+            {"id": "un", "name": "Elwave prod", "domains": '["elwave.fr"]'},
+            {"id": "deux", "name": "Elwave bis", "domains": '["www.elwave.fr"]'}]))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertEqual(r["site_id"], "un")
+        self.assertTrue(r["ambiguous"])
+
+    def test_deux_domaines_du_meme_site_ne_sont_pas_une_ambiguite(self):
+        self.reponses = [(200, page_sites([self.ELWAVE]))]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertFalse(r["ambiguous"])
+
+    def test_sans_jeton_message_explicite_et_zero_appel(self):
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", "")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], A.VIZ_NO_TOKEN_MSG)
+        self.assertEqual(self.appels, [])
+
+    def test_siteurl_aberrant_replie_sur_le_domaine(self):
+        """Un siteurl « javascript:… » (site compromis) ne devient pas un nom de site."""
+        self.reponses = [(200, page_sites([])), (201, {"id": "n", "name": "elwave.fr"})]
+        r = A.viz_resolve_site("elwave.fr", "javascript:alert(1)", VRT)
+        self.assertEqual(r["host"], "elwave.fr")
+        self.assertEqual(self.appels[1]["body"], {"name": "elwave.fr"})
+
+    def test_erreur_401_remonte_sans_creer(self):
+        self.reponses = [self.http_error(401)]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertFalse(r["ok"])
+        self.assertIn("401", r["error"])
+        self.assertEqual(len(self.appels), 1)          # aucune création tentée
+
+    def test_redirection_refusee(self):
+        self.reponses = [self.http_error(302)]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertIn("redirection refusée", r["error"])
+
+    def test_le_jeton_ne_fuit_pas_dans_le_message_d_erreur(self):
+        self.reponses = [self.http_error(400, ('{"error":"jeton ' + VRT + ' invalide"}').encode())]
+        r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertNotIn(VRT, json.dumps(r, ensure_ascii=False))
+
+    def test_base_api_surchargee(self):
+        self.reponses = [(200, page_sites([self.ELWAVE]))]
+        A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT, "https://viz.example.com/")
+        self.assertTrue(self.appels[0]["url"].startswith("https://viz.example.com/api/sites?"))
+
+    def test_base_api_du_reglage(self):
+        A.settings_write({"vizproof_api_base": "https://viz.example.org"})
+        self.reponses = [(200, page_sites([self.ELWAVE]))]
+        A.viz_resolve_site("elwave.fr", "https://elwave.fr", VRT)
+        self.assertTrue(self.appels[0]["url"].startswith("https://viz.example.org/api/sites?"))
+
+
+class VizRouteBase(VizApiBase):
+    """Serveur HTTP local + session valide, pour les routes protégées."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+
+    def _appel(self, methode, chemin, corps=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            entetes = {"Cookie": self.cookie, "X-Dash": "1", "Content-Type": "application/json"}
+            c.request(methode, chemin,
+                      body=json.dumps(corps).encode() if corps is not None else None,
+                      headers=entetes)
+            r = c.getresponse()
+            brut = r.read()
+            return r.status, brut.decode("utf-8"), json.loads(brut or b"{}")
+        finally:
+            c.close()
+
+    def post(self, chemin, corps):
+        return self._appel("POST", chemin, corps)
+
+    def get(self, chemin):
+        return self._appel("GET", chemin)
+
+    def log_brut(self):
+        if not os.path.exists(A.LOG):
+            return ""
+        with open(A.LOG) as fh:
+            return fh.read()
+
+
+class TestVizTokenReglages(VizRouteBase):
+    """Le jeton s'enregistre, ne ressort jamais, et s'efface sur demande."""
+
+    def enregistrer(self, jeton=VRT, **extra):
+        return self.post("/api/mgmt/settings", dict({"settings": {"vizproof_token": jeton}}, **extra))
+
+    def test_enregistre_puis_temoin_seulement(self):
+        st, brut, j = self.enregistrer()
+        self.assertEqual(st, 200)
+        self.assertTrue(j["settings"]["vizproof_token_set"])
+        self.assertEqual(j["settings"]["vizproof_token_tail"], VRT[-4:])
+        self.assertNotIn("vizproof_token", j["settings"])
+        self.assertNotIn(VRT, brut)
+
+    def test_get_ne_renvoie_jamais_le_jeton(self):
+        self.enregistrer()
+        st, brut, j = self.get("/api/mgmt/settings")
+        self.assertEqual(st, 200)
+        self.assertNotIn(VRT, brut)
+        self.assertTrue(j["settings"]["vizproof_token_set"])
+        self.assertEqual(j["settings"]["vizproof_token_tail"], VRT[-4:])
+        self.assertNotIn("vizproof_token", j["settings"])
+        self.assertNotIn("vizproof_token", j["defaults"])
+
+    def test_stocke_en_clair_dans_un_fichier_0600(self):
+        self.enregistrer()
+        self.assertEqual(lire_json(A.SETTINGS_PATH)["vizproof_token"], VRT)
+        self.assertEqual(mode_of(A.SETTINGS_PATH), 0o600)
+        self.assertEqual(A.viz_token_stored(), VRT)
+
+    def test_le_jeton_n_atterrit_pas_dans_actions_log(self):
+        self.enregistrer()
+        self.assertNotIn(VRT, self.log_brut())
+
+    def test_champ_vide_conserve_le_jeton(self):
+        self.enregistrer()
+        st, _b, j = self.post("/api/mgmt/settings", {"settings": {"vizproof_token": ""}})
+        self.assertEqual(st, 200)
+        self.assertTrue(j["settings"]["vizproof_token_set"])
+        self.assertEqual(A.viz_token_stored(), VRT)
+
+    def test_champ_absent_conserve_le_jeton(self):
+        self.enregistrer()
+        self.post("/api/mgmt/settings", {"settings": {"viz_anomaly_rollback": True}})
+        self.assertEqual(A.viz_token_stored(), VRT)
+        self.assertTrue(A.settings_cfg()["viz_anomaly_rollback"])
+
+    def test_effacement_explicite(self):
+        self.enregistrer()
+        st, _b, j = self.post("/api/mgmt/settings",
+                              {"settings": {"vizproof_token": ""}, "vizproof_token_clear": True})
+        self.assertEqual(st, 200)
+        self.assertFalse(j["settings"]["vizproof_token_set"])
+        self.assertEqual(j["settings"]["vizproof_token_tail"], "")
+        self.assertEqual(A.viz_token_stored(), "")
+
+    def test_effacement_depuis_le_bloc_settings(self):
+        self.enregistrer()
+        self.post("/api/mgmt/settings",
+                  {"settings": {"vizproof_token": "", "vizproof_token_clear": True}})
+        self.assertEqual(A.viz_token_stored(), "")
+
+    def test_format_refuse(self):
+        for mauvais in ("abc", "vrt_court", "vrt_" + "a" * 201, "vrt_avec espace",
+                        "Bearer vrt_abcdefghij", "vrt_abcdefghij\nsuite"):
+            st, _b, j = self.enregistrer(mauvais)
+            self.assertEqual(st, 400, mauvais)
+            self.assertIn("jeton VizProof invalide", j["error"])
+        self.assertEqual(A.viz_token_stored(), "")
+
+    def test_format_accepte(self):
+        for bon in ("vrt_abcdefgh", "vrt_" + "a" * 200, "vrt_A-b_c0123456789"):
+            st, _b, _j = self.enregistrer(bon)
+            self.assertEqual(st, 200, bon)
+            self.assertEqual(A.viz_token_stored(), bon)
+
+    def test_base_api_https_obligatoire(self):
+        st, _b, j = self.post("/api/mgmt/settings",
+                              {"settings": {"vizproof_api_base": "http://vizproof.com"}})
+        self.assertEqual(st, 400)
+        self.assertIn("https", j["error"])
+
+    def test_base_api_enregistree_sans_slash_final(self):
+        st, _b, j = self.post("/api/mgmt/settings",
+                              {"settings": {"vizproof_api_base": "https://viz.example.com/"}})
+        self.assertEqual(st, 200)
+        self.assertEqual(j["settings"]["vizproof_api_base"], "https://viz.example.com")
+        self.assertEqual(A.viz_api_base(), "https://viz.example.com")
+
+    def test_base_api_vide_revient_au_defaut(self):
+        A.settings_write({"vizproof_api_base": "https://viz.example.com"})
+        self.post("/api/mgmt/settings", {"settings": {"vizproof_api_base": ""}})
+        self.assertEqual(A.viz_api_base(), A.VIZ_API_BASE_DEFAULT)
+
+
+class TestVizProofTestRoute(VizRouteBase):
+    """POST /api/mgmt/vizproof/test → {ok, total, error}."""
+
+    def test_ok_rend_le_nombre_de_sites(self):
+        A.settings_write({"vizproof_token": VRT})
+        self.reponses = [(200, page_sites([{"id": "a", "name": "A"}], total=42))]
+        st, brut, j = self.post("/api/mgmt/vizproof/test", {})
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["total"], 42)
+        self.assertIsNone(j["error"])
+        self.assertNotIn(VRT, brut)
+        self.assertEqual(self.appels[0]["url"], "https://vizproof.com/api/sites?limit=1")
+        self.assertEqual(self.appels[0]["auth"], "Bearer " + VRT)
+
+    def test_401_rend_ok_false_sans_500(self):
+        A.settings_write({"vizproof_token": VRT})
+        self.reponses = [self.http_error(401)]
+        st, brut, j = self.post("/api/mgmt/vizproof/test", {})
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertIsNone(j["total"])
+        self.assertIn("401", j["error"])
+        self.assertNotIn(VRT, brut)
+
+    def test_sans_jeton_enregistre(self):
+        st, _b, j = self.post("/api/mgmt/vizproof/test", {})
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["error"], A.VIZ_NO_TOKEN_MSG)
+        self.assertEqual(self.appels, [])
+
+    def test_le_corps_ne_peut_pas_imposer_un_jeton(self):
+        """Aucun jeton n'est accepté ici : seul celui des Réglages est testé."""
+        st, _b, j = self.post("/api/mgmt/vizproof/test", {"vizproof_token": VRT, "token": VRT})
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["error"], A.VIZ_NO_TOKEN_MSG)
+
+
+class TestVizResolveRoute(VizRouteBase):
+
+    def test_apercu_sans_rien_ecrire_cote_wordpress(self):
+        A.settings_write({"vizproof_token": VRT})
+        self.poser_fleet()
+        self.reponses = [(200, page_sites([{"id": "clx1", "name": "Elwave",
+                                            "domains": '["elwave.fr"]'}]))]
+        with mock.patch.object(A, "run_remote_script",
+                               lambda *a, **k: self.fail("aucun ssh attendu")):
+            st, brut, j = self.post("/api/actions/viz_resolve",
+                                    {"server": "s1", "domain": "elwave.fr"})
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["site_id"], "clx1")
+        self.assertEqual(j["name"], "Elwave")
+        self.assertFalse(j["created"])
+        self.assertEqual(j["matched_domain"], "elwave.fr")
+        self.assertNotIn(VRT, brut)
+
+    def test_sans_jeton_message_dedie(self):
+        st, _b, j = self.post("/api/actions/viz_resolve", {"server": "s1", "domain": "elwave.fr"})
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["error"], A.VIZ_NO_TOKEN_MSG)
+
+    def test_cible_invalide(self):
+        A.settings_write({"vizproof_token": VRT})
+        for corps in ({"server": "../x", "domain": "a.fr"}, {"server": "s1", "domain": "a b"}):
+            st, _b, _j = self.post("/api/actions/viz_resolve", corps)
+            self.assertEqual(st, 400)
+        self.assertEqual(self.appels, [])
+
+    def test_base_api_non_publique_refusee(self):
+        A.settings_write({"vizproof_token": VRT})
+        with mock.patch.object(A, "validate_public_url",
+                               lambda u: (None, "adresse non autorisée")):
+            st, _b, _j = self.post("/api/actions/viz_resolve",
+                                   {"server": "s1", "domain": "a.fr",
+                                    "api_base": "https://127.0.0.1"})
+        self.assertEqual(st, 400)
+
+
+class TestVizConnectSansSiteId(VizRouteBase):
+    """viz_connect résout le site par URL puis passe l'identifiant trouvé."""
+
+    def setUp(self):
+        super().setUp()
+        self.scripts = []
+        self.reponse_ssh = (0, '{"connected":true,"site_id":"clx1"}')
+        srv = {"name": "s1", "host": "203.0.113.1", "port": 22, "patterns": ["/x/*"]}
+        site = {"domain": "elwave.fr", "path": "/var/www/x", "owner": "www"}
+        for cible, valeur in (("run_remote_script", self._ssh),
+                              ("find_site", lambda s, d: (srv, site)),
+                              ("logged_action", lambda *a, **k: (0, ""))):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+        A.settings_write({"vizproof_token": VRT})
+        self.poser_fleet()
+
+    def _ssh(self, srv, script, timeout=300, max_out=6000):
+        self.scripts.append(script)
+        return self.reponse_ssh
+
+    def connect(self, **corps):
+        return self.post("/api/actions/viz_connect",
+                         dict({"server": "s1", "domain": "elwave.fr"}, **corps))
+
+    def test_site_existant_resolu_puis_transmis(self):
+        self.reponses = [(200, page_sites([{"id": "clx1", "name": "Elwave",
+                                            "domains": '["www.elwave.fr"]'}]))]
+        st, brut, j = self.connect()
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["site_id"], "clx1")
+        self.assertFalse(j["site_created"])
+        self.assertEqual(j["site_name"], "Elwave")
+        cmd = [l for l in self.scripts[0].splitlines() if "vizproof connect" in l][0]
+        self.assertIn("--site-id='clx1'", cmd)
+        self.assertIn("--token-stdin", cmd)
+        self.assertNotIn(VRT, cmd)                      # jamais sur la ligne de commande
+        self.assertIn(VRT, self.scripts[0])             # mais bien sur stdin (document ici)
+        self.assertNotIn(VRT, brut)                     # ni dans la réponse
+
+    def test_site_cree_quand_aucun_ne_correspond(self):
+        self.reponses = [(200, page_sites([])),
+                         (201, {"id": "clx_neuf", "name": "elwave.fr"})]
+        _st, _b, j = self.connect()
+        self.assertTrue(j["ok"])
+        self.assertTrue(j["site_created"])
+        self.assertEqual(j["site_id"], "clx_neuf")
+        entree = [e for e in json.loads("[" + ",".join(self.log_brut().splitlines()) + "]")
+                  if e["action"] == "viz_connect"][0]
+        self.assertEqual(entree["arg"], "clx_neuf")
+        self.assertTrue(entree["site_created"])
+        self.assertNotIn(VRT, self.log_brut())
+
+    def test_echec_de_resolution_ne_touche_pas_au_site(self):
+        self.reponses = [self.http_error(401)]
+        st, _b, j = self.connect()
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["rc"], A.VIZ_RESOLVE_RC)
+        self.assertIn("401", j["error"])
+        self.assertEqual(self.scripts, [])              # aucun ssh
+
+    def test_site_id_fourni_court_circuite_la_resolution(self):
+        _st, _b, j = self.connect(site_id="impose")
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["site_id"], "impose")
+        self.assertEqual(self.appels, [])               # aucun appel à l'API VizProof
+        self.assertIn("--site-id='impose'", self.scripts[0])
+
+    def test_jeton_ponctuel_du_corps_prime_pour_wp_cli(self):
+        self.reponses = [(200, page_sites([{"id": "clx1", "name": "E",
+                                            "domains": '["elwave.fr"]'}]))]
+        _st, brut, j = self.connect(token=JETON)
+        self.assertTrue(j["ok"])
+        self.assertIn(JETON, self.scripts[0])           # c'est lui qui part sur stdin
+        self.assertEqual(self.appels[0]["auth"], "Bearer " + VRT)  # l'API garde celui des Réglages
+        self.assertNotIn(JETON, brut)
+        self.assertNotIn(VRT, brut)
+
+    def test_code_de_connexion_sans_site_id(self):
+        self.reponses = [(200, page_sites([{"id": "clx1", "name": "E",
+                                            "domains": '["elwave.fr"]'}]))]
+        _st, _b, j = self.connect(code="ABC-123")
+        self.assertTrue(j["ok"])
+        self.assertIn("--code='ABC-123'", self.scripts[0])
+        self.assertNotIn("--token-stdin", self.scripts[0])
+
+    def test_sans_jeton_enregistre_ni_corps_refus(self):
+        A.settings_write({"vizproof_token": ""})
+        st, _b, j = self.connect()
+        self.assertEqual(st, 400)
+        self.assertIn(A.VIZ_NO_TOKEN_MSG, j["error"])
+        self.assertEqual(self.scripts, [])
 
 
 class TestVizDecide(unittest.TestCase):
@@ -1239,3 +1753,34 @@ class TestSafeUpdateViz(BaseTmp):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVizResolveApercu(unittest.TestCase):
+    """L'aperçu (create=False) ne crée jamais de site VizProof."""
+
+    def test_apercu_ne_cree_pas(self):
+        import actions_server as A
+        appels = []
+
+        def faux_api(path, token, base=None, data=None, **kw):
+            appels.append((path, data))
+            if data is not None:
+                raise AssertionError("POST inattendu en mode aperçu")
+            return 200, {"data": [{"id": "x1", "name": "Autre", "domains": '["autre.fr"]'}], "total": 1}, None
+
+        with unittest.mock.patch.object(A, "viz_api_call", faux_api):
+            r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", "vrt_" + "a" * 20, create=False)
+        self.assertTrue(r["ok"]); self.assertTrue(r.get("would_create")); self.assertEqual(r["site_id"], "")
+        self.assertFalse(any(d is not None for _, d in appels))
+
+    def test_connexion_cree(self):
+        import actions_server as A
+
+        def faux_api(path, token, base=None, data=None, **kw):
+            if data is not None:
+                return 200, {"id": "nouveau1", "name": data["name"]}, None
+            return 200, {"data": [], "total": 0}, None
+
+        with unittest.mock.patch.object(A, "viz_api_call", faux_api):
+            r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", "vrt_" + "a" * 20)
+        self.assertTrue(r["ok"]); self.assertTrue(r["created"]); self.assertEqual(r["site_id"], "nouveau1")

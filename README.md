@@ -328,19 +328,79 @@ en une phrase, avec les mêmes boutons et un lien **ouvrir dans wp-admin**.
 > `configured`, `has_credentials`, `connected` et `site_id`, en plus de
 > `version`, `pages` et `last_run`.
 
+#### Le token de compte (Réglages ⚙ → VizProof)
+
+Le token se crée dans **VizProof → Réglages → API** (format `vrt_…`) et
+s'enregistre **une fois pour tout le parc** dans **Réglages ⚙ → VizProof**. Il
+sert à deux choses : retrouver ou créer le site VizProof d'après l'URL du
+WordPress, puis relier le plugin.
+
+- il vit dans `data/settings.json` (fichier **0600**), sous la clé
+  `vizproof_token` ; `vizproof_api_base` (défaut `https://vizproof.com`, https
+  obligatoire, mêmes gardes anti-SSRF que le reste du dashboard) l'accompagne ;
+- `GET /api/mgmt/settings` **ne le renvoie jamais** : comme le jeton Telegram des
+  alertes, il ressort en `vizproof_token_set` (booléen) et `vizproof_token_tail`
+  (4 derniers caractères). Il n'apparaît pas davantage dans `data/actions.log` ;
+- à l'écriture, un champ **vide ou absent conserve** la valeur enregistrée ;
+  l'effacement est un geste explicite (bouton **Effacer**, confirmation) :
+  `{"settings":{"vizproof_token":""},"vizproof_token_clear":true}` ;
+- le bouton **Tester** appelle `POST /api/mgmt/vizproof/test`, qui fait un
+  `GET {base}/api/sites?limit=1` avec le token stocké et rend
+  `{ok, total, error}` — l'interface affiche « N sites accessibles ».
+
+```bash
+curl -s ... -d '{"settings":{"vizproof_token":"vrt_…"}}' .../api/mgmt/settings
+curl -s ... -d '{}' .../api/mgmt/vizproof/test        # → {"ok":true,"total":12,"error":null}
+```
+
+#### Résolution du site VizProof par l'URL
+
+`viz_resolve_site(domain, siteurl, token, base)` prend l'**hôte** du `siteurl`
+(repli sur le domaine), en minuscule et sans `www.`, puis parcourt
+`GET /api/sites?limit=100&page=N` (réponse paginée `{data, total, …}`, 500 sites
+au plus) en comparant l'hôte — avec et sans `www.` — à chaque entrée de
+`domains` (chaîne JSON d'une liste, nulle tant qu'aucune page n'a été ajoutée ;
+une valeur illisible est ignorée, pas fatale). Le résultat est
+`{site_id, name, created, matched_domain, ambiguous, host}` :
+
+- **une correspondance** → le site existant, `created:false` ;
+- **plusieurs** → la première, avec `ambiguous:true` (l'interface le signale) ;
+- **aucune** → `POST /api/sites {"name": "<hôte>"}` puis `created:true`. Ce qui
+  est créé côté VizProof, c'est **un site portant l'hôte pour nom** — sans page,
+  donc avec `domains` à `null` jusqu'à la première page ajoutée.
+
+Tous les appels passent par `_open_no_redirect` (timeout 20 s, lecture bornée,
+`Authorization: Bearer`) : **aucune redirection n'est suivie**, un 30x devient
+une erreur — sinon l'en-tête d'autorisation repartirait vers l'hôte suivant.
+
+`POST /api/actions/viz_resolve {server, domain}` expose la même chose et sert à
+l'**aperçu** de la modale (« Site VizProof : Elwave — existant, domaine
+www.elwave.fr »). Il n'écrit **rien** côté WordPress ; sans token enregistré il
+rend `{"ok":false,"error":"aucun token VizProof dans les Réglages"}`.
+
 #### Connecter un site
 
-Le bouton **Connecter** (colonne ou tiroir) ouvre une modale : un **identifiant
-de site** (`[A-Za-z0-9_-]`, 80 caractères au plus) et, au choix, le **jeton** du
-compte VizProof ou un **code de connexion** à usage unique. Le jeton se crée dans
-**VizProof → Réglages → API**. Les options repliées permettent de viser une autre
-base API (https obligatoire, mêmes gardes anti-SSRF que le reste du dashboard) et
-de choisir la portée (`site` ou `selected_pages`).
+Le bouton **Connecter** (colonne ou tiroir) ouvre une modale. Avec un token
+enregistré, c'est un clic : l'identifiant est **facultatif** (vide = résolution
+par URL), le champ jeton est replié derrière « utiliser un autre token », et un
+aperçu s'affiche à l'ouverture. Sans token enregistré, la modale reste celle
+d'avant — **identifiant de site** (`[A-Za-z0-9_-]`, 80 caractères au plus) et, au
+choix, le **jeton** de compte ou un **code de connexion** à usage unique — avec
+un lien vers les Réglages. Les options repliées permettent de viser une autre
+base API et de choisir la portée (`site` ou `selected_pages`).
+
+`POST /api/actions/viz_connect {server, domain, site_id?, token?, code?,
+api_base?, scope?}` : `site_id` absent → résolu par URL ; `token` absent → celui
+des Réglages (le corps peut toujours en fournir un ponctuel, qui prime pour
+wp-cli). La réponse ajoute `site_id`, `site_created` et `site_name` à
+`{ok, rc, output, error}`. Un échec de résolution rend **rc 95** sans toucher au
+site.
 
 Depuis la **barre d'actions groupées**, « Connecter VizProof… » ouvre la même
-modale avec une ligne par site coché : l'identifiant est propre à chaque site,
-mais le jeton de compte vaut pour tous, et les appels s'enchaînent avec leur
-résultat en face de chaque ligne. Les sites non éligibles (sans SSH, sans CLI,
+modale avec une ligne par site coché : la colonne identifiant reste, pré-remplie
+« par URL » (vide = résolution automatique), et un seul clic « Connecter N
+sites » enchaîne les appels avec, en face de chaque ligne, le site VizProof
+retenu, `créé`/`existant` et le rc. Les sites non éligibles (sans SSH, sans CLI,
 extension absente) sont écartés de la liste.
 
 - Un site géré **sans SSH** ne peut pas être connecté d'ici (l'agent est en
@@ -348,14 +408,15 @@ extension absente) sont écartés de la liste.
 - Sur une extension antérieure à 1.3.6, wp-cli répond « `connect` is not a
   registered subcommand » ; le dashboard le traduit en **rc 99** et en un message
   clair plutôt qu'en échec opaque.
-- **Le jeton n'est jamais enregistré** côté dashboard, ne passe **jamais** par la
-  ligne de commande distante (il est transmis sur l'entrée standard de
-  `wp vizproof connect --token-stdin`, via un document ici — rien n'est écrit sur
-  le disque du site) et il est masqué dans `data/actions.log` comme dans la
-  réponse HTTP. Sur un mutualisé, un argument de commande est lisible par tous
-  les comptes du serveur (`ps aux`) : c'est la raison de ce détour. C'est aussi
-  pourquoi `viz_connect` n'est **pas** dans le dictionnaire `ACTIONS` : il n'est
-  pas atteignable par `/api/actions/run`, qui journalise son argument.
+- **Le jeton ne passe jamais par la ligne de commande distante** (il est transmis
+  sur l'entrée standard de `wp vizproof connect --token-stdin`, via un document
+  ici — rien n'est écrit sur le disque du site) et il est masqué dans
+  `data/actions.log` comme dans la réponse HTTP. Sur un mutualisé, un argument de
+  commande est lisible par tous les comptes du serveur (`ps aux`) : c'est la
+  raison de ce détour. C'est aussi pourquoi `viz_connect` n'est **pas** dans le
+  dictionnaire `ACTIONS` : il n'est pas atteignable par `/api/actions/run`, qui
+  journalise son argument. Le journal porte l'`arg` = `site_id` et le témoin
+  `site_created`, jamais le token.
 
 `POST /api/actions/viz_disconnect {server, domain}` fait l'inverse (bouton
 **Dissocier** du tiroir) ; l'extension reste installée.

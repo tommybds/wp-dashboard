@@ -541,6 +541,8 @@ th[aria-sort="descending"]::after{content:"▼"}
   <div id="set-body"><span class="muted small">chargement…</span></div>
   <h3>Mise à jour sûre</h3>
   <div id="mset-body"><span class="muted small">chargement…</span></div>
+  <h3>VizProof</h3>
+  <div id="viz-body"><span class="muted small">chargement…</span></div>
   <h3>Alertes Telegram</h3>
   <div id="alert-body"><span class="muted small">chargement…</span></div>
 </div></div>
@@ -563,6 +565,12 @@ th[aria-sort="descending"]::after{content:"▼"}
   <h2 class="mt0" id="vz-title">Connecter VizProof</h2>
   <p class="hint" id="vz-intro"></p>
   <div id="vz-rows"></div>
+  <p class="hint" id="vz-idhint" hidden style="margin:6px 0 0">Identifiant <b>facultatif</b> — vide : le site VizProof est retrouvé ou créé d'après l'URL.</p>
+  <div id="vz-apercu" class="small" style="margin:8px 0 0"></div>
+  <p class="hint" id="vz-tokstored" hidden style="margin:8px 0 0">
+    Jeton VizProof enregistré (<span id="vz-toktail"></span>) — il servira pour cette connexion.
+    <button class="btn sm" id="vz-othertok">utiliser un autre token</button></p>
+  <div id="vz-credbox">
   <div class="filters mt3" style="align-items:flex-end">
     <label class="fld small">mode
       <select class="inp" id="vz-mode" style="width:170px">
@@ -576,7 +584,9 @@ th[aria-sort="descending"]::after{content:"▼"}
       <input class="inp" id="vz-code" autocomplete="off" spellcheck="false"
              placeholder="code à usage unique" style="width:220px"></label>
   </div>
-  <p class="hint" style="margin:6px 0 0">Le jeton se crée dans <b>VizProof → Réglages → API</b>. Il n'est pas enregistré par le dashboard : il ne sert qu'à cet appel.</p>
+  <p class="hint" style="margin:6px 0 0">Le jeton se crée dans <b>VizProof → Réglages → API</b>. Saisi ici, il n'est pas enregistré par le dashboard : il ne sert qu'à cet appel.
+    <span id="vz-goset" hidden><button class="btn sm" id="vz-setlink">l'enregistrer dans les Réglages</button></span></p>
+  </div>
   <p class="hint" style="margin:6px 0 0"><button class="btn sm" id="vz-adv">Options avancées</button></p>
   <div id="vz-advbox" hidden>
     <div class="filters" style="align-items:flex-end">
@@ -593,6 +603,7 @@ th[aria-sort="descending"]::after{content:"▼"}
   <div id="vz-out" class="small"></div>
   <div class="mt4" style="display:flex;gap:8px;justify-content:flex-end">
     <button class="btn" id="vz-cancel">Annuler</button>
+    <button class="btn" id="vz-preview" hidden>Aperçu</button>
     <button class="btn primary" id="vz-go">Connecter</button>
   </div>
 </div></div>
@@ -1101,12 +1112,12 @@ async function vizInstall(btn,srv,dom){
   }catch(e){ echec(String(e)); } }
 
 /* ---- connexion d'un site (ou d'un lot) à VizProof ----
-   Un `site_id` est propre à chaque site : il n'y a donc pas d'action groupée
-   possible au sens habituel (une action, N cibles). En revanche le JETON, lui,
-   est celui du compte VizProof et vaut pour tous : la modale liste les sites
-   cochés avec un champ site_id chacun, un seul champ jeton, et enchaîne les
-   appels unitaires. */
-let VZSITES=[];
+   Depuis que le jeton de compte s'enregistre dans les Réglages, le cas courant
+   est le clic unique : ni jeton à saisir, ni identifiant à trouver — le site
+   VizProof est retrouvé (ou créé) d'après l'URL WordPress, côté serveur. Les
+   champs restent là pour les cas particuliers : jeton ponctuel, code de
+   connexion à usage unique, identifiant imposé. */
+let VZSITES=[], VZTOK=false;
 function vizSlug(d){ return String(d||'').toLowerCase().replace(/[^a-z0-9_-]+/g,'-')
   .replace(/^-+|-+$/g,'').slice(0,80); }
 const VZ_ID_RE=/^[A-Za-z0-9_-]{1,80}$/;
@@ -1118,66 +1129,135 @@ document.getElementById('vz-adv').onclick=()=>{ const b=document.getElementById(
 document.getElementById('vz-mode').onchange=e=>{ const tok=e.target.value==='token';
   document.getElementById('vz-tokwrap').hidden=!tok;
   document.getElementById('vz-codewrap').hidden=tok; };
-function openVizConnect(sites){
+/* Le bloc « jeton / code » se replie derrière un lien dès qu'un jeton est
+   enregistré : on ne montre un champ secret que si on en a vraiment besoin. */
+document.getElementById('vz-othertok').onclick=()=>{
+  const b=document.getElementById('vz-credbox'); b.hidden=false;
+  document.getElementById('vz-othertok').hidden=true;
+  const f=document.getElementById('vz-token'); if(f) f.focus(); };
+document.getElementById('vz-setlink').onclick=()=>{ closeViz(); document.getElementById('setbtn').click(); };
+function vzOtherTok(){ return !document.getElementById('vz-credbox').hidden; }
+async function openVizConnect(sites){
   // Sont éligibles : accès SSH (l'agent REST est en lecture seule) et une CLI
   // vizproof réellement disponible sur le site — cf. vizConnectable().
   VZSITES=(sites||[]).filter(s=>s&&vizConnectable(s));
   if(!VZSITES.length){ askInfo('Connecter VizProof',
     "Aucun site éligible dans la sélection. Il faut un accès <b>SSH</b> et une extension VizProof assez récente "
     +"pour exposer <code>wp vizproof</code> (pastille « à mettre à jour » sinon)."); return; }
+  const cfg=await ensureSettings();
+  VZTOK=!!cfg.vizproof_token_set;
   document.getElementById('vz-intro').innerHTML=VZSITES.length>1
-    ? `<b>${VZSITES.length}</b> site(s) à relier. L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.`
+    ? `<b>${VZSITES.length}</b> site(s) à relier.`+(VZTOK
+        ? ' Le jeton enregistré vaut pour tous ; laissez l’identifiant vide pour que chaque site soit retrouvé ou créé d’après son URL.'
+        : " L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.")
     : `Relier <b>${H(kName(VZSITES[0])||VZSITES[0].domain)}</b> à VizProof.`;
   document.getElementById('vz-rows').innerHTML=VZSITES.map((s,i)=>{
-    const cur=(vizInfo(s)||{}).site_id||vizSlug(s.domain);
+    // Avec un jeton enregistré, le champ reste VIDE : « par URL » est le défaut.
+    const cur=VZTOK?'':((vizInfo(s)||{}).site_id||vizSlug(s.domain));
     return `<div class="logline"><b>${H(kName(s)||s.domain)}</b>
       <span class="muted small">${H(s.srv)}</span>
       <input class="inp" data-vzid="${i}" aria-label="${H('identifiant VizProof de '+s.domain)}"
-             autocomplete="off" spellcheck="false" value="${H(cur)}" style="width:230px">
+             autocomplete="off" spellcheck="false" value="${H(cur)}"
+             placeholder="${VZTOK?'par URL':''}" style="width:230px">
       <span class="small" data-vzres="${i}"></span></div>`; }).join('');
+  document.getElementById('vz-idhint').hidden=!VZTOK;
+  document.getElementById('vz-tokstored').hidden=!VZTOK;
+  document.getElementById('vz-toktail').textContent='…'+(cfg.vizproof_token_tail||'');
+  document.getElementById('vz-othertok').hidden=false;
+  document.getElementById('vz-credbox').hidden=VZTOK;   // replié tant qu'un jeton suffit
+  document.getElementById('vz-goset').hidden=VZTOK;
   document.getElementById('vz-out').innerHTML='';
+  document.getElementById('vz-apercu').innerHTML='';
   document.getElementById('vz-token').value='';
   document.getElementById('vz-code').value='';
   const go=document.getElementById('vz-go');
-  go.disabled=false; go.textContent='Connecter'; go.onclick=runVizConnect;
+  go.disabled=false;
+  go.textContent=(VZTOK&&VZSITES.length>1)?`Connecter ${VZSITES.length} sites`:'Connecter';
+  go.onclick=runVizConnect;
+  const ap=document.getElementById('vz-preview');
+  ap.hidden=!VZTOK; ap.disabled=false; ap.textContent='Aperçu'; ap.onclick=()=>runVizPreview();
   const an=document.getElementById('vz-cancel'); an.textContent='Annuler'; an.className='btn';
   document.getElementById('vizmodal').classList.add('open');
-  const f=document.querySelector('#vz-rows input'); if(f) f.focus(); }
+  const f=document.querySelector('#vz-rows input'); if(f) f.focus();
+  // Aperçu automatique sur un site unique : on affiche AVANT de connecter quel
+  // site VizProof recevra ce WordPress.
+  if(VZTOK&&VZSITES.length===1) runVizPreview().catch(()=>{}); }
+
+/* Aperçu : `viz_resolve` ne crée rien, ni côté WordPress ni côté VizProof.
+   Il dit quel site existant sera relié, ou que la connexion en créera un. */
+function vizApercuTexte(j){
+  if(!j||j.ok===false) return `<span class="pill err">aperçu impossible</span> <span class="muted">${H(String((j&&j.error)||'échec'))}</span>`;
+  const nom=H(j.name||j.host||'?');
+  if(j.created) return `<span class="pill ok">Site VizProof : <b>${nom}</b></span> <span class="muted">créé pour <code>${H(j.host||'')}</code></span>`;
+  if(j.would_create) return `<span class="pill warn">Aucun site VizProof pour <code>${H(j.host||'')}</code></span> <span class="muted">il sera créé à la connexion</span>`;
+  return `<span class="pill ok">Site VizProof : <b>${nom}</b></span> <span class="muted">existant, domaine <code>${H(j.matched_domain||j.host||'')}</code></span>`
+    +(j.ambiguous?' <span class="pill warn" title="plusieurs sites VizProof portent cet hôte : le premier est retenu">ambigu</span>':''); }
+async function vizResolveOne(s){
+  const corps={server:s.srv,domain:s.domain};
+  const api_base=document.getElementById('vz-api').value.trim();
+  if(api_base) corps.api_base=api_base;
+  try{ return await api('/api/actions/viz_resolve',corps)||{}; }
+  catch(e){ return {ok:false,error:String(e)}; } }
+async function runVizPreview(){
+  const zone=document.getElementById('vz-apercu'), ap=document.getElementById('vz-preview');
+  ap.disabled=true; ap.textContent='…';
+  if(VZSITES.length===1){
+    zone.innerHTML='<span class="muted">aperçu…</span>';
+    zone.innerHTML=vizApercuTexte(await vizResolveOne(VZSITES[0]));
+  }else{
+    zone.innerHTML='<span class="muted">aperçu des '+VZSITES.length+' sites…</span>';
+    for(let i=0;i<VZSITES.length;i++){
+      const res=document.querySelector(`#vz-rows [data-vzres="${i}"]`);
+      if(res) res.innerHTML='<span class="pill mut">…</span>';
+      const j=await vizResolveOne(VZSITES[i]);
+      if(res) res.innerHTML=(j&&j.ok)
+        ? `<span class="pill ${j.created?'warn':'ok'}" title="${H(j.site_id||'')}">${H(j.name||j.host||'?')} · ${j.created?'créé':'existant'}</span>`
+        : `<span class="pill err" title="${H(String((j&&j.error)||''))}">aperçu ✗</span>`; }
+    zone.innerHTML='<span class="muted">aperçu terminé — rien n’a été connecté.</span>'; }
+  ap.disabled=false; ap.textContent='Aperçu'; }
+
 async function runVizConnect(){
+  const autre=vzOtherTok();
   const mode=document.getElementById('vz-mode').value;
-  const token=document.getElementById('vz-token').value.trim();
-  const code=document.getElementById('vz-code').value.trim();
+  const token=autre?document.getElementById('vz-token').value.trim():'';
+  const code=autre?document.getElementById('vz-code').value.trim():'';
   const api_base=document.getElementById('vz-api').value.trim();
   const scope=document.getElementById('vz-scope').value;
   const out=document.getElementById('vz-out');
   const ids=VZSITES.map((s,i)=>document.querySelector(`#vz-rows [data-vzid="${i}"]`).value.trim());
-  const mauvais=ids.findIndex(v=>!VZ_ID_RE.test(v));
-  if(mauvais>=0){ out.innerHTML='<span class="pill err">identifiant invalide</span> <span class="muted">lettres, chiffres, « _ » et « - », 80 caractères au plus.</span>';
+  // Vide = résolution par URL côté serveur ; sinon le jeu de caractères est fermé.
+  const mauvais=ids.findIndex(v=>v!==''?!VZ_ID_RE.test(v):!VZTOK);
+  if(mauvais>=0){ out.innerHTML=ids[mauvais]===''
+      ? '<span class="pill err">identifiant requis</span> <span class="muted">enregistrez un jeton VizProof dans les Réglages pour le déduire de l’URL.</span>'
+      : '<span class="pill err">identifiant invalide</span> <span class="muted">lettres, chiffres, « _ » et « - », 80 caractères au plus.</span>';
     document.querySelector(`#vz-rows [data-vzid="${mauvais}"]`).focus(); return; }
-  if(mode==='token'&&!token){ out.innerHTML='<span class="pill err">jeton manquant</span>'; return; }
-  if(mode==='code'&&!code){ out.innerHTML='<span class="pill err">code manquant</span>'; return; }
-  const go=document.getElementById('vz-go'); go.disabled=true; go.textContent='en cours…';
+  if(autre&&mode==='token'&&!token){ out.innerHTML='<span class="pill err">jeton manquant</span>'; return; }
+  if(autre&&mode==='code'&&!code){ out.innerHTML='<span class="pill err">code manquant</span>'; return; }
+  const go=document.getElementById('vz-go'); const lbl=go.textContent;
+  go.disabled=true; go.textContent='en cours…';
   out.innerHTML='';
   let nok=0;
   for(let i=0;i<VZSITES.length;i++){
     const s=VZSITES[i], res=document.querySelector(`#vz-rows [data-vzres="${i}"]`);
     if(res) res.innerHTML='<span class="pill mut">…</span>';
-    const corps={server:s.srv,domain:s.domain,site_id:ids[i]};
-    if(mode==='token') corps.token=token; else corps.code=code;
+    const corps={server:s.srv,domain:s.domain};
+    if(ids[i]) corps.site_id=ids[i];
+    if(autre){ if(mode==='token') corps.token=token; else corps.code=code; }
     if(api_base) corps.api_base=api_base;
     if(scope) corps.scope=scope;
     let j; try{ j=await api('/api/actions/viz_connect',corps)||{}; }
     catch(e){ j={ok:false,rc:'—',error:String(e)}; }
     if(j.ok) nok++;
     const det=stripPhpNoise(String(j.output||j.error||'')).slice(-200);
-    if(res) res.innerHTML=j.ok?'<span class="pill ok">connecté</span>'
-      :`<span class="pill err" title="${H(det)}">rc ${H(j.rc??'?')}</span>`;
+    const sid=j.site_id?` <span class="muted">${H(j.site_name||j.site_id)}${j.site_created?' · créé':' · existant'}</span>`:'';
+    if(res) res.innerHTML=(j.ok?'<span class="pill ok">connecté</span>'
+      :`<span class="pill err" title="${H(det)}">rc ${H(j.rc??'?')}</span>`)+sid;
     if(!j.ok) out.innerHTML+=`<div class="logline"><b>${H(s.domain)}</b> <code>${H(det||'échec')}</code></div>`; }
   // Le champ jeton n'est jamais réinjecté : il est vidé dès l'envoi.
   document.getElementById('vz-token').value='';
   document.getElementById('vz-code').value='';
   out.innerHTML=`<div class="mt2"><span class="pill ${nok===VZSITES.length?'ok':nok?'warn':'err'}">${nok}/${VZSITES.length} connecté(s)</span></div>`+out.innerHTML;
-  go.textContent='Connecter'; go.disabled=false;
+  go.textContent=lbl; go.disabled=false;
   const an=document.getElementById('vz-cancel'); an.textContent='Fermer'; an.className='btn primary';
   if(nok) loadFleet().catch(()=>{}); }
 async function vizDisconnect(btn,s){
@@ -2977,7 +3057,8 @@ async function ensureSettings(){ if(SETTINGSLU) return SETTINGS;
 async function loadSettings(){ const bd=document.getElementById('mset-body');
   bd.innerHTML='<span class="muted small">chargement…</span>';
   let j; try{ j=await api('/api/mgmt/settings'); }
-  catch(e){ bd.innerHTML=`<span class="pill mut">réglages indisponibles</span> <span class="muted small">${H(String(e))}</span>`; return; }
+  catch(e){ bd.innerHTML=`<span class="pill mut">réglages indisponibles</span> <span class="muted small">${H(String(e))}</span>`;
+    renderVizSettings(SETTINGS); return; }
   if(j&&j.settings&&typeof j.settings==='object'){ SETTINGS=j.settings; SETTINGSLU=true; }
   bd.innerHTML=`<label class="fld"><input type="checkbox" id="set-vizrb"${SETTINGS.viz_anomaly_rollback?' checked':''}>
       Retour arrière automatique sur anomalie visuelle</label>
@@ -2992,7 +3073,73 @@ async function loadSettings(){ const bd=document.getElementById('mset-body');
       if(r&&r.settings) SETTINGS=r.settings;
       m.innerHTML='<span class="pill ok">enregistré</span>';
     }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
-    setTimeout(()=>{ m.innerHTML=''; },2500); }; }
+    setTimeout(()=>{ m.innerHTML=''; },2500); };
+  renderVizSettings(SETTINGS); }
+
+/* ===== RÉGLAGES — VizProof (jeton de compte) =====
+   Même modèle que le jeton Telegram : le champ reste vide, la valeur
+   enregistrée n'est jamais renvoyée par l'API — seuls un témoin et les
+   4 derniers caractères reviennent. Vide à l'enregistrement = inchangé ;
+   effacer est un geste explicite. */
+function renderVizSettings(cfg){
+  const bd=document.getElementById('viz-body'); if(!bd) return;
+  cfg=cfg||{};
+  const pose=!!cfg.vizproof_token_set;
+  const ph=pose?`token enregistré (…${cfg.vizproof_token_tail||''}) — laisser vide pour le conserver`
+                :'vrt_… (VizProof → Réglages → API)';
+  bd.innerHTML=`<div class="filters">
+      <input class="inp" id="viz-token" type="password" autocomplete="off" spellcheck="false"
+             aria-label="token VizProof" placeholder="${H(ph)}" style="width:340px">
+      <button class="btn primary sm" id="viz-save">Enregistrer</button>
+      <button class="btn sm" id="viz-test"${pose?'':' disabled'}>Tester</button>
+      <button class="btn sm" id="viz-forget"${pose?'':' disabled'}>Effacer</button>
+      <span id="viz-msg" class="small"></span>
+    </div>
+    <p class="hint" style="margin:6px 0 0">Le token se crée dans <b>VizProof → Réglages → API</b> ; il sert à retrouver ou créer le site VizProof d'après l'URL, puis à relier le plugin.</p>
+    <p class="hint" style="margin:6px 0 0"><button class="btn sm" id="viz-advbtn">Options avancées</button></p>
+    <div id="viz-advset" hidden><div class="filters" style="align-items:flex-end">
+      <label class="fld small">base API
+        <input class="inp" id="viz-base" autocomplete="off" spellcheck="false"
+               value="${H(cfg.vizproof_api_base||'')}" placeholder="https://vizproof.com" style="width:260px"></label>
+      <button class="btn sm" id="viz-basesave">Enregistrer la base</button>
+    </div></div>`;
+  // `dire` relit l'élément à chaque fois : un enregistrement réussi redessine
+  // la section (placeholder du token, boutons activés) et détache l'ancien.
+  const dire=(html,ms)=>{ const m=document.getElementById('viz-msg'); if(!m) return;
+    m.innerHTML=html;
+    if(ms) setTimeout(()=>{ const m2=document.getElementById('viz-msg');
+      if(m2&&m2.innerHTML===html) m2.innerHTML=''; },ms); };
+  const majuscule=j=>{ if(j&&j.settings){ SETTINGS=j.settings; SETTINGSLU=true; renderVizSettings(SETTINGS); } };
+  document.getElementById('viz-advbtn').onclick=()=>{ const b=document.getElementById('viz-advset');
+    b.hidden=!b.hidden; document.getElementById('viz-advbtn').textContent=b.hidden?'Options avancées':'Masquer les options'; };
+  document.getElementById('viz-save').onclick=async()=>{
+    const v=document.getElementById('viz-token').value.trim();
+    if(!v){ dire('<span class="pill mut">rien à enregistrer</span> <span class="muted">saisissez un token.</span>',3000); return; }
+    dire('<span class="muted">⏳…</span>');
+    try{ const j=await api('/api/mgmt/settings',{settings:{vizproof_token:v}})||{};
+      if(j.error||!j.settings){ dire(`<span class="pill err">échec</span> <span class="muted small">${H(j.error||'réponse vide')}</span>`); return; }
+      majuscule(j); dire('<span class="pill ok">enregistré</span>',2500);
+    }catch(e){ dire(`<span class="pill err">échec</span> <span class="muted small">${H(String(e))}</span>`); } };
+  document.getElementById('viz-test').onclick=async()=>{
+    dire('<span class="muted">⏳…</span>');
+    try{ const j=await api('/api/mgmt/vizproof/test',{})||{};
+      dire(j.ok?`<span class="pill ok">✓ ${H(j.total??'?')} site(s) accessible(s)</span>`
+               :`<span class="pill err">✗ échec</span> <span class="muted small">${H(j.error||'')}</span>`);
+    }catch(e){ dire(`<span class="pill err">✗ échec</span> <span class="muted small">${H(String(e))}</span>`); } };
+  document.getElementById('viz-forget').onclick=async()=>{
+    if(!await askConfirm("Effacer le token VizProof enregistré ?<br><br>Les connexions « en un clic » demanderont de nouveau un token.",
+        {titre:'Effacer le token VizProof',ok:'Effacer',danger:true})) return;
+    dire('<span class="muted">⏳…</span>');
+    try{ const j=await api('/api/mgmt/settings',{settings:{vizproof_token:''},vizproof_token_clear:true})||{};
+      majuscule(j); dire('<span class="pill ok">effacé</span>',2500);
+    }catch(e){ dire(`<span class="pill err">échec</span> <span class="muted small">${H(String(e))}</span>`); } };
+  document.getElementById('viz-basesave').onclick=async()=>{
+    dire('<span class="muted">⏳…</span>');
+    try{ const j=await api('/api/mgmt/settings',
+                           {settings:{vizproof_api_base:document.getElementById('viz-base').value.trim()}})||{};
+      if(j.error||!j.settings){ dire(`<span class="pill err">échec</span> <span class="muted small">${H(j.error||'réponse vide')}</span>`); return; }
+      majuscule(j); dire('<span class="pill ok">base enregistrée</span>',2500);
+    }catch(e){ dire(`<span class="pill err">échec</span> <span class="muted small">${H(String(e))}</span>`); } }; }
 
 /* ===== RÉGLAGES — alertes Telegram ===== */
 const AL_CHK=[['new_admin','nouvel administrateur'],['checksum_fail','checksums en anomalie'],['viz_anomaly','anomalie visuelle VizProof'],['site_down','site down (Kuma)']];
