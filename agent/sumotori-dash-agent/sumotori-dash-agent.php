@@ -3,7 +3,7 @@
  * Plugin Name: Sumotori Dash Agent
  * Plugin URI: https://github.com/tommybds/wp-dashboard
  * Description: Connects this site to a monitoring dashboard of your choice: reports sensitive administration events and answers signed, read-only inventory requests.
- * Version: 1.2.1
+ * Version: 1.3.0
  * Requires at least: 5.2
  * Requires PHP: 7.0
  * Author: Tommy Bordas
@@ -56,7 +56,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 	 *     par signature HMAC, strictement en lecture seule.
 	 *
 	 * Configuration : option `sumotori_dash_agent`
-	 *   array( 'enabled', 'endpoint', 'secret', 'paired_at', 'mu_protect' )
+	 *   array( 'enabled', 'endpoint', 'secret', 'paired_at' )
 	 * stockée en option de réseau sur un multisite (une seule liaison pour tout
 	 * le réseau) et en option de site sinon.
 	 *
@@ -72,13 +72,12 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const MENU_SLUG        = 'sumotori-dash-agent';
 		const NONCE_ACTION     = 'sumotori_dash_agent_admin';
 		const URL_CONSTANT     = 'SUMOTORI_DASH_AGENT_URL';
-		const MU_FILENAME      = 'sumotori-dash-agent.php';
 		const MAX_TIMESTAMP_SKEW = 300;
 		const REQUEST_TIMEOUT  = 2;
 		const PAIR_TIMEOUT     = 10;
 		const MAX_EVENT_ITEMS  = 25;
 		const MAX_SITES_LISTED = 500;
-		const VERSION          = '1.2.0';
+		const VERSION          = '1.3.0';
 
 		/**
 		 * Instance unique.
@@ -176,7 +175,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				'endpoint'   => isset( $saved['endpoint'] ) ? esc_url_raw( (string) $saved['endpoint'] ) : '',
 				'secret'     => isset( $saved['secret'] ) ? (string) $saved['secret'] : '',
 				'paired_at'  => isset( $saved['paired_at'] ) ? absint( $saved['paired_at'] ) : 0,
-				'mu_protect' => ! empty( $saved['mu_protect'] ),
 			);
 
 			return $this->config_cache;
@@ -230,7 +228,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 					'endpoint'   => esc_url_raw( (string) $config['endpoint'] ),
 					'secret'     => (string) $config['secret'],
 					'paired_at'  => absint( $config['paired_at'] ),
-					'mu_protect' => ! empty( $config['mu_protect'] ),
 				)
 			);
 
@@ -362,7 +359,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		}
 
 		/**
-		 * Efface la liaison. La préférence de protection mu-plugins est conservée.
+		 * Efface la liaison : plus aucune donnée ne sort du site.
 		 *
 		 * @return true
 		 */
@@ -519,132 +516,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			);
 		}
 
-		// ── Protection mu-plugins (optionnelle, désactivée par défaut) ────────
-
-		/**
-		 * Chemin de la copie mu-plugins.
-		 *
-		 * @return string Chemin absolu, ou chaîne vide si indisponible.
-		 */
-		public function get_mu_target_path() {
-			if ( ! defined( 'WPMU_PLUGIN_DIR' ) ) {
-				return '';
-			}
-
-			return untrailingslashit( WPMU_PLUGIN_DIR ) . '/' . self::MU_FILENAME;
-		}
-
-		/**
-		 * Une copie mu-plugins existe-t-elle ?
-		 *
-		 * @return bool
-		 */
-		public function has_mu_copy() {
-			$target = $this->get_mu_target_path();
-
-			return ( '' !== $target && file_exists( $target ) );
-		}
-
-		/**
-		 * Le fichier en cours d'exécution est-il la copie mu-plugins ?
-		 *
-		 * @return bool
-		 */
-		public function is_running_from_mu() {
-			$target = $this->get_mu_target_path();
-			if ( '' === $target ) {
-				return false;
-			}
-
-			return ( wp_normalize_path( __FILE__ ) === wp_normalize_path( $target ) );
-		}
-
-		/**
-		 * Copie l'agent dans mu-plugins/ pour le rendre non désactivable depuis
-		 * wp-admin. Action volontaire de l'administrateur, jamais automatique.
-		 *
-		 * @return true|WP_Error
-		 */
-		public function copy_to_mu_plugins() {
-			$target = $this->get_mu_target_path();
-			if ( '' === $target ) {
-				return new WP_Error(
-					'sumotori_dash_mu_unavailable',
-					__( 'The mu-plugins directory is not defined on this installation.', 'sumotori-dash-agent' )
-				);
-			}
-
-			if ( $this->is_running_from_mu() ) {
-				return true;
-			}
-
-			$target_dir = dirname( $target );
-			if ( ! is_dir( $target_dir ) ) {
-				wp_mkdir_p( $target_dir );
-			}
-			if ( ! is_dir( $target_dir ) ) {
-				return new WP_Error(
-					'sumotori_dash_mu_missing_dir',
-					sprintf(
-						/* translators: %s: directory path. */
-						__( 'Directory not found: %s', 'sumotori-dash-agent' ),
-						$target_dir
-					)
-				);
-			}
-
-			if ( ! wp_is_writable( $target_dir ) ) {
-				return new WP_Error(
-					'sumotori_dash_mu_not_writable',
-					sprintf(
-						/* translators: %s: directory path. */
-						__( 'Directory is not writable: %s', 'sumotori-dash-agent' ),
-						$target_dir
-					)
-				);
-			}
-
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy -- copie d'un fichier du plugin vers mu-plugins, sans dépendance à WP_Filesystem.
-			if ( ! @copy( __FILE__, $target ) ) {
-				return new WP_Error(
-					'sumotori_dash_mu_copy_failed',
-					sprintf(
-						/* translators: %s: file path. */
-						__( 'Could not copy to %s', 'sumotori-dash-agent' ),
-						$target
-					)
-				);
-			}
-
-			return true;
-		}
-
-		/**
-		 * Supprime la copie mu-plugins et rend au site sa désactivation normale.
-		 *
-		 * @return true|WP_Error
-		 */
-		public function remove_from_mu_plugins() {
-			$target = $this->get_mu_target_path();
-			if ( '' === $target || ! file_exists( $target ) ) {
-				return true;
-			}
-
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- suppression de la copie déposée par ce plugin.
-			if ( ! @unlink( $target ) ) {
-				return new WP_Error(
-					'sumotori_dash_mu_delete_failed',
-					sprintf(
-						/* translators: %s: file path. */
-						__( 'Could not delete: %s', 'sumotori-dash-agent' ),
-						$target
-					)
-				);
-			}
-
-			return true;
-		}
-
 		// ── Écran d'administration ───────────────────────────────────────────
 
 		/**
@@ -688,7 +559,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			$config     = $this->get_config();
 			$connected  = $this->is_connected();
 			$configured = $this->get_configured_dashboard_url();
-			$has_mu     = $this->has_mu_copy();
 			?>
 			<div class="wrap">
 				<h1><?php esc_html_e( 'Sumotori Dash Agent', 'sumotori-dash-agent' ); ?></h1>
@@ -805,51 +675,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 					</form>
 				<?php endif; ?>
 
-				<h2><?php esc_html_e( 'Deactivation protection', 'sumotori-dash-agent' ); ?></h2>
-				<form method="post">
-					<?php wp_nonce_field( self::NONCE_ACTION ); ?>
-					<input type="hidden" name="sumotori_dash_action" value="save_protection" />
-					<table class="form-table" role="presentation">
-						<tr>
-							<th scope="row"><?php esc_html_e( 'Copy in mu-plugins', 'sumotori-dash-agent' ); ?></th>
-							<td>
-								<label for="sumotori_dash_mu_protect">
-									<input
-										type="checkbox"
-										id="sumotori_dash_mu_protect"
-										name="sumotori_dash_mu_protect"
-										value="1"
-										<?php checked( $has_mu ); ?>
-									/>
-									<?php esc_html_e( 'Protect the agent against deactivation (copy in mu-plugins) — only for sites you administer yourself.', 'sumotori-dash-agent' ); ?>
-								</label>
-								<p class="description">
-									<?php esc_html_e( 'Disabled by default. Once checked, a copy of the agent file is placed in wp-content/mu-plugins/: it loads automatically and no longer appears in the list of deactivatable plugins. Uncheck this box, or use the button below, to remove that copy and return to normal operation.', 'sumotori-dash-agent' ); ?>
-								</p>
-								<?php if ( $has_mu ) : ?>
-									<p class="description">
-										<?php
-										printf(
-											/* translators: %s: file path. */
-											esc_html__( 'Active copy: %s', 'sumotori-dash-agent' ),
-											esc_html( $this->get_mu_target_path() )
-										);
-										?>
-									</p>
-								<?php endif; ?>
-							</td>
-						</tr>
-					</table>
-					<?php submit_button( __( 'Save', 'sumotori-dash-agent' ) ); ?>
-				</form>
-
-				<?php if ( $has_mu ) : ?>
-					<form method="post">
-						<?php wp_nonce_field( self::NONCE_ACTION ); ?>
-						<input type="hidden" name="sumotori_dash_action" value="remove_mu" />
-						<?php submit_button( __( 'Remove from mu-plugins', 'sumotori-dash-agent' ), 'secondary', 'submit', true ); ?>
-					</form>
-				<?php endif; ?>
 			</div>
 			<?php
 		}
@@ -866,7 +691,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				return;
 			}
 
-			if ( ! in_array( $action, array( 'pair', 'unpair', 'save_protection', 'remove_mu' ), true ) ) {
+			if ( ! in_array( $action, array( 'pair', 'unpair' ), true ) ) {
 				return;
 			}
 
@@ -886,14 +711,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 						'type'    => 'success',
 						'message' => __( 'Site disconnected: no more data is transmitted.', 'sumotori-dash-agent' ),
 					);
-					break;
-
-				case 'save_protection':
-					$this->handle_protection_action();
-					break;
-
-				case 'remove_mu':
-					$this->handle_remove_mu_action();
 					break;
 			}
 		}
@@ -926,78 +743,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 					__( 'Site paired with the dashboard (%s).', 'sumotori-dash-agent' ),
 					$config['endpoint']
 				),
-			);
-		}
-
-		/**
-		 * Enregistrement de la préférence de protection mu-plugins.
-		 */
-		private function handle_protection_action() {
-			// Nonce déjà vérifié par handle_admin_request().
-			// phpcs:disable WordPress.Security.NonceVerification.Missing
-			$raw_wanted = isset( $_POST['sumotori_dash_mu_protect'] ) ? sanitize_text_field( wp_unslash( $_POST['sumotori_dash_mu_protect'] ) ) : '';
-			// phpcs:enable WordPress.Security.NonceVerification.Missing
-			$wanted     = ( '' !== $raw_wanted && '0' !== $raw_wanted );
-			$this->save_config( array( 'mu_protect' => $wanted ) );
-
-			if ( $wanted && ! $this->has_mu_copy() ) {
-				$result = $this->copy_to_mu_plugins();
-				if ( is_wp_error( $result ) ) {
-					$this->notice = array(
-						'type'    => 'error',
-						'message' => sprintf(
-							/* translators: %s: error message. */
-							__( 'Protection failed: %s', 'sumotori-dash-agent' ),
-							$result->get_error_message()
-						),
-					);
-
-					return;
-				}
-
-				$this->notice = array(
-					'type'    => 'success',
-					'message' => __( 'Agent copied to mu-plugins: it can no longer be deactivated from the plugins list.', 'sumotori-dash-agent' ),
-				);
-
-				return;
-			}
-
-			if ( ! $wanted && $this->has_mu_copy() ) {
-				$this->handle_remove_mu_action();
-
-				return;
-			}
-
-			$this->notice = array(
-				'type'    => 'success',
-				'message' => __( 'Preference saved.', 'sumotori-dash-agent' ),
-			);
-		}
-
-		/**
-		 * Suppression de la copie mu-plugins.
-		 */
-		private function handle_remove_mu_action() {
-			$was_running_from_mu = $this->is_running_from_mu();
-
-			$result = $this->remove_from_mu_plugins();
-			if ( is_wp_error( $result ) ) {
-				$this->notice = array(
-					'type'    => 'error',
-					'message' => $result->get_error_message(),
-				);
-
-				return;
-			}
-
-			$this->save_config( array( 'mu_protect' => false ) );
-
-			$this->notice = array(
-				'type'    => 'success',
-				'message' => $was_running_from_mu
-					? __( 'Copy removed from mu-plugins. The agent stays active until the end of this request; install it as a regular plugin to keep using it.', 'sumotori-dash-agent' )
-					: __( 'Copy removed from mu-plugins: the agent can be deactivated from the plugins list again.', 'sumotori-dash-agent' ),
 			);
 		}
 
@@ -2262,8 +2007,6 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				'endpoint'        => (string) $config['endpoint'],
 				'secret_set'      => ( '' !== (string) $config['secret'] ),
 				'paired_at'       => (int) $config['paired_at'],
-				'mu_protect'      => (bool) $config['mu_protect'],
-				'mu_copy_present' => (bool) $this->has_mu_copy(),
 				'site'            => is_multisite() ? network_site_url() : home_url(),
 				'multisite'       => is_multisite(),
 				'sites_count'     => is_multisite() ? $this->get_sites_count() : 1,

@@ -4,7 +4,7 @@ Tags: maintenance, monitoring, management, inventory, multisite
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.0
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -181,29 +181,10 @@ a fleet of sites, you can also enforce it in `wp-config.php`:
 
 The settings screen field then displays that value instead of being editable.
 
-= What is the "Protect the agent against deactivation" option for? =
-
-It is **disabled by default**. If you check it, a copy of the agent file is
-placed in `wp-content/mu-plugins/`. Files in that directory are loaded
-automatically by WordPress and do not appear in the plugins list, so the agent
-can no longer be deactivated from wp-admin. This option only makes sense on
-sites you administer yourself and monitor on a client's behalf.
-
-= How do I undo that protection? =
-
-Three ways, whichever you prefer:
-
-1. uncheck the box and save: the copy is deleted;
-2. click the "Remove from mu-plugins" button shown under the option;
-3. manually delete `wp-content/mu-plugins/sumotori-dash-agent.php` over FTP or
-   SSH.
-
-Uninstalling the plugin also removes that copy.
-
 = What is left in the database after uninstalling? =
 
-Nothing. Deleting the plugin erases the configuration option (site option and
-network option, plus any sub-site options) and the mu-plugins copy.
+Nothing. Deleting the plugin erases the configuration option: the site option,
+the network option, and any options left on sub-sites.
 
 = Can the inventory modify my site? =
 
@@ -217,6 +198,16 @@ administration (`manage_network_options` capability). The inventory can target
 any sub-site through the `blog_id` parameter.
 
 == Changelog ==
+
+= 1.3.0 =
+
+* Removed the "Protect the agent against deactivation" option, which copied the
+  agent file into `wp-content/mu-plugins/`. Plugins are not meant to write
+  executable code outside their own directory, so the feature has been dropped
+  entirely rather than kept behind a checkbox. The agent is now an ordinary
+  plugin that is activated, deactivated and uninstalled like any other.
+* `uninstall.php` no longer touches the `mu-plugins` directory.
+* Internal version constant realigned with the plugin header.
 
 = 1.2.1 =
 
@@ -251,8 +242,9 @@ any sub-site through the `blog_id` parameter.
 
 == Upgrade Notice ==
 
-= 1.2.0 =
+= 1.3.0 =
 
-The agent no longer copies itself into mu-plugins on its own: if you relied on
-that behaviour, check the matching option under "Settings → Dash Agent". The
-dashboard URL is now requested when pairing.
+The deactivation-protection option is gone. If you had enabled it in an earlier
+version, delete `wp-content/mu-plugins/sumotori-dash-agent.php` by hand over FTP
+or SSH: that leftover file keeps loading the old code and prevents the updated
+plugin from running.
