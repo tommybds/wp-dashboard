@@ -17,9 +17,13 @@ import concurrent.futures
 import urllib.error, urllib.parse, urllib.request
 from urllib.parse import urlparse
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
-PUB = os.path.join(BASE, "public")
+# Briques communes à tous les scripts du dépôt (cf. dashlib.py). PATTERN_RE
+# n'est plus utilisé directement ici (valid_pattern s'en charge) mais reste un
+# attribut du module, comme avant la mise en commun.
+from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
+                     PATH_PATTERN_RE as PATTERN_RE, load_json, norm_domain,
+                     site_key, sq, valid_path_pattern as valid_pattern)
+from dashlib import save_json as _save_json
 from dashboard_config import CONFIG
 KEY = CONFIG["ssh_key"]                # clé SSH par défaut (surchargée par serveur dans servers.json)
 KUMA_STATUS = CONFIG["kuma_status_url"]  # JSON de la status page Kuma du parc
@@ -57,6 +61,29 @@ asuser() {
   fi
 }
 
+# Répertoire de cache wp-cli du compte $1.
+#
+# Sécurité : surtout PAS un chemin prévisible dans /tmp partagé (un voisin du
+# mutualisé pourrait l'y créer d'avance et empoisonner ce que wp-cli y lit).
+# On privilégie le HOME du compte ; à défaut, un répertoire créé par mktemp
+# (nom imprévisible) pour la durée de l'exécution.
+wp_cache_dir() {
+  local own="$1" home=""
+  if [ "$NOSU" = "1" ]; then
+    home="${HOME:-}"
+  else
+    home=$(getent passwd "$own" 2>/dev/null | cut -d: -f6)
+    [ -n "$home" ] || home=$(awk -F: -v u="$own" '$1==u{print $6}' /etc/passwd 2>/dev/null)
+  fi
+  if [ -n "$home" ] && [ -d "$home" ]; then
+    printf '%s/.wp-cli/cache' "$home"
+  elif [ -n "$CACHEROOT" ]; then
+    printf '%s/%s' "$CACHEROOT" "$own"
+  else
+    printf '%s/cache' "$OUTDIR"
+  fi
+}
+
 # $1 = options de chargement (--skip-plugins --skip-themes, ou vide), puis la commande wp.
 wp_call() {
   [ -n "$WPBIN" ] || { echo "wp-cli absent du serveur"; return 90; }
@@ -64,7 +91,7 @@ wp_call() {
   local args="$*"
   local extra=""
   [ "$NOSU" != "1" ] && [ "$OWN" = "root" ] && extra="--allow-root"
-  local base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache-$OWN WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
+  local base="cd '$D' && env WP_CLI_CACHE_DIR='$CACHE' WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
   local out rc
   out=$(asuser "$base wp $args $extra $skips --no-color"); rc=$?
   if [ $rc -ne 0 ] && printf '%s' "$out" | grep -qiE 'requires PHP|PHP version|Parse error|syntax error, unexpected'; then
@@ -103,7 +130,10 @@ emitfield() {
 # chacun dans son propre sous-shell écrivant dans son propre fichier.
 emit_site() {
   local D="$1" DOM="$2" OWN="$3"
-    printf '@@SITE@@%s|%s|%s\n' "$DOM" "$D" "$OWN"
+  local CACHE
+  CACHE=$(wp_cache_dir "$OWN")
+    # Séparateur \037 (unit separator) : un nom de répertoire peut contenir « | ».
+    printf '@@SITE@@%s\037%s\037%s\n' "$DOM" "$D" "$OWN"
     emitfield core_version core version
     emitfield core_update core check-update --format=json --fields=version,update_type
     emitfield siteurl option get siteurl
@@ -125,8 +155,20 @@ emit_site() {
 
 # Collecte des sites : PAR en parallèle, chacun dans un fichier temporaire pour que
 # les blocs @@SITE@@ ne s'entrelacent jamais ; concaténés dans l'ordre à la fin.
+
+# Ménage : un timeout côté dashboard coupe la session SSH (SIGHUP) et peut
+# laisser des répertoires derrière lui. On balaie ceux de plus de 24 h.
+find /tmp -maxdepth 1 -name '.wpdash.*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
+find /tmp -maxdepth 1 -name '.wpdash-cache.*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
+
 OUTDIR=$(mktemp -d /tmp/.wpdash.XXXXXX) || exit 91
-trap 'rm -rf "$OUTDIR"' EXIT
+# Cache wp-cli de repli, partagé entre les comptes sans HOME utilisable : nom
+# imprévisible (mktemp) et bit collant, comme /tmp.
+CACHEROOT=$(mktemp -d /tmp/.wpdash-cache.XXXXXX 2>/dev/null) || CACHEROOT=""
+[ -n "$CACHEROOT" ] && chmod 1777 "$CACHEROOT" 2>/dev/null
+# HUP/INT/TERM en plus de EXIT : sans cela une session SSH coupée laisse le
+# répertoire temporaire sur le serveur distant.
+trap 'rm -rf "$OUTDIR" ${CACHEROOT:+"$CACHEROOT"}' EXIT HUP INT TERM
 jobs_running=0
 
 for pat in "$@"; do
@@ -161,18 +203,24 @@ echo '@@DONE@@'
 CORE_FIELDS = {"core_version", "siteurl", "plugins"}
 
 
-def load_json(path, default):
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return default
+# load_json, sq (quotage shell : sans lui, un motif contenant une apostrophe
+# s'exécute en root sur les serveurs du parc), PATTERN_RE et valid_pattern
+# viennent de dashlib — l'API valide les motifs de docroot avec la MÊME règle.
 
 
 def effective_patterns(server, extra):
-    pats = list(server["patterns"])
-    pats += [d["path"] for d in extra if d.get("server") == server["name"]]
-    return pats
+    """Motifs de docroots du serveur, filtrés : tout ce qui sort de la forme
+    attendue est rejeté (et signalé) plutôt que transmis au shell distant."""
+    pats = list(server.get("patterns") or [])
+    pats += [d.get("path") for d in extra
+             if isinstance(d, dict) and d.get("server") == server.get("name")]
+    out = []
+    for p in pats:
+        if valid_pattern(p):
+            out.append(str(p))
+        else:
+            print(f"[{server.get('name')}] motif de docroot rejeté : {p!r}", flush=True)
+    return out
 
 
 def ssh_user(server):
@@ -181,21 +229,39 @@ def ssh_user(server):
 
 
 def ssh_collect(server, extra, limit=0, match=""):
-    pats = " ".join("'" + p + "'" for p in effective_patterns(server, extra))
+    pats = " ".join(sq(p) for p in effective_patterns(server, extra))
     nosu = "1" if server.get("no_su") else "0"  # mutualisé : pas de su, pas de --allow-root
     # Sites collectés en parallèle sur le serveur distant. Volontairement modéré :
     # ces machines hébergent de la production, on ne veut pas saturer leur CPU.
-    par = int(server.get("parallel") or DEFAULT_PARALLEL)
-    remote_cmd = f"bash -s -- {limit} '{match}' {nosu} {par} {pats}"
+    par = to_int(server.get("parallel"), DEFAULT_PARALLEL) or DEFAULT_PARALLEL
+    remote_cmd = f"bash -s -- {sq(to_int(limit, 0) or 0)} {sq(match)} {sq(nosu)} {sq(par)} {pats}"
     key = server.get("key") or KEY  # clé dédiée au serveur si définie, sinon la clé par défaut
     cmd = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
            "-o", "ConnectTimeout=12", "-o", "StrictHostKeyChecking=accept-new",
-           "-p", str(server["port"]), f"{ssh_user(server)}@{server['host']}", remote_cmd]
+           "-p", str(server.get("port") or 22), f"{ssh_user(server)}@{server['host']}", remote_cmd]
     try:
         r = subprocess.run(cmd, input=REMOTE_SCRIPT, capture_output=True, text=True, timeout=2400)
         return r.stdout, r.returncode
     except subprocess.TimeoutExpired:
         return "", -1
+
+
+def split_site_header(raw):
+    """« domaine<sep>chemin<sep>propriétaire » → triplet.
+
+    Le script distant sépare par \\037 (unit separator) : un nom de répertoire
+    contenant « | » décalait les champs. Le repli sur « | » reste accepté pour
+    lire une sortie produite par une version antérieure du script — le chemin,
+    au milieu, y est recomposé à partir des champs intermédiaires.
+    """
+    if "\x1f" in raw:
+        parts = raw.split("\x1f")
+    else:
+        parts = raw.split("|")
+        if len(parts) > 3:
+            parts = [parts[0], "|".join(parts[1:-1]), parts[-1]]
+    parts = (parts + ["", ""])[:3]
+    return parts[0], parts[1], parts[2]
 
 
 def parse_sites(text):
@@ -204,7 +270,7 @@ def parse_sites(text):
         if line.startswith("@@SITE@@"):
             if cur:
                 sites.append(cur)
-            dom, path, own = (line[8:].split("|") + ["", ""])[:3]
+            dom, path, own = split_site_header(line[8:])
             cur = {"domain": dom, "path": path, "owner": own, "fields": {}, "rcs": {}}
             field = None
         elif line.startswith("@@F@@"):
@@ -224,14 +290,31 @@ def parse_sites(text):
     return sites
 
 
+MAX_JSON_CANDIDATES = 500  # lignes candidates examinées par extract_json
+
+
 def extract_json(s):
+    """JSON produit par wp-cli, extrait d'une sortie qui peut être polluée.
+
+    wp-cli écrit son JSON en DERNIER ; ce qui précède (avertissements PHP,
+    « Deprecated: … [foo] … ») peut contenir des crochets, ce qui piégeait le
+    repli find("[")…rfind("]"). On repart donc de la dernière ligne qui commence
+    par « [ » ou « { » et on remonte, en essayant à chaque fois le bloc complet
+    (JSON indenté sur plusieurs lignes) puis la ligne seule (JSON compact).
+    """
     if not s:
         return None
-    for line in s.splitlines():
-        line = line.strip()
-        if line[:1] in "[{":
+    lines = s.splitlines()
+    tried = 0
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].lstrip()[:1] not in ("[", "{"):
+            continue
+        tried += 1
+        if tried > MAX_JSON_CANDIDATES:
+            break
+        for cand in ("\n".join(lines[i:]).strip(), lines[i].strip()):
             try:
-                return json.loads(line)
+                return json.loads(cand)
             except (ValueError, TypeError):
                 pass
     for opener, closer in (("[", "]"), ("{", "}")):
@@ -249,29 +332,6 @@ def to_int(v, default=None):
         return int(v)
     except (TypeError, ValueError):
         return default
-
-
-def norm_domain(value):
-    """Normalise un hôte en domaine : minuscule, sans schéma, sans port, sans www."""
-    h = str(value or "").strip().lower()
-    if "//" in h:
-        h = h.split("//", 1)[1]
-    h = h.split("/")[0].split("@")[-1].split(":")[0]
-    return h[4:] if h.startswith("www.") else h
-
-
-def site_key(value):
-    """Clé d'un site : domaine, plus le chemin si le WordPress est en sous-répertoire."""
-    raw = str(value or "").strip()
-    if raw and "//" not in raw:
-        raw = "https://" + raw
-    try:
-        u = urllib.parse.urlsplit(raw)
-    except ValueError:
-        return norm_domain(value)
-    host = norm_domain(u.hostname or u.netloc or value)
-    path = re.sub(r"/+$", "", (u.path or "")).lower()
-    return host + path if path else host
 
 
 def has_update(item):
@@ -356,7 +416,9 @@ def postprocess(raw):
         "via": "ssh",  # collecté en wp-cli par SSH (voir via="rest" pour l'agent distant)
     }
     cu = extract_json(f.get("core_update", "")) if ok("core_update") else None
-    site["core_update"] = cu[0].get("version") if isinstance(cu, list) and cu else None
+    # `cu` vient d'une sortie distante : rien ne garantit une liste de dicts.
+    site["core_update"] = (cu[0].get("version")
+                           if isinstance(cu, list) and cu and isinstance(cu[0], dict) else None)
 
     apply_plugins(site, extract_json(f.get("plugins", "")) if ok("plugins") else None)
 
@@ -574,13 +636,22 @@ def collect_rest_sites(match=""):
 
 
 def kuma_folder_map():
-    """{nom monitor: dossier} via la base Kuma (docker exec)."""
+    """{nom monitor: dossier} via la base Kuma (docker exec).
+
+    Pas d'injection possible ici : la commande est passée en argv, la requête
+    est constante. La sortie, elle, reste du texte à analyser prudemment — d'où
+    le try englobant et le test de code retour.
+    """
     try:
-        out = subprocess.run(
+        r = subprocess.run(
             ["docker", "exec", KUMA_CONTAINER, "sqlite3", KUMA_DB,
              "SELECT m.name||char(9)||COALESCE(g.name,'') FROM monitor m "
              "LEFT JOIN monitor g ON g.id=m.parent WHERE m.type!='group';"],
-            capture_output=True, text=True, timeout=15).stdout
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            print(f"kuma : lecture de la base impossible ({(r.stderr or '').strip()[:120]})")
+            return {}
+        out = r.stdout
         d = {}
         for line in out.splitlines():
             if "\t" in line:
@@ -636,7 +707,11 @@ def annotate_kuma(fleet):
             n = match(s)
             if n:
                 cand.setdefault(n, []).append((srv, s))
-    rank = {"plesk-mutu": 3, "plesk-legacy": 1}
+    # Un même domaine peut exister sur deux serveurs (migration en cours…) :
+    # à défaut de résolution DNS tranchante, on retient le serveur de plus forte
+    # « priority » (clé optionnelle de servers.json, entier, défaut 2).
+    prio = {s.get("name"): (to_int(s.get("priority"), 2) if isinstance(s, dict) else 2)
+            for s in load_json(os.path.join(BASE, "servers.json"), []) if isinstance(s, dict)}
     for name, lst in cand.items():
         chosen = None
         if len(lst) > 1:
@@ -648,9 +723,30 @@ def annotate_kuma(fleet):
             if len(hits) == 1:
                 chosen = hits[0]
         if chosen is None:
-            chosen = sorted(lst, key=lambda t: rank.get(t[0]["name"], 2), reverse=True)[0]
+            chosen = sorted(lst, key=lambda t: (prio.get(t[0].get("name")) if
+                                                prio.get(t[0].get("name")) is not None else 2),
+                            reverse=True)[0]
         chosen[1]["kuma"] = name
         chosen[1]["kuma_group"] = folders.get(name)
+
+
+def save_json_atomic(path, obj, mode=0o600):
+    """Écrit un JSON de façon atomique (dashlib.save_json, avec fsync).
+
+    fleet.json est lu en concurrence par l'API, vulns.py, phperrors.py et le
+    navigateur : un `open(…, "w")` les expose à un fichier tronqué. Les fichiers
+    de `data/` sont en 0600 (ils contiennent logins et e-mails d'administrateurs),
+    la copie publique servie par nginx en 0644 — d'où un mode toujours explicite
+    ici, jamais déduit du chemin.
+    """
+    _save_json(path, obj, mode=mode, fsync=True)
+
+
+def append_line(path, text, mode=0o600):
+    """Ajoute une ligne à un journal, en le créant en 0600 s'il n'existe pas."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
+    with os.fdopen(fd, "a") as fh:
+        fh.write(text if text.endswith("\n") else text + "\n")
 
 
 def write_fleet(fleet, rotate=False):
@@ -660,20 +756,50 @@ def write_fleet(fleet, rotate=False):
             os.replace(os.path.join(DATA, "fleet.json"), os.path.join(DATA, "fleet.prev.json"))
         except OSError:
             pass
-    for dst in (os.path.join(DATA, "fleet.json"), os.path.join(PUB, "fleet.json")):
-        with open(dst, "w") as fh:
-            json.dump(fleet, fh, ensure_ascii=False, indent=1)
+    save_json_atomic(os.path.join(DATA, "fleet.json"), fleet, 0o600)
+    save_json_atomic(os.path.join(PUB, "fleet.json"), fleet, 0o644)
+
+
+def merge_stale(entry, previous, ts):
+    """Serveur injoignable → on conserve sa photo précédente, marquée « stale ».
+
+    Écrire l'entrée vide telle quelle avait trois effets en cascade : les sites
+    du serveur disparaissaient du dashboard, `append_history` enregistrait un
+    point de tendance effondré, et fleet.prev.json devenait cette photo vide —
+    si bien que le diff de la collecte suivante ne voyait plus rien (prev None
+    → `continue`) et perdait les changements réels. En conservant les sites, la
+    rotation de fleet.prev reste sans danger : le diff ne compare que des
+    données réelles.
+    """
+    if entry.get("complete"):
+        return entry
+    prev = previous.get(entry.get("name")) if isinstance(previous, dict) else None
+    if not isinstance(prev, dict) or not prev.get("sites"):
+        return entry
+    kept = dict(prev)
+    kept["host"] = entry.get("host") or prev.get("host")
+    kept["complete"] = False
+    kept["stale"] = True          # données de la collecte précédente
+    kept["last_attempt"] = ts     # date de la tentative qui a échoué
+    kept["error"] = entry.get("error") or "serveur injoignable"
+    print(f"[{entry.get('name')}] injoignable — {len(kept['sites'])} site(s) conservés "
+          f"de la collecte précédente (stale)", flush=True)
+    return kept
 
 
 def append_history(fleet):
-    tot = sum(len(s["sites"]) for s in fleet["servers"])
-    core = sum(1 for s in fleet["servers"] for x in s["sites"] if x.get("core_update"))
-    plug = sum((x.get("plugins_updates") or 0) for s in fleet["servers"] for x in s["sites"])
-    err = sum(1 for s in fleet["servers"] for x in s["sites"] if x.get("errors"))
-    line = {"ts": fleet["generated_at"], "sites": tot, "core_updates": core,
-            "plugin_updates": plug, "errors": err}
-    with open(os.path.join(DATA, "collect_history.jsonl"), "a") as fh:
-        fh.write(json.dumps(line) + "\n")
+    servers = fleet.get("servers") or []
+    sites = [(s, x) for s in servers for x in (s.get("sites") or [])]
+    # Un serveur injoignable conserve sa photo précédente (voir merge_stale) :
+    # ses sites comptent donc normalement, la courbe ne plonge pas à zéro. On
+    # note simplement combien de serveurs sont dans cet état.
+    line = {"ts": fleet.get("generated_at"),
+            "sites": len(sites),
+            "core_updates": sum(1 for _, x in sites if x.get("core_update")),
+            "plugin_updates": sum((x.get("plugins_updates") or 0) for _, x in sites),
+            "errors": sum(1 for _, x in sites if x.get("errors")),
+            "stale_servers": sum(1 for s in servers if s.get("stale"))}
+    append_line(os.path.join(DATA, "collect_history.jsonl"), json.dumps(line))
 
 
 # --------------------------------------------------------------------------- #
@@ -686,7 +812,10 @@ def append_history(fleet):
 #  changement a eu lieu (les sites avec agent poussent déjà events.jsonl).    #
 # --------------------------------------------------------------------------- #
 CHANGES_PATH = os.path.join(DATA, "changes.jsonl")
-CHANGES_KEEP = 5000  # rotation douce du journal
+# Pas de rotation ici : c'est rotate.py qui applique la rétention différenciée
+# (90 j pour le tout-venant, 400 j pour les lignes « warn » qui ont valeur de
+# preuve). Une coupe aux N dernières lignes à chaque collecte — 48 fois par
+# jour — effaçait précisément ce que rotate.py cherche à conserver.
 
 def _index_sites(fleet):
     """domaine (clé Kuma de préférence) -> site, en écartant les doublons.
@@ -766,7 +895,10 @@ def diff_fleets(old, new, ts):
                     mk(dom, "admin_remove", "warn", f"− admin {login}")
 
         ou, nu = prev.get("updraft") or {}, ns.get("updraft") or {}
-        if isinstance(ou, dict) and isinstance(nu, dict):
+        # Même garde que pour les extensions et les admins : un `wp option get`
+        # qui échoue une fois met `updraft` à None et ferait osciller le journal
+        # (« daily → None » puis « None → daily ») à chaque incident passager.
+        if ou and nu and isinstance(ou, dict) and isinstance(nu, dict):
             for k, lbl in (("interval", "sauvegarde fichiers"), ("interval_db", "sauvegarde BDD"),
                            ("retain", "rétention fichiers"), ("retain_db", "rétention BDD")):
                 a, b = ou.get(k), nu.get(k)
@@ -777,16 +909,8 @@ def diff_fleets(old, new, ts):
 def append_changes(changes):
     if not changes:
         return
-    with open(CHANGES_PATH, "a") as fh:
-        for c in changes:
-            fh.write(json.dumps(c, ensure_ascii=False) + "\n")
-    try:  # rotation douce : ne garder que les CHANGES_KEEP dernières lignes
-        lines = open(CHANGES_PATH).read().splitlines()
-        if len(lines) > CHANGES_KEEP:
-            with open(CHANGES_PATH, "w") as fh:
-                fh.write("\n".join(lines[-CHANGES_KEEP:]) + "\n")
-    except OSError:
-        pass
+    for c in changes:
+        append_line(CHANGES_PATH, json.dumps(c, ensure_ascii=False))
 
 
 def main():
@@ -800,27 +924,47 @@ def main():
             only = args.pop(0)
         elif a == "--match":
             match = args.pop(0)
-    servers = load_json(os.path.join(BASE, "servers.json"), [])
-    extra = load_json(os.path.join(DATA, "extra_docroots.json"), [])
+    servers = [s for s in load_json(os.path.join(BASE, "servers.json"), []) if isinstance(s, dict)]
+    extra = [d for d in load_json(os.path.join(DATA, "extra_docroots.json"), []) if isinstance(d, dict)]
+    now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # --only sur un nom absent de servers.json : on s'arrête AVANT toute écriture.
+    # (`next(...)` sans défaut levait StopIteration, message illisible.)
+    srv_only = None
+    if only and only != "rest":
+        srv_only = next((s for s in servers if s.get("name") == only), None)
+        if srv_only is None:
+            connus = ", ".join(sorted(str(s.get("name")) for s in servers)) or "aucun"
+            print(f"[{only}] serveur inconnu de servers.json (connus : {connus}, plus « rest »)",
+                  file=sys.stderr)
+            sys.exit(2)
+
+    # Inventaire précédent : sert à conserver les serveurs devenus injoignables.
+    previous = load_json(os.path.join(DATA, "fleet.json"), None)
+    prev_srv = {s.get("name"): s for s in (previous or {}).get("servers", [])
+                if isinstance(s, dict) and s.get("name")}
 
     if match and only:
         fleet = load_json(os.path.join(DATA, "fleet.json"), {"servers": []})
+        fleet.setdefault("servers", [])
         if only == "rest":
             # re-scan d'un seul site géré par l'agent distant
             sites = collect_rest_sites(match)
-            if not any(fs["name"] == "rest" for fs in fleet["servers"]):
-                fleet["servers"].append({"name": "rest", "host": "-", "complete": True, "sites": []})
         else:
-            srv = next(s for s in servers if s["name"] == only)
-            out, rc = ssh_collect(srv, extra, 0, match)
+            out, rc = ssh_collect(srv_only, extra, 0, match)
             sites = [postprocess(s) for s in parse_sites(out)]
             if not sites and "@@DONE@@" not in out:
                 print(f"[{only}] échec du scan de {match} (rc={rc})")
                 sys.exit(1)
-        for fs in fleet["servers"]:
-            if fs["name"] == only:
-                fs["sites"] = [s for s in fs["sites"] if s["domain"] != match] + sites
-                fs["sites"].sort(key=lambda s: s["domain"])
+        # Le serveur peut ne pas encore figurer dans fleet.json (première collecte
+        # ciblée) : on crée son entrée, sinon les sites étaient jetés en silence.
+        fs = next((x for x in fleet["servers"] if x.get("name") == only), None)
+        if fs is None:
+            fs = {"name": only, "host": "-" if only == "rest" else (srv_only or {}).get("host", "-"),
+                  "complete": True, "sites": []}
+            fleet["servers"].append(fs)
+        fs["sites"] = [s for s in (fs.get("sites") or []) if s.get("domain") != match] + sites
+        fs["sites"].sort(key=lambda s: s.get("domain") or "")
         write_fleet(fleet)
         print(f"[{only}] {match} " + ("re-scanné." if sites else "disparu — retiré de la liste."))
         return
@@ -829,27 +973,43 @@ def main():
     # et on remplace la seule entrée concernée, sinon les autres serveurs seraient perdus.
     if only:
         fleet = load_json(os.path.join(DATA, "fleet.json"), None) or {"servers": []}
-        fleet["generated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        fleet["generated_at"] = now_ts
         fleet["servers"] = [s for s in fleet.get("servers", []) if s.get("name") != only]
     else:
-        fleet = {"generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "servers": []}
-    targets = [s for s in servers if not only or s["name"] == only]
+        fleet = {"generated_at": now_ts, "servers": []}
+    targets = [s for s in servers if not only or s.get("name") == only]
 
     def collect_one(srv):
-        """Un serveur : renvoie son entrée de flotte. Exécuté dans un thread."""
+        """Un serveur : renvoie son entrée de flotte. Exécuté dans un thread.
+
+        Ne lève jamais : une exception (champ manquant dans servers.json, sortie
+        distante inattendue…) avortait `pool.map` et donc la collecte de TOUS
+        les serveurs. L'échec devient une entrée incomplète, traitée ensuite
+        comme un serveur injoignable.
+        """
+        nom = str(srv.get("name") or "?")
         t0 = time.time()
-        out, rc = ssh_collect(srv, extra, limit)
-        sites = [postprocess(s) for s in parse_sites(out)]
-        sites.sort(key=lambda s: s["domain"])
-        complete = "@@DONE@@" in out
-        print(f"[{srv['name']}] {len(sites)} sites, rc={rc}, complet={complete}, {time.time()-t0:.0f}s", flush=True)
-        return {"name": srv["name"], "host": srv["host"], "complete": complete, "sites": sites}
+        try:
+            out, rc = ssh_collect(srv, extra, limit)
+            sites = [postprocess(s) for s in parse_sites(out)]
+            sites.sort(key=lambda s: s.get("domain") or "")
+            complete = "@@DONE@@" in out
+            print(f"[{nom}] {len(sites)} sites, rc={rc}, complet={complete}, {time.time()-t0:.0f}s", flush=True)
+            entry = {"name": nom, "host": srv.get("host", ""), "complete": complete, "sites": sites}
+            if not complete:
+                entry["error"] = f"collecte incomplète (rc={rc})"
+            return entry
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"[:300]
+            print(f"[{nom}] ÉCHEC de la collecte — {err}", flush=True)
+            return {"name": nom, "host": srv.get("host", ""), "complete": False,
+                    "error": err, "sites": []}
 
     if targets:
         # Serveurs interrogés en parallèle : la durée totale devient celle du plus lent.
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_SERVERS_PARALLEL, len(targets))) as pool:
-            results = list(pool.map(collect_one, targets))
-        order = {s["name"]: i for i, s in enumerate(servers)}
+            results = [merge_stale(e, prev_srv, now_ts) for e in pool.map(collect_one, targets)]
+        order = {s.get("name"): i for i, s in enumerate(servers)}
         fleet["servers"].extend(sorted(results, key=lambda e: order.get(e["name"], 99)))
     # sites sans SSH, interrogés via l'agent : serveur virtuel « rest »
     if not only or only == "rest":

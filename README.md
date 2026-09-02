@@ -55,12 +55,13 @@ Trois composants, tous dans `/opt/wp-dashboard/` :
 
 Et les tâches périodiques, toutes lancées par cron :
 
-| Fichier | Rôle | Cadence |
+| Fichier | Rôle | Cadence (`deploy/wp-dashboard.cron`) |
 |---|---|---|
-| `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 6 h |
-| `phperrors.py` | Lit les journaux d'erreur PHP des serveurs (PHP-FPM sur Plesk, nginx sur les VPS) et regroupe les occurrences par fichier et ligne. Aucun site modifié. | 2 h |
-| `digest.py` | Bilan quotidien des changements, envoyé sur Telegram s'il y en a. | 8 h |
-| `rotate.py` | Rotation des journaux à **rétention différenciée** : courte pour le tout-venant, longue pour ce qui a valeur de preuve (création d'administrateur, échec d'action…). | hebdo |
+| `collect.py` | Inventaire du parc. | toutes les 30 min |
+| `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 1×/jour, à 6 h |
+| `phperrors.py` | Lit les journaux d'erreur PHP des serveurs (PHP-FPM sur Plesk, nginx sur les VPS) et regroupe les occurrences par fichier et ligne. Aucun site modifié. | toutes les 2 h |
+| `digest.py` | Bilan quotidien des changements, envoyé sur Telegram s'il y en a. | 1×/jour, à 8 h |
+| `rotate.py` | Rotation des journaux à **rétention différenciée** : courte pour le tout-venant, longue pour ce qui a valeur de preuve (création d'administrateur, échec d'action…). | 1×/semaine, dimanche 4 h 30 |
 
 À côté :
 
@@ -69,6 +70,9 @@ Et les tâches périodiques, toutes lancées par cron :
   chaque site à son moniteur, et proxifie sa status page.
 - **`dashboard_config.py`** lit `config.json` : c'est le seul endroit où vivent
   les valeurs propres à une installation.
+- **`dashlib.py`** regroupe les briques communes à tous les scripts ci-dessus
+  (lecture/écriture JSON atomique, quotage shell, identité et visibilité d'un
+  site, expressions de validation partagées) : une seule copie, pas six.
 - **[L'agent compagnon](#lagent-compagnon)** (`agent/sumotori-dash-agent/`) est
   le plugin WordPress installé sur les sites sans SSH.
 
@@ -165,6 +169,7 @@ Copie de `config.example.json`. Toutes les valeurs propres à votre déploiement
 | `kuma_status_url` | URL JSON de cette status page ; le slug y est ajouté automatiquement s'il finit par `/`. | `http://127.0.0.1:3001/api/status-page/` |
 | `bot_admin_login` | Login du compte admin créé lors de la liaison « en un clic ». | `dashboard_agent` |
 | `bot_admin_email` | Base d'adresse e-mail de ce compte. | `admin@example.com` |
+| `vuln_skip_slugs` | Slugs d'extensions à exclure de la veille de vulnérabilités : mu-plugins maison, extensions internes, tout ce qui n'existe pas sur wordpress.org. Les drop-ins WordPress (`object-cache.php`…) sont déjà ignorés. | `[]` |
 
 Créez une **status page privée** dans Uptime Kuma qui regroupe les moniteurs de
 votre parc, et reportez son slug dans `kuma_slug`.
@@ -182,6 +187,13 @@ Copie de `servers.example.json`. Un objet par serveur SSH :
 | `user` | non | Utilisateur SSH (défaut `root`). |
 | `no_su` | non | `true` sur un mutualisé : wp-cli tourne directement sous l'utilisateur SSH, sans `su`. |
 | `key` | non | Clé SSH spécifique à ce serveur (sinon `config.json > ssh_key`). |
+| `parallel` | non | Sites collectés simultanément sur ce serveur (défaut 4). |
+| `priority` | non | Entier, défaut **2**. Départage les doublons : quand le même domaine est trouvé sur deux serveurs (migration en cours, ancienne copie…), le moniteur Kuma est rattaché au serveur de plus forte priorité. Mettez `3` sur le serveur de production et `1` sur l'ancien. |
+
+Les `patterns` (et les docroots ajoutés depuis l'interface) doivent être des
+chemins absolus de la forme `^/[A-Za-z0-9_./*@-]+$`, sans `..` : tout motif hors
+de cette forme est **rejeté et signalé** dans le journal de collecte plutôt que
+transmis au shell distant.
 
 Les sites sans aucun SSH ne vont pas ici : ils s'ajoutent depuis l'interface
 (**Gestion → Ajouter un site**) et sont interrogés via l'agent.
@@ -245,6 +257,13 @@ l'URL du dashboard est saisie à l'appairage.
 - **Mots de passe d'application WordPress** : le retour d'autorisation contient
   le mot de passe en paramètre d'URL ; le vhost le journalise donc **sans** la
   chaîne de requête (`log_format sansargs`). Ne modifiez pas ce point.
+- **Permissions de `data/`** : tout ce que produisent les tâches périodiques est
+  écrit en **0600** (inventaire, journaux d'évènements et de changements,
+  vulnérabilités, erreurs PHP) — ces fichiers citent des logins et des adresses
+  e-mail d'administrateurs. Seule la copie servie par nginx,
+  `public/fleet.json`, est en 0644. Les écritures sont **atomiques** (fichier
+  temporaire puis `os.replace`) : l'API et le navigateur ne lisent jamais un
+  JSON à moitié écrit.
 - **Ne committez jamais** `config.json`, `servers.json`, `data/`,
   `public/fleet.json` ni vos clés — tout est déjà dans `.gitignore`. Vérifiez
   avec `git status` avant le premier `push`.
@@ -290,6 +309,22 @@ python3 rotate.py --dry-run         # rotation des journaux, à blanc
 
 Le bilan Telegram exige un bot configuré dans **Réglages** (jeton + chat_id) ;
 sans cela il ne fait rien.
+
+### Quand un serveur ne répond plus
+
+Si un serveur est injoignable au moment de la collecte (SSH en timeout, machine
+en maintenance), son entrée **conserve les sites de la collecte précédente**,
+marqués `"stale": true`, avec `"error"` et `"last_attempt"`. Sans cela ses sites
+disparaissaient du dashboard, la courbe de tendance plongeait à zéro et le
+journal des changements perdait le fil. Les données affichées sont donc celles
+de la dernière collecte réussie : c'est le drapeau `stale` qui fait foi sur leur
+fraîcheur. `data/collect_history.jsonl` note le nombre de serveurs dans cet état
+(`stale_servers`).
+
+De même, `data/php_errors.json` porte un champ `truncated` — `{serveur:
+[{file, reason}]}` — quand un journal a dépassé le plafond de 20 000 lignes
+retenues : l'analyse de ce fichier est alors partielle et l'interface peut le
+signaler.
 
 ### Divers
 

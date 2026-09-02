@@ -9,6 +9,14 @@
     "name": "plesk",
     "host": "203.0.113.20",
     "port": 10022,
+    "priority": 3,
+    "patterns": ["/var/www/vhosts/*/httpdocs"]
+  },
+  {
+    "name": "plesk-ancien",
+    "host": "203.0.113.21",
+    "port": 10022,
+    "priority": 1,
     "patterns": ["/var/www/vhosts/*/httpdocs"]
   },
   {

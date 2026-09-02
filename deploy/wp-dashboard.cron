@@ -2,9 +2,9 @@
 */30 * * * * root cd /opt/wp-dashboard && /usr/bin/python3 collect.py >> /var/log/wp-dashboard.log 2>&1
 # Erreurs PHP : lecture des journaux serveurs (toutes les 2 h)
 17 */2 * * * root cd /opt/wp-dashboard && /usr/bin/python3 phperrors.py >> /var/log/wp-dashboard.log 2>&1
-# Veille de vulnérabilités : rafraîchit la base publique puis recroise (6 h)
+# Veille de vulnérabilités : rafraîchit la base publique puis recroise (1×/jour, à 6 h)
 0 6 * * * root cd /opt/wp-dashboard && /usr/bin/python3 vulns.py --fetch --scan >> /var/log/wp-dashboard.log 2>&1
-# Bilan journalier des changements → Telegram (8 h, si changement)
+# Bilan journalier des changements → Telegram (1×/jour, à 8 h, s'il y a du changement)
 0 8 * * * root cd /opt/wp-dashboard && /usr/bin/python3 digest.py >> /var/log/wp-dashboard.log 2>&1
-# Rotation des journaux, à rétention différenciée (4 h du matin, dimanche)
+# Rotation des journaux, à rétention différenciée (1×/semaine, dimanche 4 h 30)
 30 4 * * 0 root cd /opt/wp-dashboard && /usr/bin/python3 rotate.py >> /var/log/wp-dashboard.log 2>&1

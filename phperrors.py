@@ -13,25 +13,41 @@ Aucune modification des sites : on lit les journaux que le serveur écrit déjà
 Un seul passage par SERVEUR (et non par site) : lire un journal de 11 Mo une
 fois pour 35 sites, plutôt que 35 fois.
 
+Le tri (fenêtre de temps, domaines demandés) est fait CÔTÉ SERVEUR : la borne
+est calculée par `date` dans le fuseau du serveur, et seules les lignes utiles
+remontent. Chaque journal est plafonné à 20 000 lignes après filtrage ; le
+dépassement est remonté dans `truncated` de data/php_errors.json, pour que
+l'interface puisse indiquer une analyse partielle.
+
 Usage :
     python3 phperrors.py            # collecte + agrégation → data/php_errors.json
     python3 phperrors.py --print    # idem avec un résumé lisible
     python3 phperrors.py --hours 48 # fenêtre d'analyse (défaut 24 h)
 """
-import os, sys, re, json, datetime, collections
+import os, sys, re, inspect, datetime, collections
 import concurrent.futures
 
+# BASE reste calculé ici : il doit exister AVANT le sys.path.insert qui rend le
+# dépôt importable (dashlib et actions_server en dépendent).
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
+sys.path.insert(0, BASE)
+
+from dashlib import DATA_DIR as DATA          # noqa: E402
+from dashlib import save_json as _save_json   # noqa: E402
+import actions_server as A  # noqa: E402  — import sûr : le serveur HTTP ne démarre que sous __main__
+
 OUT_PATH = os.path.join(DATA, "php_errors.json")
 FLEET_PATH = os.path.join(DATA, "fleet.json")
 
-sys.path.insert(0, BASE)
-import actions_server as A  # import sûr : le serveur HTTP ne démarre que sous __main__
-
-TAIL_LINES = 60000   # profondeur de lecture par journal
+RAW_LINES = 400000   # borne de LECTURE par journal (avant filtrage)
+CAP_LINES = 20000    # plafond de lignes REMONTÉES par journal (après filtrage)
 MAX_PER_SITE = 60    # groupes d'erreurs conservés par site
 DEFAULT_HOURS = 24
+# Le filtrage par date se fait sur le serveur distant (fuseau du serveur). Le
+# filtre local n'est qu'un garde-fou : on lui laisse 3 h de tolérance pour ne
+# pas jeter des lignes légitimes à cause d'un décalage de fuseau ou d'horloge.
+TZ_TOLERANCE_HOURS = 3
+DOMAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$")
 
 # Gravités, de la plus grave à la plus anodine.
 SEV_RANK = {"Fatal error": 4, "Parse error": 4, "Warning": 3,
@@ -52,8 +68,17 @@ RE_NGINX = re.compile(
     r"(?P<msg>.*?)(?:\s+in\s+(?P<file>/[^\s]+?)\s+on line\s+(?P<line>\d+))?(?:\"|\s+while\s|$)")
 
 
-def parse_ts(raw, mode):
-    """Horodatage du journal → datetime, ou None si illisible."""
+def save_json_atomic(path, obj, mode=0o600):
+    """Écriture atomique en 0600 : php_errors.json cite des chemins de fichiers
+    et des messages d'erreur du parc, il n'a rien à faire en lecture publique."""
+    _save_json(path, obj, mode=mode, indent=None, fsync=True)
+
+
+def parse_log_ts(raw, mode):
+    """Horodatage d'un journal PHP → datetime, ou None si illisible.
+
+    À ne pas confondre avec actions_server.parse_ts, qui lit un tout autre
+    format (les horodatages des journaux du dashboard) : d'où le nom distinct."""
     raw = (raw or "").strip()
     try:
         if mode == "nginx":
@@ -82,34 +107,130 @@ def normalise(msg):
     return m[:300]
 
 
-def remote_scan(server, domains, hours):
-    """Extrait les lignes d'erreur PHP d'un serveur → liste de dicts."""
-    since = datetime.datetime.now() - datetime.timedelta(hours=hours)
-    # Un seul script par serveur : il déverse les journaux pertinents avec un
-    # préfixe indiquant leur format, l'analyse se fait ensuite côté dashboard.
-    script = f"""#!/bin/bash
-T={TAIL_LINES}
-for f in /var/log/plesk-php*-fpm/error.log; do
-  [ -f "$f" ] || continue
-  tail -n $T "$f" 2>/dev/null | grep -F "PHP message" | sed 's/^/@@PLESK@@/'
-done
-for f in /var/log/nginx/*.error.log /var/www/vhosts/system/*/logs/proxy_error_log; do
-  [ -f "$f" ] || continue
-  base=$(basename "$f" .error.log)
-  case "$f" in
-    */vhosts/system/*) base=$(basename "$(dirname "$(dirname "$f")")") ;;
-  esac
-  tail -n $T "$f" 2>/dev/null | grep -F "PHP message" | sed "s|^|@@NGINX@@$base\\t|"
-done
+def build_script(domains, hours):
+    """Script bash de collecte des journaux, filtré CÔTÉ SERVEUR.
+
+    Trois filtres, dans cet ordre de sélectivité : « PHP message », les
+    domaines demandés (motif « [pool <dom>] » sur Plesk, nom de fichier sur
+    nginx), puis la fenêtre de temps. Celle-ci est construite par `date` SUR LE
+    SERVEUR : ses journaux sont horodatés dans SON fuseau, calculer la borne
+    depuis le fuseau du dashboard décalait la fenêtre d'autant.
+
+    La sortie est plafonnée à CAP_LINES lignes par journal APRÈS filtrage ; le
+    dépassement est signalé par « @@TRONQUE@@<fichier>|<raison> » pour que
+    l'interface puisse dire que l'analyse est partielle.
+    """
+    liste = "\n".join(d for d in domains if DOMAIN_RE.match(str(d or "")))
+    return f"""#!/bin/bash
+RAW={RAW_LINES}
+CAP={CAP_LINES}
+HOURS={int(hours)}
+TMP=$(mktemp -d /tmp/.wpdash-log.XXXXXX) || exit 91
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+find /tmp -maxdepth 1 -name '.wpdash-log.*' -mmin +1440 -exec rm -rf {{}} + 2>/dev/null
+
+cat > "$TMP/doms" <<'@@DOMS@@'
+{liste}
+@@DOMS@@
+
+# Fenêtre de temps : un motif ancré par heure, dans le fuseau DU SERVEUR.
+# LC_ALL=C : php-fpm écrit le mois en anglais quelle que soit la locale.
+TSOK=1
+if LC_ALL=C date -d "-1 hours" +%Y >/dev/null 2>&1; then
+  i=0
+  while [ "$i" -le "$HOURS" ]; do
+    LC_ALL=C date -d "-$i hours" "+^\\[%d-%b-%Y %H:" >> "$TMP/ts"
+    LC_ALL=C date -d "-$i hours" "+^%Y/%m/%d %H:" >> "$TMP/ts"
+    i=$((i+1))
+  done
+else
+  TSOK=0            # date(1) sans -d : filtrage de date laissé au dashboard
+fi
+echo "@@FENETRE@@$TSOK"
+
+fenetre() {{ if [ "$TSOK" = "1" ]; then grep -f "$TMP/ts"; else cat; fi; }}
+
+# $1 = fichier, $2 = commande de filtrage supplémentaire, $3 = préfixe de sortie
+extraire() {{
+  local f="$1" pfx="$3"
+  tail -n "$RAW" "$f" 2>/dev/null | grep -F "PHP message" | eval "$2" | fenetre > "$TMP/cur"
+  local n
+  n=$(wc -l < "$TMP/cur" 2>/dev/null || echo 0)
+  if [ "$n" -gt "$CAP" ]; then
+    printf '@@TRONQUE@@%s|%s lignes retenues, plafond %s\\n' "$f" "$n" "$CAP"
+    tail -n "$CAP" "$TMP/cur" | sed "s|^|$pfx|"
+  else
+    sed "s|^|$pfx|" "$TMP/cur"
+  fi
+}}
+
+# Plesk : un journal par version de PHP, chaque ligne étiquetée [pool <domaine>].
+sed -e 's/^/[pool /' -e 's/$/]/' "$TMP/doms" | grep -v '^\\[pool \\]$' > "$TMP/pools"
+if [ -s "$TMP/pools" ]; then
+  for f in /var/log/plesk-php*-fpm/error.log; do
+    [ -f "$f" ] || continue
+    extraire "$f" 'grep -F -f "$TMP/pools"' '@@PLESK@@'
+  done
+fi
+
+# nginx / proxy Plesk : un journal par domaine — on n'ouvre que ceux demandés.
+while IFS= read -r d; do
+  [ -n "$d" ] || continue
+  for f in "/var/log/nginx/$d.error.log" "/var/log/nginx/www.$d.error.log" \\
+           "/var/www/vhosts/system/$d/logs/proxy_error_log"; do
+    [ -f "$f" ] || continue
+    extraire "$f" cat "@@NGINX@@$d\\t"
+  done
+done < "$TMP/doms"
 echo "@@FIN@@"
 """
-    rc, out = A.run_remote_script(server, script, timeout=300)
-    if rc != 0 and "@@FIN@@" not in (out or ""):
-        return [], f"lecture impossible (rc {rc})"
+
+
+def _run_remote(server, script, timeout=300):
+    """Exécute le script distant SANS troncature de la sortie.
+
+    `actions_server.run_remote_script` tronque par défaut à 6000 caractères —
+    soit une trentaine de lignes de journal, silencieusement, le marqueur
+    « @@FIN@@ » survivant à la coupe. On demande donc explicitement une sortie
+    entière (max_out=None) ; le repli couvre une version antérieure du module.
+    """
+    try:
+        supporte = "max_out" in inspect.signature(A.run_remote_script).parameters
+    except (TypeError, ValueError):
+        supporte = True
+    if supporte:
+        return A.run_remote_script(server, script, timeout=timeout, max_out=None)
+    return A.run_remote_script(server, script, timeout=timeout)
+
+
+def remote_scan(server, domains, hours):
+    """Extrait les lignes d'erreur PHP d'un serveur → (lignes, erreur, tronqués)."""
+    # Le tri par date est fait sur le serveur ; ce filtre local n'est qu'un
+    # garde-fou, d'où la tolérance de TZ_TOLERANCE_HOURS (fuseaux, horloges).
+    since = (datetime.datetime.now()
+             - datetime.timedelta(hours=hours + TZ_TOLERANCE_HOURS))
+    rc, out = _run_remote(server, build_script(domains, hours), timeout=300)
+    out = out or ""
+    if "@@FIN@@" not in out:
+        # Sans le marqueur final, la sortie est partielle (script interrompu,
+        # sortie tronquée en amont…) : mieux vaut le dire que compter à moitié.
+        return [], f"sortie incomplète, marqueur @@FIN@@ absent (rc {rc}, {len(out)} caractères)", []
+    if rc != 0:
+        return [], f"lecture impossible (rc {rc})", []
+
+    if "@@FENETRE@@0" in out:
+        # `date -d` absent (BusyBox…) : le filtrage de date retombe sur le
+        # dashboard, avec la tolérance de fuseau ci-dessus.
+        print(f"[{server.get('name')}] date(1) sans -d : fenêtre filtrée localement", flush=True)
 
     connus = set(domains)
+    tronques = []
     lignes = []
-    for brut in (out or "").splitlines():
+    for brut in out.splitlines():
+        if brut.startswith("@@TRONQUE@@"):
+            fichier, _, raison = brut[11:].partition("|")
+            tronques.append({"file": fichier, "reason": raison})
+            continue
         if brut.startswith("@@PLESK@@"):
             m = RE_PLESK.match(brut[9:])
             if not m:
@@ -126,7 +247,7 @@ echo "@@FIN@@"
             continue
         if dom not in connus:
             continue
-        ts = parse_ts(m.group("ts"), mode)
+        ts = parse_log_ts(m.group("ts"), mode)
         if ts is None or ts < since:
             continue
         msg, fichier = m.group("msg") or "", m.group("file") or ""
@@ -153,7 +274,7 @@ echo "@@FIN@@"
             "severity": m.group("sev"), "message": normalise(msg),
             "file": fichier, "line": ligne_no,
         })
-    return lignes, None
+    return lignes, None, tronques
 
 
 def agrege(lignes):
@@ -217,15 +338,23 @@ def main():
             if site.get("path"):
                 docroots.append(site["path"])
 
-    resultats, erreurs = [], {}
+    resultats, erreurs, tronques = [], {}, {}
 
     def un_serveur(nom):
-        return nom, remote_scan(servers[nom], par_serveur[nom], hours)
+        """Ne lève jamais : un serveur lent (subprocess.TimeoutExpired) ou en
+        erreur ne doit pas emporter la passe entière — même règle que
+        collect.ssh_collect."""
+        try:
+            return nom, remote_scan(servers[nom], par_serveur[nom], hours)
+        except Exception as e:
+            return nom, ([], f"{type(e).__name__}: {e}"[:300], [])
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(par_serveur)))) as pool:
-        for nom, (lignes, err) in pool.map(un_serveur, list(par_serveur)):
+        for nom, (lignes, err, coupes) in pool.map(un_serveur, list(par_serveur)):
             if err:
                 erreurs[nom] = err
+            if coupes:
+                tronques[nom] = coupes
             resultats.extend(lignes)
 
     sites = agrege(resultats)
@@ -240,12 +369,16 @@ def main():
         "total": sum(s["total"] for s in sites),
         "fatals": sum(s["fatals"] for s in sites),
         "servers_failed": erreurs,
+        # {serveur: [{file, reason}]} — journaux dont l'analyse est partielle
+        # (plafond de lignes atteint) : l'interface peut le signaler.
+        "truncated": tronques,
         "sites": sites,
     }
-    A.save_json(OUT_PATH, res)
+    save_json_atomic(OUT_PATH, res)
     print(f"{res['sites_with_errors']} site(s) avec erreurs sur {hours} h — "
           f"{res['total']} occurrence(s), dont {res['fatals']} fatale(s)"
-          + (f" | serveurs en échec : {list(erreurs)}" if erreurs else ""))
+          + (f" | serveurs en échec : {list(erreurs)}" if erreurs else "")
+          + (f" | analyse partielle : {list(tronques)}" if tronques else ""))
     if "--print" in args:
         for s in sites[:15]:
             print(f"\n  {s['domain']} — {s['total']} occurrence(s)")

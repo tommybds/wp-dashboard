@@ -11,11 +11,15 @@ affiche le message sans l'envoyer ; `--since H` change la fenêtre (défaut 24 h
 """
 import os, sys, json, datetime, collections
 
+# BASE reste calculé ici : il doit exister AVANT le sys.path.insert qui rend le
+# dépôt importable (dashlib et actions_server en dépendent).
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
-import actions_server as A  # import sûr : le serveur ne tourne que sous __main__
 
-CHANGES_PATH = os.path.join(A.DATA, "changes.jsonl")
+from dashlib import DATA_DIR as DATA  # noqa: E402  — chemins communs à tout le dépôt
+import actions_server as A  # noqa: E402  — import sûr : le serveur ne tourne que sous __main__
+
+CHANGES_PATH = os.path.join(DATA, "changes.jsonl")
 
 # Ordre d'affichage et libellés courts par type de changement.
 KIND_ORDER = {"admin_add": 0, "admin_remove": 1, "plugin_add": 2, "core": 3,
@@ -38,8 +42,10 @@ def load_recent(hours):
                 continue
             try:
                 c = json.loads(line)
+                # TypeError : une ligne avec « ts »: null (ou un autre type)
+                # faisait planter le bilan au lieu de sauter la ligne.
                 t = datetime.datetime.strptime(c["ts"], "%Y-%m-%d %H:%M")
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue
             if t >= cutoff:
                 out.append(c)

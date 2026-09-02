@@ -36,6 +36,10 @@ DEFAULTS = {
     # « en un clic » (login + base de l'adresse e-mail).
     "bot_admin_login": "dashboard_agent",
     "bot_admin_email": "admin@example.com",
+    # Slugs d'extensions à ne PAS soumettre à la veille de vulnérabilités :
+    # mu-plugins maison, extensions internes… (les drop-ins WordPress sont déjà
+    # ignorés en dur par vulns.py). Liste de chaînes, vide par défaut.
+    "vuln_skip_slugs": [],
 }
 
 

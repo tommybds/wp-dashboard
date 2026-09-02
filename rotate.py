@@ -18,8 +18,7 @@ Usage :
 """
 import os, sys, json, re, datetime
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
+from dashlib import BASE, DATA_DIR as DATA  # chemins communs à tout le dépôt
 
 # Évènements poussés par l'agent qui documentent une compromission possible :
 # ce sont eux qu'on veut pouvoir consulter un an plus tard.
@@ -78,6 +77,10 @@ def alerte_importante(o, ligne):
 # les dates sont illisibles. Il doit rester PROCHE de ce que l'interface lit
 # reellement (800 changements, 200 evenements de fiche) : trop large, il
 # protege tout le fichier et les regles d'age ne s'appliquent jamais.
+#
+# changes.jsonl : collect.py se contente désormais d'ajouter des lignes (il
+# tronquait à 5000, 48 fois par jour, ce qui contredisait la rétention longue
+# ci-dessous). C'est donc bien cette règle, et elle seule, qui borne le fichier.
 REGLES = [
     ("events.jsonl",          60,  400,  400, lambda o, l: evt_important(o)),
     ("changes.jsonl",         90,  400,  900, lambda o, l: chg_important(o)),
@@ -134,9 +137,16 @@ def traiter(nom, jours, jours_longs, filet, important, dry=False):
         tmp = chemin + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write("\n".join(gardees) + ("\n" if gardees else ""))
+        try:
+            os.chmod(tmp, 0o600)   # avant le remplacement : jamais de fenêtre en 0644
+        except OSError:
+            pass
         os.replace(tmp, chemin)
         try:
-            os.chmod(chemin, 0o600 if nom.endswith(("auth_fail.log",)) else 0o644)
+            # 0600 pour TOUS les journaux : events, changes, actions et alerts
+            # citent des logins et des adresses e-mail d'administrateurs. Rien
+            # dans data/ n'a vocation à être lisible par un autre compte.
+            os.chmod(chemin, 0o600)
         except OSError:
             pass
     return {"fichier": nom, "avant": len(lignes), "apres": len(gardees),

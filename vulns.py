@@ -19,8 +19,12 @@ Usage :
 import os, sys, json, re, time, datetime, html
 import urllib.request, urllib.error
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
+# Briques communes à tous les scripts du dépôt (cf. dashlib.py). `site_visible`
+# EST la règle d'affichage de l'interface : la veille ne doit signaler que des
+# sites réellement suivis.
+from dashlib import BASE, DATA_DIR as DATA, load_json, site_visible
+from dashlib import save_json as _save_json
+
 FEED_PATH = os.path.join(DATA, "vuln_feed.json")
 FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 FLEET_PATH = os.path.join(DATA, "fleet.json")
@@ -32,9 +36,18 @@ PAUSE = 0.15             # pause entre deux appels (usage sobre de l'API)
 TIMEOUT = 25
 
 # Une entrée d'inventaire qui n'est pas une vraie extension du dépôt officiel
-# (drop-ins WordPress, mu-plugins maison) : inutile de l'interroger.
+# (drop-ins WordPress) : inutile de l'interroger. Les mu-plugins propres à une
+# installation s'ajoutent par la clé `vuln_skip_slugs` de config.json — ils
+# n'ont rien à faire en dur dans un projet générique.
 SKIP_SLUGS = {"advanced-cache.php", "maintenance.php", "object-cache.php",
-              "db.php", "wp-cache-config.php", "zzz-incident-harden"}
+              "db.php", "wp-cache-config.php"}
+try:
+    from dashboard_config import CONFIG as _CONFIG
+except Exception:  # configuration absente : on garde les défauts
+    _CONFIG = {}
+_EXTRA_SKIP = _CONFIG.get("vuln_skip_slugs") or []
+if isinstance(_EXTRA_SKIP, (list, tuple, set)):
+    SKIP_SLUGS |= {str(x).strip() for x in _EXTRA_SKIP if str(x).strip()}
 
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0}
 
@@ -44,8 +57,30 @@ SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "": 0}
 #  Indispensable : un découpage numérique naïf classerait « 1.0-beta » APRÈS
 #  « 1.0 » et raterait donc des intervalles de vulnérabilité.
 # ---------------------------------------------------------------------------
+# Ordre documenté par PHP :
+#   toute autre chaîne < dev < alpha = a < beta = b < RC = rc < # < pl = p
+# où « # » désigne un NOMBRE (php_version_compare compare une partie numérique
+# sous la forme interne « #N# »). Les chiffres se rangent donc SOUS pl/p, et
+# au-dessus de rc — c'est bien ce que fait _rank ci-dessous.
+#
+# La valeur « # » du dictionnaire, elle, sert à autre chose : c'est le
+# rembourrage d'une partie ABSENTE (« 1.0 » comparé à « 1.0.0 »). PHP traite ce
+# cas hors boucle : si la version la plus longue continue par un nombre, elle
+# est la plus grande. D'où un rang STRICTEMENT inférieur à celui des chiffres,
+# et supérieur à rc (« 1.0-RC2 » < « 1.0 »).
 _SPECIAL = {"dev": -6, "alpha": -5, "a": -5, "beta": -4, "b": -4,
             "rc": -3, "#": -2, "pl": 1, "p": 1}
+_NUM_RE = re.compile(r"^[0-9]+$")
+
+
+def _is_num(part):
+    """Partie purement numérique ASCII.
+
+    `str.isdigit()` accepte les chiffres Unicode (« ² », « ٣ ») que `int()`
+    refuse ensuite : une version exotique faisait alors remonter une ValueError
+    au milieu du croisement.
+    """
+    return bool(_NUM_RE.match(part))
 
 
 def _canonicalize(v):
@@ -56,7 +91,8 @@ def _canonicalize(v):
 
 
 def _rank(part):
-    return 0 if part.isdigit() else _SPECIAL.get(part.lower(), -7)
+    # chaîne inconnue : -7, soit sous « dev », comme PHP (found = -1).
+    return 0 if _is_num(part) else _SPECIAL.get(part.lower(), -7)
 
 
 def version_compare(a, b):
@@ -65,7 +101,7 @@ def version_compare(a, b):
     for i in range(max(len(pa), len(pb))):
         x = pa[i] if i < len(pa) else "#"
         y = pb[i] if i < len(pb) else "#"
-        if x.isdigit() and y.isdigit():
+        if _is_num(x) and _is_num(y):
             if int(x) != int(y):
                 return -1 if int(x) < int(y) else 1
         else:
@@ -98,9 +134,15 @@ def _cmp_ok(version, operator, bound):
 
 
 def affects(operator, version):
-    """La version est-elle dans l'intervalle décrit par `operator` ?"""
+    """La version est-elle dans l'intervalle décrit par `operator` ?
+
+    Choix CONSERVATEUR, volontaire : quand `operator` est nul ou illisible, on
+    renvoie True — l'enregistrement est retenu. Faute d'intervalle, on préfère
+    un signalement à vérifier à la main plutôt que masquer une faille réelle
+    (cas du cœur, où l'API a déjà filtré par version). `_cmp_ok` applique la
+    même règle borne par borne quand l'opérateur manque.
+    """
     if not isinstance(operator, dict):
-        # `operator: null` → l'API a déjà filtré par version (cas du cœur)
         return True
     if not version:
         return False
@@ -111,19 +153,13 @@ def affects(operator, version):
 # ---------------------------------------------------------------------------
 #  Cache et appels API
 # ---------------------------------------------------------------------------
-def load_json(path, default):
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return default
+def save_json(path, obj, mode=0o600):
+    """Écriture atomique en 0600 : ces fichiers nomment les sites du parc et
+    leurs failles connues — pas de lecture par un autre compte de la machine.
 
-
-def save_json(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, ensure_ascii=False)
-    os.replace(tmp, path)
+    JSON compact (`indent=None`) : le cache de vulnérabilités pèse plusieurs Mo,
+    l'indenter le doublerait pour rien."""
+    _save_json(path, obj, mode=mode, indent=None, fsync=True)
 
 
 def api_get(path):
@@ -207,19 +243,6 @@ def refresh(kind, key, cache, stats, force=False):
     stats["fetched"] += 1
 
 
-def site_visible(site):
-    """Même règle d'affichage que le dashboard (actions_server.site_visible) :
-    on n'analyse que les sites réellement suivis, sinon le volet sécurité
-    signalerait des failles sur des installations qui ne sont pas affichées."""
-    if site.get("visible") is False:
-        return False
-    if site.get("via") == "rest":
-        return True
-    if site.get("visible") is not True and "kuma" in site and not site.get("kuma"):
-        return False
-    return True
-
-
 def fleet_targets(fleet):
     """Slugs d'extensions, versions de cœur et de PHP réellement présents."""
     retenus = {}
@@ -264,7 +287,14 @@ def do_fetch(force=False, verbose=True):
            f"{stats['unknown']} inconnus de la base, {stats['errors']} erreurs")
     if stats["error_detail"]:
         msg += " (" + ", ".join(f"{k}×{v}" for k, v in stats["error_detail"].items()) + ")"
-    return stats["errors"] == 0 or stats["fetched"] > 0, msg
+    # Statut d'échec au-delà de 20 % d'appels ratés : le cache reste alors
+    # largement périmé et le croisement qui suit sous-estime le risque. Les
+    # entrées servies par le cache ne comptent pas (aucun appel n'a eu lieu).
+    tentes = stats["fetched"] + stats["errors"] + stats["unknown"]
+    trop = bool(tentes) and stats["errors"] * 5 > tentes
+    if trop:
+        msg += f" — plus de 20 % d'échecs ({stats['errors']}/{tentes}), base incomplète"
+    return not trop, msg
 
 
 # ---------------------------------------------------------------------------
@@ -370,10 +400,11 @@ def do_scan():
 
 def main():
     args = sys.argv[1:]
+    fetch_ok = True
     if "--fetch" in args:
         print("Rafraîchissement de la base de vulnérabilités…", flush=True)
-        ok, msg = do_fetch(force="--force" in args)
-        print(("OK — " if ok else "ÉCHEC — ") + msg)
+        fetch_ok, msg = do_fetch(force="--force" in args)
+        print(("OK — " if fetch_ok else "ÉCHEC — ") + msg)
     if "--scan" in args or "--fetch" not in args:
         r = do_scan()
         t = r["totals"]
@@ -388,6 +419,8 @@ def main():
                         " ⚠ non corrigée" if v.get("unfixed") else "")
                     print(f"    [{v['severity'] or '?':8}] {v['component']} {v['version']}"
                           f"{fix}  {(v.get('cve') or '')}")
+    if not fetch_ok:
+        sys.exit(1)   # visible dans le journal cron : la base n'est pas à jour
 
 
 if __name__ == "__main__":

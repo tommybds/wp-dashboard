@@ -10,25 +10,33 @@ déclarés "no_su" (mutualisés), où l'utilisateur SSH est déjà le propriéta
 Aucun shell libre exposé.
 """
 import json, subprocess, os, re, sys, time, datetime, threading, itertools, hashlib, hmac, base64, secrets, tempfile, http.cookies
-import io, ipaddress, socket, urllib.error, urllib.request, urllib.parse, zipfile
+import functools, io, ipaddress, socket, urllib.error, urllib.request, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dashboard_config import CONFIG
+from vulns import version_compare
+# Briques communes à tous les scripts du dépôt (cf. dashlib.py) : une seule copie
+# de la lecture/écriture JSON, du quotage shell, de l'identité d'un site et des
+# expressions de validation partagées avec collect.py.
+# SRV_PATH_RE, _JSON_LOCKS, _JSON_LOCKS_GUARD et json_lock ne sont plus appelés
+# ici mais restent des attributs du module : c'est cette surface que le reste du
+# dépôt et les tests connaissent.
+from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
+                     SLUG_RE, SERVER_RE, PATH_PATTERN_RE as SRV_PATH_RE,
+                     _JSON_LOCKS, _JSON_LOCKS_GUARD, json_lock,
+                     load_json, norm_domain, site_key, site_visible, sq,
+                     valid_path_pattern)
+from dashlib import (default_mode as _default_mode, save_json as _save_json,
+                     update_json as _update_json)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "data")
-PUB = os.path.join(BASE, "public")
 KEY = CONFIG["ssh_key"]              # clé SSH par défaut (surchargée par serveur dans servers.json)
 LOG = os.path.join(DATA, "actions.log")
 KUMA_DB = CONFIG["kuma_db"]          # chemin de la base Kuma DANS le conteneur
 KUMA_CONTAINER = CONFIG["kuma_container"]
 SLUG = CONFIG["kuma_slug"]           # slug de la status page Kuma du parc
-# Le « / » reste autorisé : un WordPress peut vivre en sous-répertoire
-# (jupiter.com/zavus-calculator). En revanche « .. » est interdit partout,
-# pour que la validation ne repose plus uniquement sur la liste blanche
-# implicite de find_site().
-SLUG_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9_.\-/]{0,80}$")
-SERVER_RE = re.compile(r"^[a-z0-9-]{1,40}$")
+# SLUG_RE (le « / » reste autorisé : un WordPress peut vivre en sous-répertoire
+# comme jupiter.com/zavus-calculator ; « .. » est interdit partout) et SERVER_RE
+# viennent de dashlib — collect.py valide les mêmes entrées.
 FLEET_PATH = os.path.join(DATA, "fleet.json")
 # ---- vizproof (produit public : lecture seule, scan visuel et statut) ----
 VIZ_ANOMALY_RC = 2  # code de sortie « anomalies visuelles détectées » : pas une erreur technique
@@ -119,6 +127,10 @@ ACTIONS = {
 }
 # actions bulk qui doivent d'abord backuper si UpdraftPlus est présent
 BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except", "themes_update_all"}
+# actions groupées qui ne sont pas des commandes wp-cli de ACTIONS : la collecte
+# ciblée, et la liaison/déliaison de l'agent (dépôt ou retrait d'un fichier).
+BULK_EXTRA_ACTIONS = ("rescan", "dash_connect", "dash_disconnect")
+MAX_BODY_BYTES = 1024 * 1024   # plafond du corps d'une requête JSON
 
 REMOTE_TEMPLATE = r'''#!/bin/bash
 D={docroot}
@@ -206,18 +218,15 @@ echo "mu-plugin supprimé"
 '''
 
 
-def load_json(path, default):
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return default
-
-
 # ---------- cadence de la collecte automatique (cron) ----------
 CRON_PATH = "/etc/cron.d/wp-dashboard"
 CRON_MINUTE = 17          # décalé de l'heure pile : évite les pics de charge
 SCHEDULE_CHOICES = [0, 15, 30, 60, 120, 180, 360, 720, 1440]
+# Le fichier cron ne contient PAS que la collecte : phperrors, vulns, digest et
+# rotate y vivent aussi. Seule la ligne collect.py (ou la ligne de désactivation)
+# est réécrite ; tout le reste est recopié à l'identique.
+CRON_HEADER = "# Collecte du parc WordPress — géré depuis le dashboard (Réglages)"
+CRON_DISABLED = "# collecte automatique désactivée"
 
 
 def cron_expr(minutes):
@@ -231,8 +240,20 @@ def cron_expr(minutes):
     return f"{CRON_MINUTE} 3 * * *"   # quotidien : 3h17 du matin
 
 
+def is_collect_line(line):
+    """Vrai si la ligne du cron porte la collecte (active ou désactivée)."""
+    s = str(line).strip()
+    if s == CRON_DISABLED:
+        return True
+    return bool(s) and not s.startswith("#") and "collect.py" in s
+
+
 def read_schedule():
-    """Intervalle courant lu depuis le fichier cron."""
+    """Intervalle courant lu depuis le fichier cron.
+
+    Un fichier cron édité à la main ne doit jamais faire tomber la route : une
+    expression illisible se traduit par un intervalle inconnu (0), pas par un 500.
+    """
     interval, expr = 0, None
     try:
         with open(CRON_PATH) as fh:
@@ -240,42 +261,90 @@ def read_schedule():
                 line = line.strip()
                 if not line or line.startswith("#") or "collect.py" not in line:
                     continue
-                expr = " ".join(line.split()[:5])
-                m, h = line.split()[0], line.split()[1]
-                if m.startswith("*/"):
-                    interval = int(m[2:])
-                elif h.startswith("*/"):
-                    interval = int(h[2:]) * 60
-                elif h == "*":
-                    interval = 60
-                else:
-                    interval = 1440
+                champs = line.split()
+                if len(champs) < 5:
+                    continue
+                expr = " ".join(champs[:5])
+                m, h = champs[0], champs[1]
+                try:
+                    if m.startswith("*/"):
+                        interval = int(m[2:])
+                    elif h.startswith("*/"):
+                        interval = int(h[2:]) * 60
+                    elif h == "*":
+                        interval = 60
+                    else:
+                        interval = 1440
+                except ValueError:
+                    interval = 0   # cadence non reconnue : on ne devine pas
                 break
     except OSError:
         pass
     return {"interval_minutes": interval, "cron": expr, "choices": SCHEDULE_CHOICES}
 
 
+def collect_cron_line(minutes):
+    """Ligne cron de la collecte pour cet intervalle (0 = ligne de désactivation)."""
+    if minutes == 0:
+        return CRON_DISABLED
+    return (f"{cron_expr(minutes)} root cd {BASE} && /usr/bin/python3 collect.py "
+            f">> /var/log/wp-dashboard.log 2>&1")
+
+
 def write_schedule(minutes):
-    """Réécrit /etc/cron.d/wp-dashboard. 0 désactive la collecte automatique."""
+    """Change la cadence de collecte dans /etc/cron.d/wp-dashboard.
+
+    SEULE la ligne collect.py est remplacée : phperrors, vulns, digest et rotate
+    vivent dans le même fichier et doivent être recopiés à l'identique.
+    0 désactive la collecte automatique (ligne de commentaire).
+    """
     try:
         minutes = int(minutes)
     except (TypeError, ValueError):
         return False, "intervalle invalide"
     if minutes not in SCHEDULE_CHOICES:
         return False, "intervalle non autorisé"
-    header = "# Collecte du parc WordPress — géré depuis le dashboard (Réglages)\n"
-    if minutes == 0:
-        body = "# collecte automatique désactivée\n"
-    else:
-        body = (f"{cron_expr(minutes)} root cd {BASE} && /usr/bin/python3 collect.py "
-                f">> /var/log/wp-dashboard.log 2>&1\n")
+    nouvelle = collect_cron_line(minutes)
     try:
-        tmp = CRON_PATH + ".tmp"
-        with open(tmp, "w") as fh:
-            fh.write(header + body)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, CRON_PATH)
+        with open(CRON_PATH) as fh:
+            lignes = fh.read().splitlines()
+    except FileNotFoundError:
+        lignes = []
+    except OSError as e:
+        return False, f"lecture impossible : {e}"
+
+    sortie, remplacee = [], False
+    for ligne in lignes:
+        if not is_collect_line(ligne):
+            sortie.append(ligne)
+            continue
+        if not remplacee:          # une seule ligne de collecte au final
+            sortie.append(nouvelle)
+            remplacee = True
+    if not remplacee:
+        # Aucune ligne de collecte : on l'ajoute en tête, après l'en-tête de
+        # commentaires du fichier (et on pose cet en-tête s'il manque).
+        i = 0
+        while i < len(sortie) and sortie[i].lstrip().startswith("#"):
+            i += 1
+        bloc = [nouvelle] if any(l.strip() == CRON_HEADER for l in sortie) else [CRON_HEADER, nouvelle]
+        sortie[i:i] = bloc
+    contenu = "\n".join(sortie).rstrip("\n") + "\n"
+    try:
+        rep = os.path.dirname(os.path.abspath(CRON_PATH)) or "."
+        fd, tmp = tempfile.mkstemp(dir=rep, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                os.fchmod(fh.fileno(), 0o644)
+                fh.write(contenu)
+            os.replace(tmp, CRON_PATH)
+            tmp = None
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     except OSError as e:
         return False, f"écriture impossible : {e}"
     return True, None
@@ -288,15 +357,38 @@ AUTH_FAIL_LOG = os.path.join(DATA, "auth_fail.log")
 SESSION_TTL = 7 * 24 * 3600  # 7 jours
 
 
+_SESSION_SECRET = None
+_SESSION_SECRET_LOCK = threading.Lock()
+
+
 def session_secret():
-    try:
-        with open(SESSION_SECRET_PATH, "rb") as fh:
-            return fh.read()
-    except OSError:
-        sec = os.urandom(32)
-        with open(SESSION_SECRET_PATH, "wb") as fh:
-            fh.write(sec)
-        os.chmod(SESSION_SECRET_PATH, 0o600)
+    """Secret de signature des cookies : chargé une fois, créé atomiquement.
+
+    Sans O_EXCL, deux requêtes simultanées sur une installation neuve créaient
+    deux secrets différents et invalidaient les sessions l'une de l'autre.
+    """
+    global _SESSION_SECRET
+    if _SESSION_SECRET:
+        return _SESSION_SECRET
+    with _SESSION_SECRET_LOCK:
+        if _SESSION_SECRET:
+            return _SESSION_SECRET
+        try:
+            with open(SESSION_SECRET_PATH, "rb") as fh:
+                sec = fh.read()
+        except OSError:
+            sec = b""
+        if not sec:
+            try:
+                fd = os.open(SESSION_SECRET_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                sec = os.urandom(32)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(sec)
+            except FileExistsError:
+                # un autre processus a gagné la course : on relit le sien
+                with open(SESSION_SECRET_PATH, "rb") as fh:
+                    sec = fh.read()
+        _SESSION_SECRET = sec
         return sec
 
 
@@ -344,11 +436,28 @@ def log_auth_fail(user, ip):
         fh.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} LOGIN FAILED user={user} ip={ip}\n")
 
 
-def save_json(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+# ---------- écriture atomique + verrou par fichier ----------
+# Le mécanisme vit dans dashlib (tmp unique, droits posés AVANT le renommage,
+# un verrou par chemin). Les deux enveloppes ci-dessous n'ajoutent qu'une chose,
+# mais elle est essentielle : le répertoire de données de CE module. `DATA` est
+# redirigé par les tests, et c'est lui — pas celui du dépôt — qui décide du 0600.
+
+
+def default_mode(path):
+    """0600 pour tout ce qui vit dans data/ (secrets, identifiants), 0644 ailleurs
+    — public/fleet.json et servers.json sont lus hors du service."""
+    return _default_mode(path, DATA)
+
+
+def save_json(path, obj, mode=None):
+    """Écriture atomique d'un JSON. `mode` None = 0600 sous data/, 0644 sinon."""
+    return _save_json(path, obj, mode=mode, data_dir=DATA)
+
+
+def update_json(path, fn, default=None, mode=None):
+    """Lecture → modification → écriture sous verrou. `fn(courant)` rend l'objet
+    à écrire (ou None pour conserver le courant). → objet écrit."""
+    return _update_json(path, fn, default=default, mode=mode, data_dir=DATA)
 
 
 def servers_list():
@@ -365,41 +474,20 @@ def find_site(server_name, domain):
     return srv, site
 
 
-def sq(s):
-    return "'" + str(s).replace("'", "'\\''") + "'"
-
-
 def ssh_target(srv):
-    """Cible ssh du serveur : root@host par défaut, <user>@host sur un mutualisé."""
-    return f"{srv.get('user') or 'root'}@{srv['host']}"
+    """Cible ssh du serveur : root@host par défaut, <user>@host sur un mutualisé.
 
-
-def norm_domain(value):
-    """Normalise un hôte en domaine : minuscule, sans schéma, sans port, sans www."""
-    h = str(value or "").strip().lower()
-    if "//" in h:
-        h = h.split("//", 1)[1]
-    h = h.split("/")[0].split("@")[-1].split(":")[0]
-    return h[4:] if h.startswith("www.") else h
-
-
-def site_key(value):
-    """Clé d'un site : le domaine, suivi du chemin pour une installation en sous-répertoire.
-
-    Deux WordPress peuvent partager un hôte (exemple.fr et exemple.fr/boutique) :
-    le chemin fait donc partie de la clé. Pour un site à la racine, la clé reste
-    strictement le domaine — compatible avec tout ce qui existe déjà.
+    Garde-fou de dernier recours (la validation d'entrée est validate_server) :
+    un user ou un host commençant par « - » serait lu par ssh comme une OPTION
+    (« -oProxyCommand=… » = exécution de commande sous root sur le dashboard).
     """
-    raw = str(value or "").strip()
-    if raw and "//" not in raw:
-        raw = "https://" + raw
-    try:
-        u = urllib.parse.urlsplit(raw)
-    except ValueError:
-        return norm_domain(value)
-    host = norm_domain(u.hostname or u.netloc or value)
-    path = re.sub(r"/+$", "", (u.path or "")).lower()
-    return host + path if path else host
+    user = str(srv.get("user") or "root")
+    host = str(srv.get("host") or "")
+    if not SRV_USER_RE.match(user):
+        raise ValueError(f"utilisateur ssh invalide : « {user[:40]} »")
+    if not SRV_HOST_RE.match(host) or host.startswith("-"):
+        raise ValueError(f"hôte ssh invalide : « {host[:60]} »")
+    return f"{user}@{host}"
 
 
 # ---------- clés SSH (jamais de clé privée renvoyée) ----------
@@ -478,13 +566,72 @@ def valid_key_path(key):
     return key.startswith(SSH_DIR + "/") and ".." not in key and os.path.isfile(key)
 
 
+# ---------- validation d'un serveur déclaré (servers.json) ----------
+# Ces valeurs finissent en arguments de `ssh` (utilisateur, hôte, port) et, pour
+# les patterns, dans un shell distant : un `user` valant « -oProxyCommand=… » est
+# une option ssh, donc une exécution de commande sous root sur ce serveur, et un
+# pattern contenant une apostrophe casse le quoting du collecteur. On refuse
+# donc à l'entrée, en plus des échappements posés à l'usage.
+SRV_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")   # même alphabet que SERVER_RE
+SRV_HOST_RE = re.compile(r"^[A-Za-z0-9.:-]+$")     # nom d'hôte, IPv4 ou IPv6
+SRV_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+# SRV_PATH_RE (glob de docroot, absolu) et valid_path_pattern viennent de
+# dashlib : collect.py applique EXACTEMENT la même règle avant d'envoyer un
+# motif au shell distant.
+
+
+def _int_between(value, mini, maxi):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if mini <= n <= maxi else None
+
+
+def validate_server(obj):
+    """Contrôle un serveur de servers.json → (ok, message d'erreur)."""
+    if not isinstance(obj, dict):
+        return False, "serveur invalide (objet attendu)"
+    nom = str(obj.get("name") or "")
+    if not SRV_NAME_RE.match(nom):
+        return False, f"nom de serveur invalide : « {nom[:40]} »"
+    hote = str(obj.get("host") or "")
+    if not SRV_HOST_RE.match(hote) or hote.startswith("-") or ".." in hote:
+        return False, f"hôte invalide pour « {nom} »"
+    user = obj.get("user")
+    if user not in (None, "") and not SRV_USER_RE.match(str(user)):
+        return False, f"utilisateur ssh invalide pour « {nom} »"
+    if _int_between(obj.get("port"), 1, 65535) is None:
+        return False, f"port invalide pour « {nom} » (1-65535 attendu)"
+    key = obj.get("key")
+    if key not in (None, "") and not valid_key_path(key):
+        return False, f"clé ssh invalide pour « {nom} » (attendue sous {SSH_DIR}, existante)"
+    patterns = obj.get("patterns")
+    if not isinstance(patterns, list) or not patterns:
+        return False, f"patterns manquants pour « {nom} »"
+    for p in patterns:
+        if not isinstance(p, str) or not valid_path_pattern(p):
+            return False, f"chemin invalide pour « {nom} » : « {str(p)[:60]} »"
+    if obj.get("parallel") is not None and _int_between(obj.get("parallel"), 1, 16) is None:
+        return False, f"parallel invalide pour « {nom} » (1-16 attendu)"
+    if obj.get("priority") is not None and _int_between(obj.get("priority"), -10 ** 6, 10 ** 6) is None:
+        return False, f"priority invalide pour « {nom} »"
+    return True, None
+
+
 # ---------- wp-cli action ----------
-def run_remote_script(srv, script, timeout=300):
-    """Exécute un script bash sur le serveur : transmis à `bash -s` sur l'entrée standard."""
+def run_remote_script(srv, script, timeout=300, max_out=6000):
+    """Exécute un script bash sur le serveur : transmis à `bash -s` sur l'entrée standard.
+
+    `max_out` borne la sortie renvoyée (fin du flux) ; None = sortie complète
+    (utilisé par phperrors.py, qui a besoin de tout le journal).
+    """
     cmd = ["ssh", "-i", srv.get("key") or KEY, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-           "-o", "ConnectTimeout=12", "-p", str(srv["port"]), ssh_target(srv), "bash -s"]
+           "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=12",
+           "-p", str(srv["port"]), "--", ssh_target(srv), "bash -s"]
     r = subprocess.run(cmd, input=script, capture_output=True, text=True, timeout=timeout + 40)
-    return r.returncode, (r.stdout + r.stderr).strip()[-6000:]
+    out = (r.stdout + r.stderr).strip()
+    return r.returncode, (out if max_out is None else out[-max_out:])
 
 
 def run_wp_remote(srv, site, wp_args, timeout=300):
@@ -512,19 +659,26 @@ def frozen_plugins(domain):
 
 def set_frozen_plugin(domain, slug, frozen):
     """Gèle ou dégèle une extension. → nouvelle liste pour ce site."""
-    pol = update_policy()
-    entry = pol.setdefault(str(domain), {})
-    cur = set(entry.get("frozen") or [])
-    if frozen:
-        cur.add(str(slug))
-    else:
-        cur.discard(str(slug))
-    entry["frozen"] = sorted(cur)
-    entry["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    if not entry["frozen"]:
-        pol.pop(str(domain), None)
-    save_json(UPDATE_POLICY_PATH, pol)
-    return sorted(cur)
+    resultat = []
+
+    def _muter(pol):
+        if not isinstance(pol, dict):
+            pol = {}
+        entry = pol.setdefault(str(domain), {})
+        cur = set(entry.get("frozen") or [])
+        if frozen:
+            cur.add(str(slug))
+        else:
+            cur.discard(str(slug))
+        entry["frozen"] = sorted(cur)
+        entry["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        if not entry["frozen"]:
+            pol.pop(str(domain), None)
+        resultat[:] = sorted(cur)
+        return pol
+
+    update_json(UPDATE_POLICY_PATH, _muter, {})
+    return list(resultat)
 
 
 def run_action(server_name, domain, action, arg):
@@ -580,19 +734,51 @@ def append_log(entry):
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def read_log(n=120):
-    try:
-        with open(LOG) as fh:
-            lines = fh.readlines()[-n:]
-        out = []
-        for l in lines:
-            try:
-                out.append(json.loads(l))
-            except ValueError:
-                continue  # ligne tronquée par une écriture concurrente : ignorée
-        return out[::-1]
-    except FileNotFoundError:
+TAIL_BLOCK = 64 * 1024
+
+
+def tail_lines(path, n):
+    """n dernières lignes d'un fichier texte, lues PAR LA FIN.
+
+    actions.log et events.jsonl atteignent plusieurs mégaoctets : les charger
+    entiers pour n'en garder que la queue coûtait la taille du fichier à chaque
+    ouverture de tiroir. → liste de lignes, ou None si le fichier est illisible.
+    """
+    if n <= 0:
         return []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            pos, morceaux, sauts = fh.tell(), [], 0
+            while pos > 0 and sauts <= n:
+                pas = min(TAIL_BLOCK, pos)
+                pos -= pas
+                fh.seek(pos)
+                bloc = fh.read(pas)
+                morceaux.append(bloc)
+                sauts += bloc.count(b"\n")
+            brut = b"".join(reversed(morceaux))
+    except OSError:
+        return None
+    return brut.decode("utf-8", "replace").splitlines()[-n:]
+
+
+def read_jsonl_tail(path, n):
+    """n dernières lignes JSON d'un .jsonl, du plus ancien au plus récent."""
+    lignes = tail_lines(path, n)
+    if lignes is None:
+        return []
+    out = []
+    for l in lignes:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            continue  # ligne tronquée par une écriture concurrente : ignorée
+    return out
+
+
+def read_log(n=120):
+    return read_jsonl_tail(LOG, n)[::-1]
 
 
 # ---------- checksums mémorisés (C2) ----------
@@ -769,8 +955,19 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                 safe_step("Extensions gelées, écartées", True, ", ".join(ecartees))
 
         # Cœur : présent seulement si une mise à jour est réellement disponible.
+        # `core_before` = version installée AVANT l'opération, écrite au manifeste
+        # pour que l'archive dise vers quoi on reviendrait. On la lit sur le site
+        # (source de vérité) avec l'inventaire pour repli.
+        core_before = str(site.get("core_version") or "") or None
         core_target = ""
         if with_core:
+            rcv0, outv0 = remote_bash(srv, site,
+                                      'asuser "$base wp core version '
+                                      '--skip-plugins --skip-themes $extra --no-color"', timeout=90)
+            vues = [l.strip() for l in (outv0 or "").splitlines()
+                    if re.match(r"^\d+\.\d+(\.\d+)?$", l.strip())]
+            if rcv0 == 0 and vues:
+                core_before = vues[-1]
             rcc, outc = remote_bash(srv, site,
                                     'asuser "$base wp core check-update --field=version '
                                     '--format=csv --skip-plugins --skip-themes $extra --no-color"',
@@ -824,7 +1021,8 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #    tout le dossier plugins : sur un gros site c'est 400 Mo contre 30.
         lst = " ".join(sq(p) for p in pending)
         core_arch = "oui" if with_core else "non"
-        manifest = json.dumps({"domain": domain, "ts": stamp, "core_before": core if with_core else None,
+        manifest = json.dumps({"domain": domain, "ts": stamp,
+                               "core_before": core_before if with_core else None,
                                "core_target": core_target if with_core else None,
                                "plugins": versions_avant}, ensure_ascii=False)
         body = f'''
@@ -832,6 +1030,9 @@ set -o pipefail
 PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
 [ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
 echo "PLUGDIR=$PLUGDIR"
+# Liste passée en tableau : une mise à jour du seul cœur laisse `pending` vide,
+# et « for s in ; do » serait une erreur de syntaxe bash (script entier perdu).
+SLUGS=({lst})
 
 # Purge des archives d'anciennes exécutions (retour arrière conservé 7 jours).
 find {sq(SAFE_ROLLBACK_DIR)} -maxdepth 1 -type d -mtime +{SAFE_KEEP_DAYS} -exec rm -rf {{}} + 2>/dev/null
@@ -839,7 +1040,7 @@ find {sq(SAFE_ROLLBACK_DIR)} -maxdepth 1 -type d -mtime +{SAFE_KEEP_DAYS} -exec 
 # Volume à archiver, puis contrôle d'espace : on refuse de commencer si /tmp
 # ne peut pas absorber les archives avec une marge confortable.
 besoin=0
-for s in {lst}; do
+for s in "${{SLUGS[@]}}"; do
   [ -d "$PLUGDIR/$s" ] || continue
   besoin=$((besoin + $(du -sm "$PLUGDIR/$s" 2>/dev/null | cut -f1)))
 done
@@ -865,7 +1066,7 @@ mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
 # Le script tourne en root mais `wp` tourne sous l'utilisateur du site :
 # sans ce chown, `wp db export` ne peut pas ecrire dans l'archive.
 [ "$NOSU" = "1" ] || chown "$OWN" {sq(arc)} 2>/dev/null
-for s in {lst}; do
+for s in "${{SLUGS[@]}}"; do
   if [ -d "$PLUGDIR/$s" ]; then
     tar czf {sq(arc)}/plugin__"$s".tgz -C "$PLUGDIR" "$s" || exit 82
     echo "archivé $s"
@@ -1063,15 +1264,17 @@ fi
 
 def rollback_index_add(domain, arc_dir, plugins, versions):
     """Enregistre un point de restauration dans l'index local."""
-    idx = load_json(ROLLBACK_INDEX_PATH, {})
-    if not isinstance(idx, dict):
-        idx = {}
-    entries = [e for e in (idx.get(domain) or []) if e.get("dir") != arc_dir]
-    entries.insert(0, {"dir": arc_dir, "plugins": sorted(plugins),
-                       "versions": versions or {},
-                       "ts": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")})
-    idx[domain] = entries[:SAFE_KEEP_SETS]
-    save_json(ROLLBACK_INDEX_PATH, idx)
+    def _muter(idx):
+        if not isinstance(idx, dict):
+            idx = {}
+        entries = [e for e in (idx.get(domain) or []) if e.get("dir") != arc_dir]
+        entries.insert(0, {"dir": arc_dir, "plugins": sorted(plugins),
+                           "versions": versions or {},
+                           "ts": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")})
+        idx[domain] = entries[:SAFE_KEEP_SETS]
+        return idx
+
+    update_json(ROLLBACK_INDEX_PATH, _muter, {})
 
 
 def rollback_points(server_name, domain, verify=False):
@@ -1123,25 +1326,29 @@ def wporg_versions(slug, limit=40):
     """Versions publiées d'une extension sur wordpress.org, de la plus récente
     à la plus ancienne. C'est la source qu'utilise WP Rollback : le dépôt
     conserve tous les tags, donc n'importe quelle version reste installable.
-    Renvoie [] pour une extension premium (absente du dépôt public)."""
+
+    Renvoie TOUJOURS un dict {"current", "versions", "error"} : une extension
+    premium (absente du dépôt public) donne une liste vide et un motif.
+    """
+    vide = {"current": None, "versions": [], "error": None}
     if not SLUG_RE.match(str(slug or "")):
-        return []
+        return dict(vide, error="extension invalide")
     url = f"https://api.wordpress.org/plugins/info/1.0/{urllib.parse.quote(str(slug))}.json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read(2 * 1024 * 1024).decode("utf-8", "replace"))
-    except Exception:
-        return []
-    if not isinstance(data, dict) or data.get("error"):
-        return []
+    except Exception as e:
+        return dict(vide, error=f"wordpress.org injoignable : {type(e).__name__}")
+    if not isinstance(data, dict):
+        return dict(vide, error="réponse inattendue de wordpress.org")
+    if data.get("error"):
+        return dict(vide, error=str(data.get("error"))[:200])
     brutes = [v for v in (data.get("versions") or {}) if v and v != "trunk"]
     # Tri décroissant à la sémantique PHP : on réutilise le comparateur déjà
     # validé contre version_compare() (1.10 > 1.9, et beta2 > beta1).
-    import functools
-    from vulns import version_compare
     brutes.sort(key=functools.cmp_to_key(version_compare), reverse=True)
-    return {"current": data.get("version"), "versions": brutes[:limit]}
+    return {"current": data.get("version"), "versions": brutes[:limit], "error": None}
 
 
 def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None):
@@ -1161,7 +1368,10 @@ def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None):
         return 91, "extension invalide"
 
     if arc_dir:
-        if not re.match(r"^/tmp/\.wpdash-rollback/[A-Za-z0-9._-]+$", str(arc_dir)):
+        # « .. » interdit : [A-Za-z0-9._-]+ l'accepterait et permettrait de
+        # remonter hors du répertoire d'archives.
+        if (".." in str(arc_dir)
+                or not re.match(r"^/tmp/\.wpdash-rollback/[A-Za-z0-9._-]+$", str(arc_dir))):
             return 91, "point de restauration invalide"
         body = f'''
 PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
@@ -1295,10 +1505,12 @@ def _bulk_worker(job):
             continue
         task["status"] = "en cours"
         srv, site = find_site(task["server"], task["domain"])
-        # Installation de l'agent : dépôt du fichier + appairage, pas une commande wp-cli
-        if task["action"] == "dash_connect":
+        # Liaison/déliaison de l'agent : dépôt (ou retrait) du fichier + appairage,
+        # pas une commande wp-cli de la liste ACTIONS.
+        if task["action"] in ("dash_connect", "dash_disconnect"):
+            fn = dash_connect if task["action"] == "dash_connect" else dash_disconnect
             try:
-                rc, out = dash_connect(task["server"], task["domain"])  # secret déjà masqué en interne
+                rc, out = fn(task["server"], task["domain"])  # secret déjà masqué en interne
             except Exception as e:
                 rc, out = 94, f"erreur interne : {e}"
             task["rc"] = rc
@@ -1356,24 +1568,57 @@ def start_bulk(tasks, mode, backup_first, viz_verify=False):
            "tasks": [{"server": t["server"], "domain": t["domain"], "action": t["action"],
                       "arg": t.get("arg"), "status": "en attente", "rc": None,
                       "output_tail": "", "backup": None, "viz": None} for t in tasks]}
-    JOBS[jid] = job
-    # purge des vieux jobs terminés
-    old = [k for k, v in JOBS.items() if not v["running"] and k < jid - 8]
-    for k in old:
-        JOBS.pop(k, None)
+    with JOB_LOCK:
+        JOBS[jid] = job
+        # purge des vieux jobs terminés
+        for k in [k for k, v in JOBS.items() if not v["running"] and k < jid - 8]:
+            JOBS.pop(k, None)
     threading.Thread(target=bulk_worker, args=(job,), daemon=True).start()
     return jid
 
 
+def get_job(jid):
+    """Job de la file d'attente, ou None."""
+    try:
+        jid = int(jid)
+    except (TypeError, ValueError):
+        return None
+    with JOB_LOCK:
+        return JOBS.get(jid)
+
+
 # ---------- Kuma (manipulation directe SQLite + redémarrage) ----------
+KUMA_UNAVAILABLE_RC = 95
+
+
 def kuma_sql(sql):
-    r = subprocess.run(["docker", "exec", KUMA_CONTAINER, "sqlite3", "-cmd", ".timeout 8000", KUMA_DB, sql],
-                       capture_output=True, text=True, timeout=30)
+    """Requête SQLite dans le conteneur Kuma → (rc, sortie).
+
+    Docker absent, conteneur arrêté ou requête bloquée : erreur lisible plutôt
+    qu'une exception qui remonterait en 500 dans toutes les routes Gestion.
+    """
+    try:
+        r = subprocess.run(["docker", "exec", KUMA_CONTAINER, "sqlite3", "-cmd", ".timeout 8000",
+                            KUMA_DB, sql],
+                           capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return KUMA_UNAVAILABLE_RC, "docker indisponible : délai dépassé"
+    except (OSError, subprocess.SubprocessError) as e:
+        return KUMA_UNAVAILABLE_RC, f"docker indisponible : {type(e).__name__}: {e}"[:300]
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
 def kuma_restart():
-    subprocess.run(["docker", "restart", KUMA_CONTAINER], capture_output=True, text=True, timeout=90)
+    try:
+        subprocess.run(["docker", "restart", KUMA_CONTAINER], capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        pass  # sans docker il n'y a rien à redémarrer ; l'appelant a déjà l'erreur SQL
+
+
+def kuma_text_ok(value, maxlen=200):
+    """Libellé acceptable dans Kuma : borné et sans caractère de contrôle."""
+    s = str(value or "")
+    return len(s) <= maxlen and not re.search(r"[\x00-\x1f\x7f]", s)
 
 
 def kuma_state():
@@ -1393,6 +1638,8 @@ def kuma_create(domain, monitor_name, group_id, url, mtype, keyword):
     name = monitor_name or domain
     esc = lambda s: str(s).replace('"', '""')
     gid = int(group_id)
+    if not kuma_text_ok(name) or not kuma_text_ok(keyword) or not kuma_text_ok(url, 500):
+        return 91, "libellé, mot-clé ou url invalide (trop long ou caractère de contrôle)"
     if mtype == "keyword":
         sql = (f'INSERT INTO monitor (name,active,user_id,`interval`,url,type,keyword,maxretries,'
                f'ignore_tls,upside_down,maxredirects,accepted_statuscodes_json,retry_interval,method,'
@@ -1413,9 +1660,11 @@ def kuma_create(domain, monitor_name, group_id, url, mtype, keyword):
     if rc != 0:
         return rc, out
     # rattacher à la status page pour le statut live
+    # SLUG vient de config.json : échappé comme toute autre valeur du SQL.
     kuma_sql('INSERT INTO monitor_group (monitor_id, group_id, weight) '
              'SELECT (SELECT MAX(id) FROM monitor), '
-             '(SELECT id FROM `group` WHERE status_page_id=(SELECT id FROM status_page WHERE slug="' + SLUG + '")), '
+             '(SELECT id FROM `group` WHERE status_page_id='
+             f'(SELECT id FROM status_page WHERE slug="{esc(SLUG)}")), '
              '(SELECT MAX(id) FROM monitor);')
     kuma_restart()
     return 0, "moniteur créé"
@@ -1609,8 +1858,10 @@ def telegram_send_sync(text):
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data,
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        # api.telegram.org : la garde anti-SSRF n'a pas de sens ici, mais le
+        # non-suivi des redirections et le bornage de lecture, si.
+        _st, raw = _open_no_redirect(req, timeout=10, ssrf_guard=False)
+        body = json.loads(raw.decode("utf-8", "replace") or "{}")
         if body.get("ok"):
             return True, None
         return False, str(body.get("description") or "réponse Telegram inattendue")[:300]
@@ -1651,19 +1902,6 @@ def alert(key, rule, text):
                  if isinstance(v, (int, float)) and now - v < 7 * ALERT_COOLDOWN}
         save_json(ALERTS_STATE_PATH, state)
     send_telegram(text)
-    return True
-
-
-def site_visible(site):
-    """Règle d'affichage du dashboard : masqué si override False, ou sans moniteur Kuma
-    quand l'affichage n'est pas forcé. Un site ajouté en REST est visible d'office :
-    il a été déclaré explicitement, même s'il n'est pas encore supervisé par Kuma."""
-    if site.get("visible") is False:
-        return False
-    if site.get("via") == "rest":
-        return True
-    if site.get("visible") is not True and "kuma" in site and not site.get("kuma"):
-        return False
     return True
 
 
@@ -1738,14 +1976,8 @@ def evaluate_alerts():
     # 5) collecteur muet (dernière ligne de collect_history.jsonl)
     dead_h = to_number(rules.get("collect_dead_h"))
     if dead_h:
-        last = None
-        try:
-            with open(os.path.join(DATA, "collect_history.jsonl")) as fh:
-                lines = [l for l in fh.readlines() if l.strip()]
-            if lines:
-                last = parse_ts(json.loads(lines[-1]).get("ts"))
-        except (OSError, ValueError):
-            last = None
+        derniers = read_jsonl_tail(os.path.join(DATA, "collect_history.jsonl"), 1)
+        last = parse_ts(derniers[-1].get("ts")) if derniers else None
         age_h = (now - last) / 3600 if last else None
         if age_h is None or age_h > dead_h:
             detail = f"il y a {age_h:.0f} h" if age_h is not None else "aucun historique"
@@ -1757,7 +1989,6 @@ def evaluate_alerts():
 
 # ---------- évènements poussés par les sites (B1) ----------
 EVENTS_LOCK = threading.Lock()
-SECRETS_LOCK = threading.Lock()
 SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
 CRITICAL_EVENTS = ("user_register", "activated_plugin")
 
@@ -1773,14 +2004,13 @@ def set_site_secret(domain, secret):
     La clé retient le chemin pour un WordPress en sous-répertoire ; pour un site
     à la racine elle vaut le domaine, comme avant.
     """
-    with SECRETS_LOCK:
-        store = site_secrets()
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
         store[site_key(domain)] = secret
-        save_json(SECRETS_PATH, store)
-        try:
-            os.chmod(SECRETS_PATH, 0o600)
-        except OSError:
-            pass
+        return store
+
+    update_json(SECRETS_PATH, _muter, {}, mode=0o600)
     return secret
 
 
@@ -1797,21 +2027,8 @@ def append_event(entry):
 
 
 def read_events(n=400, domain=None):
-    try:
-        with open(EVENTS_PATH) as fh:
-            lines = fh.readlines()[-n:]
-    except OSError:
-        return []
-    out = []
-    for l in lines:
-        try:
-            e = json.loads(l)
-        except ValueError:
-            continue  # ligne illisible : ignorée
-        if domain and e.get("domain") != domain:
-            continue
-        out.append(e)
-    return out
+    return [e for e in read_jsonl_tail(EVENTS_PATH, n)
+            if not domain or e.get("domain") == domain]
 
 
 def read_changes(n=1500, domain=None):
@@ -1822,20 +2039,8 @@ def read_changes(n=1500, domain=None):
     Kuma. C'est l'historique complet — au-delà de la seule dernière collecte que
     donne compute_diff(). Renvoyé du plus récent au plus ancien.
     """
-    try:
-        with open(CHANGES_PATH) as fh:
-            lines = fh.readlines()[-n:]
-    except OSError:
-        return []
-    out = []
-    for l in lines:
-        try:
-            c = json.loads(l)
-        except ValueError:
-            continue
-        if domain and c.get("domain") != domain:
-            continue
-        out.append(c)
+    out = [c for c in read_jsonl_tail(CHANGES_PATH, n)
+           if not domain or c.get("domain") == domain]
     out.reverse()
     return out
 
@@ -1845,6 +2050,28 @@ def event_is_critical(event, detail):
     if event in CRITICAL_EVENTS:
         return True
     return event == "set_user_role" and "administrator" in str(detail or "").lower()
+
+
+INGEST_SEEN = {}          # signature → horodatage de première acceptation
+INGEST_SEEN_LOCK = threading.Lock()
+
+
+def ingest_replay(sig, now=None):
+    """Signature déjà acceptée ? (et l'enregistre sinon).
+
+    Le HMAC seul n'empêche pas le rejeu : un intermédiaire pouvait capturer une
+    requête signée et la renvoyer autant de fois qu'il voulait dans la fenêtre
+    de tolérance. Le cache est purgé au-delà de cette fenêtre : rien à borner.
+    """
+    now = time.time() if now is None else now
+    with INGEST_SEEN_LOCK:
+        for k, t in list(INGEST_SEEN.items()):
+            if now - t > INGEST_SKEW * 2:
+                INGEST_SEEN.pop(k, None)
+        if sig in INGEST_SEEN:
+            return True
+        INGEST_SEEN[sig] = now
+        return False
 
 
 def verify_ingest(headers, raw):
@@ -1869,6 +2096,10 @@ def verify_ingest(headers, raw):
     good = hmac.new(str(secret).encode(), ts.encode() + b"." + raw, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(good, sig):
         return None, "signature invalide"
+    # Anti-rejeu : seules les signatures VALIDES entrent au cache (sinon
+    # n'importe qui pourrait le remplir avec des signatures inventées).
+    if ingest_replay(sig):
+        return None, "rejeu"
     return site, None
 
 
@@ -1894,15 +2125,16 @@ def ingest_event(domain, body):
 # ---------- liaison d'un site au dashboard (mu-plugin privé sumotori-dash-agent) ----------
 def forget_site_secret(domain):
     """Retire le secret HMAC d'un site."""
-    with SECRETS_LOCK:
-        store = site_secrets()
-        removed = store.pop(site_key(domain), None) is not None
-        save_json(SECRETS_PATH, store)
-        try:
-            os.chmod(SECRETS_PATH, 0o600)
-        except OSError:
-            pass
-    return removed
+    etat = {"removed": False}
+
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
+        etat["removed"] = store.pop(site_key(domain), None) is not None
+        return store
+
+    update_json(SECRETS_PATH, _muter, {}, mode=0o600)
+    return etat["removed"]
 
 
 def mask_secret(text, secret):
@@ -2118,6 +2350,28 @@ def http_get(url, timeout=DISCOVER_TIMEOUT, max_redirects=DISCOVER_REDIRECTS,
             return None, None, cur, f"{type(e).__name__}: {e}"[:200]
 
 
+HTTP_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _open_no_redirect(req, timeout=20, max_bytes=HTTP_MAX_BYTES, ssrf_guard=True):
+    """Ouvre une requête SANS suivre les redirections, lecture bornée → (statut, corps).
+
+    urllib.request.urlopen() suit les 30x en CONSERVANT l'en-tête Authorization :
+    un site compromis répondant « 302 → attaquant » recevait le mot de passe
+    d'application administrateur. Ici toute redirection remonte telle quelle en
+    HTTPError (code 30x), jamais suivie ; l'appelant la traite comme un échec.
+    `ssrf_guard` : contrôle de résolution DNS publique (inutile pour Telegram).
+    """
+    if ssrf_guard:
+        _, err = validate_public_url(req.full_url)
+        if err:
+            raise urllib.error.URLError(err)
+    opener = urllib.request.build_opener(NoRedirect)
+    with opener.open(req, timeout=timeout) as resp:
+        status = getattr(resp, "status", resp.getcode())
+        return status, resp.read(max_bytes)
+
+
 def known_domains():
     """Domaines déjà gérés : sites SSH de fleet.json + sites REST."""
     known = set()
@@ -2210,8 +2464,9 @@ def normalize_pair_code(value):
 def create_pair_code(url_hint):
     """Crée un code d'appairage à usage unique, valable 30 minutes."""
     now = time.time()
-    with PAIR_LOCK:
-        store = load_json(PAIRINGS_PATH, {})
+    genere = {}
+
+    def _muter(store):
         if not isinstance(store, dict):
             store = {}
         # purge : codes expirés depuis longtemps et codes consommés il y a plus de 24 h
@@ -2222,8 +2477,11 @@ def create_pair_code(url_hint):
             code = new_pair_code()
         store[code] = {"url_hint": str(url_hint or "")[:200], "created_ts": now,
                        "used_ts": None, "site_url": None}
-        save_json(PAIRINGS_PATH, store)
-    return code
+        genere["code"] = code
+        return store
+
+    update_json(PAIRINGS_PATH, _muter, {})
+    return genere["code"]
 
 
 def consume_pair_code(code, site_url):
@@ -2232,19 +2490,28 @@ def consume_pair_code(code, site_url):
     if not PAIR_CODE_RE.match(code or ""):
         return None, "code invalide"
     now = time.time()
-    with PAIR_LOCK:
-        store = load_json(PAIRINGS_PATH, {})
-        rec = store.get(code) if isinstance(store, dict) else None
+    issue = {"rec": None, "err": None}
+
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
+        rec = store.get(code)
         if not isinstance(rec, dict):
-            return None, "code inconnu"
+            issue["err"] = "code inconnu"
+            return store
         if rec.get("used_ts"):
-            return None, "code déjà utilisé"
+            issue["err"] = "code déjà utilisé"
+            return store
         if now - (rec.get("created_ts") or 0) > PAIR_TTL:
-            return None, "code expiré"
+            issue["err"] = "code expiré"
+            return store
         rec["used_ts"], rec["site_url"] = now, site_url
         store[code] = rec
-        save_json(PAIRINGS_PATH, store)
-    return rec, None
+        issue["rec"] = rec
+        return store
+
+    update_json(PAIRINGS_PATH, _muter, {})
+    return issue["rec"], issue["err"]
 
 
 def pair_rate_ok(ip):
@@ -2290,9 +2557,6 @@ def pair_site(code, site_url, agent_version=None, multisite=False):
 
 
 # ---------- sites gérés via l'agent REST (aucun accès SSH) ----------
-REST_LOCK = threading.Lock()
-
-
 def rest_sites():
     lst = load_json(REST_SITES_PATH, [])
     return [s for s in lst if isinstance(s, dict)] if isinstance(lst, list) else []
@@ -2302,16 +2566,21 @@ def add_rest_site(url, name=None, multisite=False, blog_id=None, agent_version=N
     """Ajoute (ou actualise) un site collecté par l'agent REST."""
     url = re.sub(r"/+$", "", str(url or ""))
     key = site_key(url)
-    with REST_LOCK:
-        lst = rest_sites()
+    cree = {}
+
+    def _muter(lst):
+        lst = [s for s in lst if isinstance(s, dict)] if isinstance(lst, list) else []
         prev = next((s for s in lst if s.get("domain") == key), None)
         entry = {"domain": key, "url": url, "name": name or (prev or {}).get("name") or key,
                  "added_ts": (prev or {}).get("added_ts") or time.time(),
                  "multisite": bool(multisite), "blog_id": blog_id}
         if agent_version:
             entry["agent_version"] = str(agent_version)[:40]
-        save_json(REST_SITES_PATH, [s for s in lst if s.get("domain") != key] + [entry])
-    return entry
+        cree["entry"] = entry
+        return [s for s in lst if s.get("domain") != key] + [entry]
+
+    update_json(REST_SITES_PATH, _muter, [])
+    return cree["entry"]
 
 
 def rest_target(server_name, domain):
@@ -2348,9 +2617,8 @@ def agent_post(url, path, body, secret, timeout=AGENT_TIMEOUT):
         "User-Agent": USER_AGENT,  # indispensable : Cloudflare rejette les requêtes sans UA
         "Accept": "application/json", "Content-Type": "application/json",
         "X-Viz-Site": str(url), "X-Viz-Timestamp": ts, "X-Viz-Signature": sig})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        status = getattr(resp, "status", resp.getcode())
-        return status, json.loads(resp.read(512 * 1024).decode("utf-8", "replace") or "{}")
+    status, raw = _open_no_redirect(req, timeout=timeout, max_bytes=512 * 1024)
+    return status, json.loads(raw.decode("utf-8", "replace") or "{}")
 
 
 def rest_install_plugin(site, slug=VIZ_SLUG):
@@ -2393,12 +2661,17 @@ def rest_install_plugin(site, slug=VIZ_SLUG):
 def remove_rest_site(domain):
     """Retire un site REST et oublie son secret."""
     key = site_key(domain)
-    with REST_LOCK:
-        lst = rest_sites()
+    compte = {"avant": 0, "apres": 0}
+
+    def _muter(lst):
+        lst = [s for s in lst if isinstance(s, dict)] if isinstance(lst, list) else []
         kept = [s for s in lst if s.get("domain") != key]
-        save_json(REST_SITES_PATH, kept)
+        compte["avant"], compte["apres"] = len(lst), len(kept)
+        return kept
+
+    update_json(REST_SITES_PATH, _muter, [])
     forget_site_secret(key)
-    return len(kept) != len(lst)
+    return compte["avant"] != compte["apres"]
 
 
 # ---------- candidats à ajouter (moniteurs Kuma non gérés) ----------
@@ -2515,7 +2788,6 @@ WPAUTH_PATH = os.path.join(DATA, "app_passwords.json")
 WPSTATE_PATH = os.path.join(DATA, "wp_states.json")
 WPAUTH_TTL = 900          # 15 min pour terminer l'autorisation
 WPAUTH_APP_NAME = "Dashboard parc WordPress"
-WPAUTH_LOCK = threading.Lock()
 
 
 def wp_creds():
@@ -2532,44 +2804,59 @@ def wp_cred_for(domain, url=""):
 
 
 def wp_cred_save(key, entry):
-    with WPAUTH_LOCK:
-        store = wp_creds()
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
         store[key] = entry
-        save_json(WPAUTH_PATH, store)
-    try:
-        os.chmod(WPAUTH_PATH, 0o600)   # identifiants : lecture root uniquement
-    except OSError:
-        pass
+        return store
+
+    # identifiants : lecture root uniquement, y compris pendant l'écriture
+    update_json(WPAUTH_PATH, _muter, {}, mode=0o600)
 
 
 def wp_cred_forget(domain, url=""):
     key, _ = wp_cred_for(domain, url)
     if not key:
         return False
-    with WPAUTH_LOCK:
-        store = wp_creds()
+
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
         store.pop(key, None)
-        save_json(WPAUTH_PATH, store)
+        return store
+
+    update_json(WPAUTH_PATH, _muter, {}, mode=0o600)
     return True
 
 
 def wp_state_new(server, domain, url):
     state = secrets.token_urlsafe(24)
-    with WPAUTH_LOCK:
-        store = load_json(WPSTATE_PATH, {})
+
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
         now = time.time()
-        store = {k: v for k, v in store.items() if now - v.get("created", 0) < WPAUTH_TTL}
+        store = {k: v for k, v in store.items()
+                 if isinstance(v, dict) and now - v.get("created", 0) < WPAUTH_TTL}
         store[state] = {"server": server or "", "domain": domain, "url": url, "created": now}
-        save_json(WPSTATE_PATH, store)
+        return store
+
+    update_json(WPSTATE_PATH, _muter, {}, mode=0o600)
     return state
 
 
 def wp_state_consume(state):
     """Jeton à usage unique : consommé qu'il soit valide ou expiré."""
-    with WPAUTH_LOCK:
-        store = load_json(WPSTATE_PATH, {})
-        rec = store.pop(state, None)
-        save_json(WPSTATE_PATH, store)
+    pris = {}
+
+    def _muter(store):
+        if not isinstance(store, dict):
+            store = {}
+        pris["rec"] = store.pop(state, None)
+        return store
+
+    update_json(WPSTATE_PATH, _muter, {}, mode=0o600)
+    rec = pris.get("rec")
     if not rec:
         return None, "invalid"
     if time.time() - rec.get("created", 0) > WPAUTH_TTL:
@@ -2636,8 +2923,8 @@ def wp_verify(url, user, password, timeout=20):
         headers={"Authorization": "Basic " + token, "User-Agent": USER_AGENT,
                  "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
+        _st, raw = _open_no_redirect(req, timeout=timeout)
+        data = json.loads(raw.decode("utf-8", "replace"))
         caps = (data.get("capabilities") or {}) if isinstance(data, dict) else {}
         if caps and not caps.get("install_plugins"):
             return False, "compte sans droit d'installer des extensions"
@@ -2721,11 +3008,11 @@ def wp_install_plugin(site, slug=VIZ_SLUG):
         headers={"Authorization": "Basic " + token, "Content-Type": "application/json",
                  "User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
+        _st, blob = _open_no_redirect(req, timeout=AGENT_TIMEOUT)
+        data = json.loads(blob.decode("utf-8", "replace"))
         return 0, f"{slug} installé et activé (version {data.get('version', '?')})"
     except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")[:400]
+        raw = e.read(HTTP_MAX_BYTES).decode("utf-8", "replace")[:400]
         try:
             info = json.loads(raw)
             code, message = info.get("code", ""), info.get("message", raw)
@@ -2764,11 +3051,11 @@ def _wp_req(url, path, user, password, method="GET", payload=None, timeout=30):
     req = urllib.request.Request(url.rstrip("/") + path, data=data, method=method,
                                  headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read().decode("utf-8", "replace")
-            return r.status, (json.loads(body) if body.strip() else {})
+        status, blob = _open_no_redirect(req, timeout=timeout)
+        body = blob.decode("utf-8", "replace")
+        return status, (json.loads(body) if body.strip() else {})
     except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")[:400]
+        raw = e.read(HTTP_MAX_BYTES).decode("utf-8", "replace")[:400]
         try:
             return e.code, json.loads(raw)
         except ValueError:
@@ -2821,9 +3108,11 @@ def wp_provision_bot(url, user, password, domain):
                     "duration_s": 0,
                     "output_tail": f"compte administrateur {WP_BOT_LOGIN} (id {uid}) créé sur {domain}"})
         try:
-            alert(f"admin_dedie:{domain}",
-                  f"👤 Compte <b>{WP_BOT_LOGIN}</b> (administrateur) créé sur <b>{domain}</b> "
-                  f"par le dashboard, pour la gestion à distance.")
+            # alert(clé, règle, texte) : la règle manquait, l'alerte ne partait
+            # jamais (TypeError avalé par le except ci-dessous).
+            alert(f"admin_dedie:{domain}", "new_admin",
+                  f"👤 Compte <b>{esc_html(WP_BOT_LOGIN)}</b> (administrateur) créé sur "
+                  f"<b>{esc_html(domain)}</b> par le dashboard, pour la gestion à distance.")
         except Exception:
             pass
     return WP_BOT_LOGIN, data["password"], ("compte dédié créé" if created
@@ -2890,9 +3179,9 @@ def wp_baseline_allow(domain, login):
     Si le site n'a pas encore de référence, on l'amorce avec les administrateurs
     déjà connus : sinon les comptes légitimes existants passeraient en rouge.
     """
-    try:
-        path = os.path.join(DATA, "admins_baseline.json")
-        base = load_json(path, {})
+    def _muter(base):
+        if not isinstance(base, dict):
+            base = {}
         entry = base.get(domain)
         if not entry:
             connus = []
@@ -2905,7 +3194,10 @@ def wp_baseline_allow(domain, login):
         if login not in entry.get("logins", []):
             entry["logins"] = sorted(set(entry.get("logins", [])) | {login})
         base[domain] = entry
-        save_json(path, base)
+        return base
+
+    try:
+        update_json(os.path.join(DATA, "admins_baseline.json"), _muter, {})
     except Exception:
         pass
 
@@ -2921,7 +3213,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length", 0))
+        """Corps JSON de la requête, plafonné à 1 Mo. ValueError → 400 chez l'appelant."""
+        brut = self.headers.get("Content-Length", 0)
+        try:
+            length = int(brut)
+        except (TypeError, ValueError):
+            raise ValueError("longueur invalide")
+        if length < 0:
+            raise ValueError("longueur invalide")
+        if length > MAX_BODY_BYTES:
+            raise ValueError("corps trop volumineux")
         return json.loads(self.rfile.read(length)) if length else {}
 
     def log_message(self, *a):
@@ -2930,6 +3231,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&") if "=" in x) if "?" in self.path else {}
+        # Contrôle de session GLOBAL. Seules deux routes s'en passent :
+        #   /api/auth/check   — c'est elle qui REND le verdict à nginx auth_request ;
+        #   /api/wp_callback  — retour d'une redirection externe, protégé par son
+        #                       propre jeton « state » à usage unique.
+        # Les agents WordPress n'appellent que POST /api/ingest et POST /api/pair.
+        if p not in ("/api/auth/check", "/api/wp_callback") and not cookie_user(self.headers):
+            return self._send(401, {"error": "non authentifié"})
         if p == "/api/auth/check":
             # appelé par nginx auth_request : 200 si session valide, 401 sinon
             code = 200 if cookie_user(self.headers) else 401
@@ -2937,27 +3245,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if p == "/api/auth/me":
-            self._send(200, {"user": cookie_user(self.headers)})
-            return
         if p == "/api/actions/log":
             self._send(200, {"log": read_log()})
-        elif p == "/api/actions/list":
-            self._send(200, {"actions": {k: v[0] for k, v in ACTIONS.items()}})
         elif p == "/api/actions/collect_status":
             self._send(200, {"running": COLLECT["running"], "rc": COLLECT["rc"],
                              "done": COLLECT["done_servers"], "total": COLLECT["total_servers"],
                              "started": COLLECT["started"], "lines": COLLECT["lines"][-14:]})
         elif p == "/api/actions/collect_history":
-            try:
-                with open(os.path.join(DATA, "collect_history.jsonl")) as fh:
-                    hist = [json.loads(l) for l in fh.readlines()[-60:]]
-            except FileNotFoundError:
-                hist = []
-            self._send(200, {"history": hist})
+            self._send(200, {"history": read_jsonl_tail(os.path.join(DATA, "collect_history.jsonl"), 60)})
         elif p == "/api/actions/bulk_status":
-            job = JOBS.get(int(q.get("job", 0)) if q.get("job", "0").isdigit() else 0)
-            self._send(200, job or {"error": "job inconnu"})
+            self._send(200, get_job(q.get("job", 0)) or {"error": "job inconnu"})
         elif p == "/api/mgmt/state":
             groups, monitors = kuma_state()
             self._send(200, {"servers": servers_list(),
@@ -2967,17 +3264,11 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/mgmt/sshkeys":
             self._send(200, {"keys": ssh_keys_list(), "assignments": ssh_key_assignments()})
         elif p == "/api/mgmt/rest_sites":
-            if not cookie_user(self.headers):
-                return self._send(401, {"error": "non authentifié"})
             self._send(200, {"rest_sites": rest_sites()})
         elif p == "/api/mgmt/candidates":
-            if not cookie_user(self.headers):
-                return self._send(401, {"error": "non authentifié"})
             self._send(200, {"candidates": kuma_candidates()})
         elif p == "/api/mgmt/agent.zip":
-            # téléchargement direct (lien) : contrôle du cookie de session, pas d'en-tête X-Dash
-            if not cookie_user(self.headers):
-                return self._send(401, {"error": "non authentifié"})
+            # téléchargement direct (lien) : session vérifiée en tête de do_GET
             blob, err = agent_zip_bytes()
             if err:
                 return self._send(404, {"error": err})
@@ -3013,15 +3304,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"enabled": bool(cfg.get("enabled")), "chat_id": cfg.get("chat_id") or "",
                              "rules": cfg.get("rules"), "token_set": bool(token),
                              "token_tail": token[-4:] if token else ""})
-        elif p == "/api/sec/diff":
-            self._send(200, compute_diff())
         elif p == "/api/sec/certs":
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
         elif p == "/api/actions/plugin_versions":
-            self._send(200, wporg_versions(urllib.parse.unquote(q.get("slug", ""))) or
-                            {"current": None, "versions": []})
+            # réponse inchangée pour l'interface : {"current": …, "versions": […]}
+            res = wporg_versions(urllib.parse.unquote(q.get("slug", "")))
+            self._send(200, {"current": res.get("current"), "versions": res.get("versions") or []})
         elif p == "/api/actions/rollback_points":
             server = urllib.parse.unquote(q.get("server", ""))
             dom = urllib.parse.unquote(q.get("domain", ""))
@@ -3056,18 +3346,17 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/sec/baseline":
             self._send(200, {"baseline": load_json(os.path.join(DATA, "admins_baseline.json"), {})})
         elif p == "/api/mgmt/changes":
-            if not cookie_user(self.headers):
-                return self._send(401, {"error": "non authentifié"})
             try:
                 limit = min(int(q.get("limit", "400")), 2000)
             except ValueError:
                 limit = 400
-            rows = read_changes(2000)[:limit]
+            tous = read_changes(2000)          # un seul parcours du fichier
+            rows = tous[:limit]
             for r in rows:
                 r["label"] = CHANGE_LABELS.get(r.get("kind"), "changement")
             # résumé sur 24 h : nb de changements, sites touchés, dont à surveiller
             cutoff = (datetime.datetime.now() - datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M")
-            recent = [r for r in read_changes(2000) if str(r.get("ts") or "") >= cutoff]
+            recent = [r for r in tous if str(r.get("ts") or "") >= cutoff]
             self._send(200, {"changes": rows,
                              "summary": {"day_total": len(recent),
                                          "day_sites": len({r.get("domain") for r in recent}),
@@ -3198,13 +3487,17 @@ class Handler(BaseHTTPRequestHandler):
             for t in tasks:
                 if not SERVER_RE.match(str(t.get("server", ""))) or not SLUG_RE.match(str(t.get("domain", ""))):
                     return self._send(400, {"error": "cible invalide dans la liste"})
-                if t.get("action") not in ("rescan", "dash_connect") and t.get("action") not in ACTIONS:
+                if t.get("action") not in BULK_EXTRA_ACTIONS and t.get("action") not in ACTIONS:
                     return self._send(400, {"error": f"action inconnue: {t.get('action')}"})
             jid = start_bulk(tasks, mode, backup_first, viz_verify)
             return self._send(200, {"ok": True, "job": jid})
 
         if p == "/api/actions/bulk_cancel":
-            job = JOBS.get(int(body.get("job", 0)))
+            try:
+                jid = int(body.get("job", 0))
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "identifiant de job invalide"})
+            job = get_job(jid)
             if job:
                 job["cancel"] = True
             return self._send(200, {"ok": bool(job)})
@@ -3213,17 +3506,22 @@ class Handler(BaseHTTPRequestHandler):
             domain = str(body.get("domain", ""))
             if not SLUG_RE.match(domain):
                 return self._send(400, {"error": "domaine invalide"})
-            ov = load_json(os.path.join(DATA, "overrides.json"), {})
-            cur = ov.get(domain, {})
-            if "visible" in body:
-                cur["visible"] = body["visible"] if body["visible"] in (True, False) else None
-            if "alias" in body:
-                al = str(body["alias"]).strip()
-                cur["alias"] = al or None
-            ov[domain] = {k: v for k, v in cur.items() if v is not None}
-            if not ov[domain]:
-                ov.pop(domain, None)
-            save_json(os.path.join(DATA, "overrides.json"), ov)
+
+            def _muter_overrides(ov):
+                if not isinstance(ov, dict):
+                    ov = {}
+                cur = ov.get(domain, {})
+                if "visible" in body:
+                    cur["visible"] = body["visible"] if body["visible"] in (True, False) else None
+                if "alias" in body:
+                    al = str(body["alias"]).strip()
+                    cur["alias"] = al or None
+                ov[domain] = {k: v for k, v in cur.items() if v is not None}
+                if not ov[domain]:
+                    ov.pop(domain, None)
+                return ov
+
+            ov = update_json(os.path.join(DATA, "overrides.json"), _muter_overrides, {})
             return self._send(200, {"ok": True, "overrides": ov})
 
         if p == "/api/mgmt/servers":
@@ -3231,15 +3529,25 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(servers, list):
                 return self._send(400, {"error": "format invalide"})
             for s in servers:
-                if not re.match(r"^[a-z0-9-]{1,40}$", str(s.get("name", ""))) or not s.get("host") or not s.get("patterns"):
-                    return self._send(400, {"error": "serveur invalide"})
-            save_json(os.path.join(BASE, "servers.json"), servers)
+                ok, err = validate_server(s)
+                if not ok:
+                    return self._send(400, {"error": err})
+            save_json(os.path.join(BASE, "servers.json"), servers, mode=0o600)
             return self._send(200, {"ok": True})
 
         if p == "/api/mgmt/docroots":
             docs = body.get("docroots")
             if not isinstance(docs, list):
                 return self._send(400, {"error": "format invalide"})
+            # Ces chemins partent dans un shell distant (collect.py) : mêmes
+            # règles que les patterns d'un serveur, contrôlées ici aussi.
+            for d in docs:
+                if not isinstance(d, dict):
+                    return self._send(400, {"error": "docroot invalide"})
+                if not SRV_NAME_RE.match(str(d.get("server") or "")):
+                    return self._send(400, {"error": "serveur invalide pour un docroot"})
+                if not valid_path_pattern(d.get("path")):
+                    return self._send(400, {"error": f"chemin invalide : « {str(d.get('path'))[:60]} »"})
             save_json(os.path.join(DATA, "extra_docroots.json"), docs)
             return self._send(200, {"ok": True})
 
@@ -3333,14 +3641,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "serveur inconnu"})
             if not valid_key_path(key):
                 return self._send(400, {"error": "clé invalide"})
-            cmd = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-                   "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-                   "-p", str(srv["port"]), ssh_target(srv), "echo OK depuis $(hostname)"]
             try:
+                cmd = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+                       "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+                       "-p", str(srv["port"]), "--", ssh_target(srv), "echo OK depuis $(hostname)"]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
                 rc, out = r.returncode, (r.stdout + r.stderr).strip()
             except subprocess.TimeoutExpired:
                 rc, out = 93, "timeout"
+            except ValueError as e:      # cible ssh refusée par ssh_target()
+                rc, out = 91, str(e)
             except (OSError, subprocess.SubprocessError) as e:
                 rc, out = 94, f"erreur interne: {e}"
             return self._send(200, {"ok": rc == 0, "output": out[:400]})
@@ -3355,7 +3665,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "serveur inconnu"})
             for s in targets:
                 s["key"] = key
-            save_json(os.path.join(BASE, "servers.json"), servers)
+            save_json(os.path.join(BASE, "servers.json"), servers, mode=0o600)
             return self._send(200, {"ok": True})
 
         if p == "/api/sec/verify":
@@ -3471,11 +3781,8 @@ class Handler(BaseHTTPRequestHandler):
                 for k, v in rules.items():
                     if k in ALERT_DEFAULTS["rules"]:  # les règles inconnues sont ignorées
                         new["rules"][k] = coerce_rule(k, v)
-            save_json(ALERTS_PATH, new)
-            try:
-                os.chmod(ALERTS_PATH, 0o600)  # le fichier contient le token du bot
-            except OSError:
-                pass
+            # le fichier contient le token du bot : 0600 posé par save_json (data/)
+            save_json(ALERTS_PATH, new, mode=0o600)
             return self._send(200, {"ok": True, "enabled": new["enabled"], "chat_id": new["chat_id"],
                                     "rules": new["rules"], "token_set": bool(new["bot_token"]),
                                     "token_tail": new["bot_token"][-4:] if new["bot_token"] else ""})
@@ -3484,14 +3791,6 @@ class Handler(BaseHTTPRequestHandler):
             ok, err = telegram_send_sync("✅ <b>Dashboard parc</b> — message de test.")
             alerts_log("test: " + ("ok" if ok else f"échec ({err})"))
             return self._send(200, {"ok": ok, "error": err})
-
-        if p == "/api/mgmt/site_secret":
-            domain = site_key(body.get("domain", ""))
-            if not SLUG_RE.match(domain):
-                return self._send(400, {"error": "domaine invalide"})
-            # renvoyé une seule fois : le dashboard le transmet au site, on ne le réaffiche jamais
-            return self._send(200, {"ok": True, "domain": domain,
-                                    "secret": set_site_secret(domain, secrets.token_urlsafe(32))})
 
         if p == "/api/mgmt/dash_connect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
