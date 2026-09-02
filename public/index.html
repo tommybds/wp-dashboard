@@ -239,6 +239,48 @@ tbody tr:hover .rowscan,tbody tr:focus-within .rowscan,.rowscan:focus-visible,.r
 .bar.indet{display:inline-block;vertical-align:middle;width:60px;margin:0}
 .bar.indet>div{width:40%;transition:none;animation:indet 1.1s linear infinite}
 @keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
+/* --- barre de notifications globale : z-index 1000, au-dessus de TOUT ---
+   Une action lancée depuis le tiroir n'avait de trace que DANS le tiroir : une
+   fois refermé (ou l'onglet changé), plus rien ne disait qu'une MAJ tournait.
+   La barre vit dans <body>, hors de tout contexte d'empilement local : elle
+   passe donc au-dessus du tiroir (9), des modales (20) et de la bulle (40).
+   Le bandeau d'erreur JS (99) est EN BAS de la fenêtre : aucun recouvrement.
+   Le conteneur laisse passer les clics (`pointer-events:none`), seules les
+   lignes les captent — sinon il masquerait un coin entier de l'interface. */
+#notifbar{position:fixed;top:10px;right:12px;z-index:1000;width:min(390px,calc(100vw - 24px));
+  display:flex;flex-direction:column;gap:6px;pointer-events:none}
+#notifbar:empty{display:none}
+.ntf{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;background:var(--card);
+  border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r-md);
+  padding:8px 10px;box-shadow:0 6px 20px rgba(15,30,50,.16);font-size:var(--f-sm);
+  animation:ntfin .18s ease}
+@keyframes ntfin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.ntf.ok{border-left-color:var(--ok)} .ntf.warn{border-left-color:var(--warn)}
+.ntf.err{border-left-color:var(--err)}
+.ntf.clic{cursor:pointer}
+.ntf-ic{flex:0 0 auto;line-height:1.45;font-size:var(--f-md);
+  font-family:ui-sans-serif,system-ui,"Segoe UI Symbol",sans-serif}
+.ntf.ok .ntf-ic{color:var(--ok)} .ntf.warn .ntf-ic{color:var(--warn)} .ntf.err .ntf-ic{color:var(--err)}
+.ntf-main{flex:1;min-width:0}
+.ntf-lbl{font-weight:600;line-height:1.35;word-break:break-word}
+.ntf-det{color:var(--muted);font-size:var(--f-xs);margin-top:1px;word-break:break-word}
+.ntf .bar{margin:6px 0 0;height:5px}
+/* Progression INDÉTERMINÉE pleine largeur : `.bar.indet` est la pastille de
+   60 px des cellules du tableau, elle ne convient pas ici. */
+.ntf .bar.wait>div{width:40%;transition:none;animation:indet 1.1s linear infinite}
+.ntf-t{flex:0 0 auto;color:var(--muted);font-size:var(--f-xs);margin-top:2px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.ntf-x{flex:0 0 auto;background:none;border:0;color:var(--muted);cursor:pointer;
+  font-size:var(--f-md);line-height:1;padding:1px 3px}
+.ntf-x:hover{color:var(--fg)}
+#notif-clear{pointer-events:auto;align-self:flex-end}
+@media(max-width:560px){
+  #notifbar{left:0;right:0;width:auto;gap:0}
+  .ntf{border-radius:0;border-top:0;border-right:0;border-left-width:4px;padding:6px 10px;
+    box-shadow:0 2px 8px rgba(0,0,0,.18)}
+  .ntf .bar{margin-top:4px;height:4px}
+  #notif-clear{margin:4px 8px 0 0}
+}
 .section{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow)}
 .section h2{margin:0 0 4px;font-size:var(--f-lg)} .section p.hint,.box p.hint{color:var(--muted);margin:0 0 12px;font-size:var(--f-sm)}
 .box h3{font-size:var(--f-sm);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
@@ -835,6 +877,138 @@ function poll(nom,fn,{every=3000,maxErrors=5,until=null,onStop=null}={}){
   tick();
   return ctl;
 }
+
+/* ---- barre de notifications : le seul endroit qui sait ce qui tourne ----
+   Une action lancée depuis le tiroir n'avait de trace que dans la console du
+   tiroir, une action groupée que dans sa modale : refermés, plus rien. Le
+   registre ci-dessous survit à tout (il vit dans <body>, z-index 1000) et
+   RÉSUME ces deux affichages — il ne les remplace pas.
+   `start` renvoie l'identifiant à passer à `update`/`done`. Progression :
+   un nombre entre 0 et 1 quand le serveur en fournit une (collecte, groupé,
+   étapes de la MAJ sûre), `null` = animation indéterminée. */
+const NOTIF=(()=>{
+  const L=new Map(); let seq=0, horloge=null;
+  const ICONES={maj:'⬆',rescan:'↻',install:'＋',viz:'◉',connect:'⚭',
+                check:'✓',safe:'⛨',bulk:'≡',collect:'↻',cache:'⊘',
+                backup:'⤓',action:'◆'};
+  /* Le conteneur se pose SOUS l'en-tête collant : posé à `top:0` il masquait
+     « ↻ Collecter », le thème, les réglages et la déconnexion — tous groupés en
+     haut à droite. La hauteur de l'en-tête change (il passe sur deux ou trois
+     lignes en étroit), elle est donc mesurée, pas devinée. */
+  function placer(el){
+    const h=document.querySelector('.topbar');
+    el.style.top=((h?h.offsetHeight:0)+8)+'px'; }
+  function bac(){ let el=document.getElementById('notifbar');
+    if(!el){ el=document.createElement('div'); el.id='notifbar';
+      // Ce n'est pas une modale : pas de role dialog, pas de piège au clavier,
+      // et Échap continue de fermer la bulle / la modale / le tiroir.
+      el.setAttribute('aria-live','polite'); el.setAttribute('aria-atomic','false');
+      (document.body||document.documentElement).appendChild(el);
+      window.addEventListener('resize',()=>placer(el)); }
+    placer(el);
+    return el; }
+  function duree(ms){ const s=Math.max(0,Math.round(ms/1000));
+    return s<60?s+' s':Math.floor(s/60)+' min '+String(s%60).padStart(2,'0'); }
+  function ouvrable(n){ return n.kind==='bulk'||!!(n.site&&n.site.domain); }
+  function ouvrir(n){
+    try{
+      if(n.kind==='bulk'){ reouvrirBulk(); return; }
+      if(n.site&&n.site.domain) openDrawer(n.site.srv,n.site.domain);
+    }catch(e){}
+  }
+  function noeud(n){
+    const d=document.createElement('div');
+    d.className='ntf'; d.dataset.id=n.id;
+    d.innerHTML='<span class="ntf-ic" aria-hidden="true"></span>'
+      +'<div class="ntf-main"><div class="ntf-lbl"></div><div class="ntf-det" hidden></div>'
+      +'<div class="bar wait"><div></div></div></div>'
+      +'<span class="ntf-t"></span>'
+      +'<button class="ntf-x" type="button" aria-label="Masquer cette notification">✕</button>';
+    d.querySelector('.ntf-x').onclick=e=>{ e.stopPropagation(); retirer(n.id); };
+    d.onclick=()=>{ if(ouvrable(n)) ouvrir(n); };
+    return d; }
+  function peindre(n){
+    const d=n.el; if(!d) return;
+    d.className='ntf'+(n.fini?' '+n.etat:'')+(ouvrable(n)?' clic':'');
+    d.querySelector('.ntf-ic').textContent=n.fini
+      ? (n.etat==='ok'?'✓':n.etat==='warn'?'⚠':'✗')
+      : (ICONES[n.kind]||ICONES.action);
+    d.querySelector('.ntf-lbl').textContent=n.label;
+    const det=d.querySelector('.ntf-det');
+    det.textContent=n.detail||''; det.hidden=!n.detail;
+    const bar=d.querySelector('.bar');
+    bar.hidden=!!n.fini;
+    bar.classList.toggle('wait',n.progress==null);
+    bar.firstElementChild.style.width=n.progress==null?'40%'
+      :Math.round(100*Math.max(0,Math.min(1,n.progress)))+'%';
+    d.querySelector('.ntf-t').textContent=duree((n.fin||Date.now())-n.debut); }
+  function battre(){
+    const encours=[...L.values()].some(n=>!n.fini);
+    if(encours&&!horloge) horloge=setInterval(()=>L.forEach(n=>{ if(!n.fini) peindre(n); }),1000);
+    if(!encours&&horloge){ clearInterval(horloge); horloge=null; } }
+  /* « Tout effacer » n'apparaît qu'au-delà de 3 lignes : en dessous, le ✕ de
+     chaque ligne suffit et un bouton de plus n'est que du bruit. */
+  function majEffacer(){
+    const el=bac(); let b=document.getElementById('notif-clear');
+    if(L.size>3){
+      if(!b){ b=document.createElement('button'); b.id='notif-clear'; b.className='btn sm';
+        b.type='button'; b.textContent='Tout effacer';
+        b.onclick=()=>[...L.keys()].forEach(retirer); }
+      el.appendChild(b);
+    } else if(b) b.remove(); }
+  function retirer(id){ const n=L.get(id); if(!n) return;
+    if(n.timer) clearTimeout(n.timer);
+    if(n.el&&n.el.parentNode) n.el.remove();
+    L.delete(id); majEffacer(); battre(); }
+  function start(o){
+    o=o||{};
+    const id=String(o.id||('n'+(++seq)));
+    retirer(id);                       // relance : une seule ligne par identifiant
+    const n={id,label:String(o.label||'Action en cours'),site:o.site||null,
+      kind:String(o.kind||'action'),detail:String(o.detail||''),
+      progress:(o.progress==null?null:+o.progress),
+      debut:Date.now(),fin:null,fini:false,etat:'',timer:null,el:null};
+    n.el=noeud(n);
+    const b=document.getElementById('notif-clear');
+    if(b) bac().insertBefore(n.el,b); else bac().appendChild(n.el);
+    L.set(id,n); peindre(n); majEffacer(); battre();
+    return id; }
+  function update(id,o){ const n=L.get(id); if(!n||n.fini) return;
+    o=o||{};
+    if(o.label!=null) n.label=String(o.label);
+    if(o.detail!=null) n.detail=String(o.detail);
+    if('progress' in o) n.progress=(o.progress==null?null:+o.progress);
+    peindre(n); }
+  function done(id,o){ const n=L.get(id); if(!n||n.fini) return;   // un verdict, pas deux
+    o=o||{};
+    n.fini=true; n.fin=Date.now();
+    // `warn` d'abord : une anomalie visuelle n'est PAS un échec (l'action a
+    // abouti), et un `ok:false` accompagné de `warn` doit rester orange.
+    n.etat=o.warn?'warn':((o.ok===false)?'err':'ok');
+    if(o.label!=null) n.label=String(o.label);
+    n.detail=String(o.message||'').replace(/\s+/g,' ').trim().slice(0,180);
+    peindre(n); battre();
+    // Un succès s'efface seul ; un échec ou un avertissement attend le ✕ —
+    // c'est précisément ce qu'il ne faut pas rater en changeant d'onglet.
+    if(n.etat==='ok') n.timer=setTimeout(()=>retirer(id),8000); }
+  return {start,update,done,remove:retirer,
+          encours:id=>{ const n=L.get(id); return !!n&&!n.fini; }};
+})();
+/* Libellé et pictogramme d'une action unitaire, pour la barre de notifications. */
+const ACT_LIB={core_update:'MAJ cœur',plugins_update_all:'MAJ extensions',
+  plugins_update_except:'MAJ extensions',plugin_update:'MAJ',themes_update_all:'MAJ thèmes',
+  updraft_backup:'Sauvegarde UpdraftPlus',cache_flush:'Vidage des caches',
+  autoupdate_on:'Activation des auto-MAJ',autoupdate_off:'Désactivation des auto-MAJ',
+  verify_checksums:'Intégrité du cœur',vizproof_install:'Installation VizProof',
+  viz_baseline:'Baseline visuelle',viz_scan:'Scan visuel',viz_disconnect:'Dissociation VizProof',
+  rescan:'Re-scan'};
+const ACT_KIND={core_update:'maj',plugins_update_all:'maj',plugins_update_except:'maj',
+  plugin_update:'maj',themes_update_all:'maj',updraft_backup:'backup',cache_flush:'cache',
+  verify_checksums:'check',vizproof_install:'install',viz_baseline:'viz',viz_scan:'viz',
+  viz_disconnect:'connect',rescan:'rescan'};
+function actLib(act,arg){ return (ACT_LIB[act]||act)+(arg?' '+arg:''); }
+function notifLabel(act,arg,s){ return actLib(act,arg)+' · '+((s&&(kName(s)||s.domain))||''); }
+
 /* domaine normalisé d'une URL (comparaisons site ↔ inventaire) */
 function hostOf(u){ const s=String(u??'').trim(); if(!s) return '';
   try{ return new URL(/^https?:\/\//i.test(s)?s:'https://'+s).hostname.replace(/^www\./i,'').toLowerCase(); }
@@ -943,7 +1117,71 @@ function vizDrawerBlock(s){ const e=vizState(s); if(e==='nodata') return '';
     if(!rest) btns='<button class="btn sm" data-vizdisconnect>Dissocier</button>'; }
   return `<div class="agroup"><span class="glbl">VizProof</span>
     <p class="hint" style="margin:0 0 6px">${txt}${vizAdminLink(s)}${e==='connecte'?vizRunBadge(s):''}</p>
+    ${e==='connecte'?vizLastRunLine(s):''}
     ${btns?`<div class="actions">${btns}</div>`:''}</div>`; }
+/* Dernier scan, en clair. La pastille seule ne disait ni QUAND ni COMBIEN :
+   depuis que chaque mise à jour déclenche un scan, c'est l'information qu'on
+   vient chercher dans le tiroir. */
+function vizLastRunLine(s){ const r=vizRun(s);
+  if(!r) return '<p class="hint" style="margin:0 0 6px">Aucun scan visuel enregistré pour l’instant.</p>';
+  const bad=vizAnom(s), an=Number(r.anomalies)||0, u=safeUrl(r.url);
+  const stt=String(r.status||'').toLowerCase();
+  const cls=bad?'warn':(/err|échec|echec|fail/.test(stt)?'err':'ok');
+  const quoi=bad?((an||'?')+' anomalie'+(an>1?'s':''))
+    :(/err|échec|echec|fail/.test(stt)?(r.status||'échec'):'aucune anomalie');
+  return `<p class="hint" style="margin:0 0 6px">Dernier scan
+    <span title="${H(absTime(r.at))}">${H(relTime(r.at))}</span>
+    <span class="pill ${cls}">${H(quoi)}</span>
+    ${u?`<a class="small" data-vizrun href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>`:''}</p>`; }
+/* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ---- */
+function vizPhrase(v){
+  if(!v||typeof v!=='object') return '';
+  if(v.pending) return 'scan en cours…';
+  if(!v.ran) return 'non lancé ('+(v.reason||v.message||'?')+')';
+  if(v.anomalies) return 'anomalies détectées';
+  if(Number(v.rc)===0) return 'ok';
+  return 'échec ('+(v.message||('rc '+(v.rc??'?')))+')'; }
+/* → '' (neutre) | 'ok' | 'warn' | 'err'.
+   « Non lancé » est NEUTRE, pas un avertissement : la grande majorité des sites
+   n'est pas reliée à VizProof, tout mettre en orange reviendrait à ne plus rien
+   signaler du tout. */
+function vizEtat(v){
+  if(!v) return '';
+  if(v.pending) return 'warn';
+  if(!v.ran) return '';
+  if(v.anomalies) return 'warn';
+  return Number(v.rc)===0?'ok':'err'; }
+function vizConsoleLigne(v){
+  if(!v) return '';
+  const u=safeUrl(v.report_url);
+  // La ligne porte un marqueur : le verdict REMPLACE le « scan en cours… »
+  // affiché à la réponse, au lieu de s'empiler dessous.
+  return `<span data-vizline><b class="${vizEtat(v)}">Contrôle visuel VizProof : ${H(vizPhrase(v))}</b>`
+    +(u?` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">rapport</a>`:'')+'</span>'; }
+function vizConsoleMaj(dom,v){
+  const c=consoleDe(dom); if(!c) return;
+  const l=c.querySelector('[data-vizline]');
+  if(l) l.outerHTML=vizConsoleLigne(v); else c.innerHTML+='\n'+vizConsoleLigne(v); }
+/* Le scan tourne côté serveur APRÈS la réponse (cf. README §VizProof) : on
+   interroge /api/actions/viz_last jusqu'au verdict. Borné dans le temps —
+   un `pending` qui ne retombe jamais ne doit pas sonder à vie. */
+function suivreVizLast(srv,dom,nid){
+  let tours=0;
+  poll('vizlast:'+dom,async()=>{
+    if(++tours>150) return {fini:true,perdu:true};       // ≈ 10 min
+    const j=await api('/api/actions/viz_last?domain='+encodeURIComponent(dom));
+    const v=(j&&j.viz)||null;
+    if(!v||v.pending) return {fini:false};
+    NOTIF.done(nid,{ok:vizEtat(v)!=='err',warn:vizEtat(v)==='warn',
+      message:'contrôle visuel : '+vizPhrase(v)});
+    vizConsoleMaj(dom,v);
+    loadFleet().catch(()=>{});
+    return {fini:true};
+  },{every:4000,maxErrors:5,until:r=>!!(r&&r.fini),
+     // Abandon (erreurs réseau, délai dépassé) : la ligne ne doit pas rester
+     // à tourner indéfiniment. `done` est sans effet si le verdict est déjà là.
+     onStop:()=>NOTIF.done(nid,{ok:false,
+       message:'contrôle visuel : suivi interrompu, voir l’historique du site'})}); }
 
 /* Dédoublonnage : plusieurs actions enchaînées (bulk terminé, re-scan, retour
    d'autorisation) déclenchaient trois collectes de fleet.json en parallèle. */
@@ -1077,6 +1315,8 @@ async function rowRescan(btn,srv,dom){
   const cle=srv+'|'+dom;
   btn.dataset.busy='1';
   btn.textContent='⏳'; btn.classList.add('spin');
+  const nid=NOTIF.start({id:'rescan:'+cle,label:'Re-scan · '+dom,kind:'rescan',
+    site:{srv,domain:dom}});
   let ok=false, titre='erreur réseau';
   try{
     const j=await api('/api/actions/run',{server:srv,domain:dom,action:'rescan'});
@@ -1084,6 +1324,7 @@ async function rowRescan(btn,srv,dom){
     titre=ok?'site re-scanné':('échec : '+((j&&(j.output||j.error))||'').slice(0,120));
     if(ok) await loadFleet();
   }catch(e){ ok=false; titre='erreur réseau'; }
+  NOTIF.done(nid,{ok,message:ok?'':titre});
   const b2=rowscanFor(cle)||btn;
   b2.classList.remove('spin'); b2.dataset.busy='1';
   b2.textContent=ok?'✓':'✗'; b2.title=titre;
@@ -1097,14 +1338,18 @@ async function vizInstall(btn,srv,dom){
     setTimeout(()=>{ if(btn.dataset.confirm){ delete btn.dataset.confirm; btn.textContent=btn.dataset.label; btn.classList.remove('danger'); } },4000); return; }
   const cle=srv+'|'+dom;
   const td=btn.closest('td'); td.innerHTML='<div class="bar indet"><div></div></div>';
+  const nid=NOTIF.start({id:'vizinstall:'+cle,label:'Installation VizProof · '+dom,
+    kind:'install',site:{srv,domain:dom}});
   const echec=t=>{ // après loadFleet la cellule d'origine a disparu : on retrouve la ligne
     const tr=document.querySelector(`#tb tr[data-s="${CSS.escape(srv)}"][data-d="${CSS.escape(dom)}"]`);
     const c=(tr&&tr.querySelector('.vizcell'))||td;
-    c.innerHTML=`<span class="pill err" title="${H(t)}">échec</span>`; };
+    c.innerHTML=`<span class="pill err" title="${H(t)}">échec</span>`;
+    NOTIF.done(nid,{ok:false,message:t}); };
   try{ const j=await api('/api/actions/run',{server:srv,domain:dom,action:'vizproof_install',arg:null});
     if(!j.ok){ echec((j.output||'rc '+j.rc).slice(-300)); return; }
     await api('/api/actions/run',{server:srv,domain:dom,action:'rescan',arg:null});
     await loadFleet();
+    NOTIF.done(nid,{ok:true,message:'extension installée et activée'});
     const b=rowscanFor(cle);                      // repère visuel : l'installation a abouti
     if(b){ b.dataset.busy='1'; b.textContent='✓'; b.title='vizproof-timeline installé';
       setTimeout(()=>{ const b3=rowscanFor(cle); if(b3){ b3.textContent='↻';
@@ -1236,9 +1481,16 @@ async function runVizConnect(){
   const go=document.getElementById('vz-go'); const lbl=go.textContent;
   go.disabled=true; go.textContent='en cours…';
   out.innerHTML='';
+  const seul=VZSITES.length===1;
+  const nid=NOTIF.start({id:'vizconnect',kind:'connect',
+    label:'Connexion VizProof'+(seul?' · '+(kName(VZSITES[0])||VZSITES[0].domain)
+                                     :' · '+VZSITES.length+' sites'),
+    progress:seul?null:0,
+    site:seul?{srv:VZSITES[0].srv,domain:VZSITES[0].domain}:null});
   let nok=0;
   for(let i=0;i<VZSITES.length;i++){
     const s=VZSITES[i], res=document.querySelector(`#vz-rows [data-vzres="${i}"]`);
+    if(!seul) NOTIF.update(nid,{progress:i/VZSITES.length,detail:s.domain});
     if(res) res.innerHTML='<span class="pill mut">…</span>';
     const corps={server:s.srv,domain:s.domain};
     if(ids[i]) corps.site_id=ids[i];
@@ -1256,6 +1508,8 @@ async function runVizConnect(){
   // Le champ jeton n'est jamais réinjecté : il est vidé dès l'envoi.
   document.getElementById('vz-token').value='';
   document.getElementById('vz-code').value='';
+  NOTIF.done(nid,{ok:nok===VZSITES.length,warn:!!nok&&nok<VZSITES.length,
+    message:nok+'/'+VZSITES.length+' connecté'+(nok>1?'s':'')});
   out.innerHTML=`<div class="mt2"><span class="pill ${nok===VZSITES.length?'ok':nok?'warn':'err'}">${nok}/${VZSITES.length} connecté(s)</span></div>`+out.innerHTML;
   go.textContent=lbl; go.disabled=false;
   const an=document.getElementById('vz-cancel'); an.textContent='Fermer'; an.className='btn primary';
@@ -1264,9 +1518,13 @@ async function vizDisconnect(btn,s){
   if(!await askConfirm(`Dissocier <b>${H(s.domain)}</b> de VizProof ?<br><br>Le suivi visuel s'arrête ; l'extension reste installée.`,
       {titre:'Dissocier VizProof',ok:'Dissocier',danger:true})) return;
   const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
+  const nid=NOTIF.start({kind:'connect',label:'Dissociation VizProof · '+(kName(s)||s.domain),
+    site:{srv:s.srv,domain:s.domain}});
   let j; try{ j=await api('/api/actions/viz_disconnect',{server:s.srv,domain:s.domain})||{}; }
   catch(e){ j={ok:false,error:String(e)}; }
   btn.disabled=false; btn.textContent=lbl;
+  NOTIF.done(nid,{ok:!!j.ok,
+    message:j.ok?'':stripPhpNoise(String(j.output||j.error||'')).slice(-160)});
   if(!j.ok){ askInfo('Dissociation impossible',H(stripPhpNoise(String(j.output||j.error||'')).slice(-300)||'échec')); return; }
   await loadFleet(); openDrawer(s.srv,s.domain); }
 
@@ -1306,13 +1564,30 @@ document.getElementById('bulk-run').onclick=async()=>{
   catch(e){ r={error:String(e)}; }
   // Sans ce `else`, une réponse 400 du backend (action refusée, cible invalide)
   // ne produisait strictement rien à l'écran.
-  if(r&&r.job){ CURJOB=r.job; openBulkModal(); pollBulk(); }
+  if(r&&r.job) demarrerJob(r.job,'Exécution en masse',
+    libelle+' · '+sites.length+' site'+(sites.length>1?'s':''));
   else askInfo('Action groupée impossible',(r&&r.error)?H(r.error):'Le serveur n\'a pas renvoyé de tâche.'); };
-let BMTITLE='Exécution en masse';
+let BMTITLE='Exécution en masse', LASTJOB=null;
 function openBulkModal(title){ BMTITLE=title||'Exécution en masse'; document.getElementById('bulkmodal').classList.add('open'); }
+/* Rouvrir la modale depuis la barre de notifications, y compris après un
+   « Fermer » : le job vit côté serveur, seul son identifiant avait été oublié. */
+function reouvrirBulk(){ if(LASTJOB&&!CURJOB) CURJOB=LASTJOB;
+  openBulkModal(BMTITLE); if(CURJOB) pollBulk(); }
+/* Point d'entrée unique des trois lanceurs de job groupé (barre d'actions,
+   « mettre à jour cette extension partout », checksums du parc) : ils
+   partageaient déjà CURJOB/openBulkModal/pollBulk, ils partagent désormais la
+   ligne de notification — sinon un seul des trois aurait été suivi. */
+function demarrerJob(job,titre,detail){
+  CURJOB=LASTJOB=job;
+  NOTIF.start({id:'bulk',kind:'bulk',progress:0,label:titre,detail:detail||'démarrage…'});
+  openBulkModal(titre); pollBulk(); }
 document.getElementById('bm-close').onclick=()=>{
   document.getElementById('bulkmodal').classList.remove('open');
-  stopPoll('bulk'); CURJOB=null;                 // sinon le rafraîchissement de fond ne repart jamais
+  // Le sondage n'est PLUS arrêté ici : c'est lui qui alimente la barre de
+  // notifications, et une action groupée qui continue côté serveur doit rester
+  // visible après la fermeture de la modale. Il s'arrête tout seul à la fin du
+  // job (`until`) et remet alors CURJOB à null.
+  CURJOB=null;                 // sinon le rafraîchissement de fond ne repart jamais
   loadFleet(); refreshSecIfActive(); };
 document.getElementById('bm-cancel').onclick=()=>{ if(CURJOB) api('/api/actions/bulk_cancel',{job:CURJOB}).catch(()=>{}); };
 function refreshSecIfActive(){ try{ if(document.getElementById('page-sec').classList.contains('active')) loadSec(true); }catch(e){} }
@@ -1327,8 +1602,11 @@ function pollBulk(){ if(!CURJOB) return;
   poll('bulk',async()=>{
     const j=await api('/api/actions/bulk_status?job='+job);
     if(!j||j.error){ document.getElementById('bm-title').textContent=BMTITLE+' — '+((j&&j.error)||'suivi indisponible');
+      NOTIF.done('bulk',{ok:false,message:(j&&j.error)||'suivi indisponible'});
       return {fini:true,ko:true}; }
     const tasks=Array.isArray(j.tasks)?j.tasks:[], done=j.done||0, total=j.total||0;
+    NOTIF.update('bulk',{progress:total?done/total:0,
+      detail:done+'/'+total+(j.running?' — en cours':'')});
     document.getElementById('bm-bar').style.width=(total?Math.round(100*done/total):0)+'%';
     document.getElementById('bm-title').textContent=`${BMTITLE} — ${done}/${total}`+(j.running?' (en cours)':j.stopped?' (arrêtée sur erreur)':' (terminée)');
     document.getElementById('bm-list').innerHTML=tasks.map(t=>{ const c=t.status==='ok'?'ok':t.status==='échec'?'err':t.status==='en cours'?'warn':'mut';
@@ -1336,7 +1614,14 @@ function pollBulk(){ if(!CURJOB) return;
     if(!j.running){
       // La remise à null est indispensable : le rafraîchissement de fond
       // (setInterval …if(!CURJOB) loadFleet()) restait sinon éteint à vie.
-      CURJOB=null; loadFleet(); refreshSecIfActive(); }
+      CURJOB=null; loadFleet(); refreshSecIfActive();
+      const ko=tasks.filter(t=>t.status==='échec').length;
+      const anom=tasks.filter(t=>t.viz==='anomalies').length;
+      NOTIF.done('bulk',{ok:!ko,warn:!ko&&!!anom,
+        message:(ko?ko+' échec'+(ko>1?'s':'')+' sur '+total
+                   :done+'/'+total+' terminée'+(done>1?'s':''))
+                +(anom?' · '+anom+' avec anomalies visuelles':'')
+                +(j.stopped?' · arrêtée sur erreur':'')}); }
     return {fini:!j.running};
   },{every:2000,maxErrors:5,until:r=>!!(r&&r.fini)}); }
 
@@ -1847,6 +2132,30 @@ function suivreSafe(dom,lbl){
     return {fini:false};
   },{every:3000,maxErrors:5,until:r=>!!(r&&r.fini)});
 }
+/* Suivi pour la BARRE DE NOTIFICATIONS, indépendant de `suivreSafe` : celui-ci
+   s'arrête dès que le tiroir affiche un autre site, et `closeDrawer` l'arrête
+   aussi (stopPoll('safe')). La barre, elle, doit tenir jusqu'au verdict.
+   Nombre d'étapes attendues d'une MAJ sûre nominale : contrôle avant, liste,
+   à mettre à jour, sauvegarde, archivage fichiers, archivage base, mise à jour,
+   page d'accueil, WordPress fonctionnel, contrôle visuel, terminé. */
+const SAFE_ETAPES=11;
+function suivreSafeNotif(dom,nid){
+  let tours=0;
+  poll('safenotif',async()=>{
+    if(++tours>400) return {fini:true};              // ≈ 20 min, garde-fou
+    const st=await api('/api/actions/safe_update_status');
+    if(!st||st.domain!==dom) return {fini:false};    // le job n'a pas encore pris la main
+    const n=(st.steps||[]).length, der=(st.steps||[])[n-1];
+    if(st.running){ NOTIF.update(nid,{progress:Math.min(.95,n/SAFE_ETAPES),
+      detail:der?der.label:'préparation…'}); return {fini:false}; }
+    const v=String(st.verdict||'');
+    NOTIF.update(nid,{progress:1});
+    NOTIF.done(nid,{ok:v==='réussi'||v==='rien à faire',
+      warn:/anomalie/i.test(v),message:v||'terminée'});
+    return {fini:true};
+  },{every:3000,maxErrors:5,until:r=>!!(r&&r.fini),
+     onStop:()=>NOTIF.done(nid,{ok:false,message:'suivi interrompu — voir le tiroir du site'})});
+}
 /* À l'ouverture du tiroir : si une MAJ sûre tourne encore sur CE site, on
    ré-affiche sa progression et on se raccroche au sondage. */
 async function loadSafeStatus(dom){
@@ -1857,7 +2166,13 @@ async function loadSafeStatus(dom){
   renderSafe(st,dom);
   if(st.running){ const b=document.getElementById('safeup');
     if(b){ b.dataset.label=b.dataset.label||b.textContent; b.disabled=true; b.textContent='en cours…'; }
-    suivreSafe(dom,(b&&b.dataset.label)||'🛡 MAJ sûre'); }
+    suivreSafe(dom,(b&&b.dataset.label)||'🛡 MAJ sûre');
+    // Rechargement de page ou MAJ lancée ailleurs : la barre reprend le suivi.
+    const nid='safe:'+dom;
+    if(!NOTIF.encours(nid)){
+      NOTIF.start({id:nid,label:'MAJ sûre · '+dom,kind:'safe',progress:0,
+        site:{srv:(CUR&&CUR.srv)||'',domain:dom}});
+      suivreSafeNotif(dom,nid); } }
 }
 async function startSafeUpdate(srv,dom,btn){
   const withCore=btn.dataset.core==='1';
@@ -1886,6 +2201,10 @@ async function startSafeUpdate(srv,dom,btn){
   if(!r||r.error){ askInfo('Mise à jour sûre impossible',H((r&&r.error)||'réponse vide'));
     btn.disabled=false; btn.textContent=lbl; return; }
   suivreSafe(dom,lbl);
+  const nid='safe:'+dom;
+  NOTIF.start({id:nid,label:'MAJ sûre · '+dom,kind:'safe',progress:0,detail:'démarrage…',
+    site:{srv,domain:dom}});
+  suivreSafeNotif(dom,nid);
 }
 
 /* historique du site (non bloquant — le tiroir s'affiche sans attendre) */
@@ -2024,17 +2343,29 @@ async function runAction(btn){ const act=btn.dataset.act, arg=btn.dataset.arg||n
   delete btn.dataset.confirm; btn.classList.remove('danger'); btn.textContent='⏳…'; btn.disabled=true;
   const head=`$ ${act}${arg?' '+arg:''} sur ${s.domain}\n`;
   const con=document.getElementById('console'); con.style.display='block'; con.textContent=head+'…';
+  const nid=NOTIF.start({label:notifLabel(act,arg,s),site:{srv:s.srv,domain:s.domain},
+    kind:ACT_KIND[act]||'action'});
   try{ const j=await api('/api/actions/run',{server:s.srv,domain:s.domain,action:act,arg})||{};
     /* rc 2 sur un scan visuel = anomalies détectées, pas un échec technique */
     const anom=!j.ok&&Number(j.rc)===2&&/^viz_/.test(act);
     const verdict=j.ok?'<b class="ok">✅ OK</b>'
       :anom?'<b class="warn">⚠️ anomalies visuelles détectées</b>'
       :`<b class="err">❌ rc ${H(j.rc??'?')}</b>`;
-    con.innerHTML=H(head+(j.output||'')+'\n\n')+verdict;
+    // Contrôle visuel de fin de MAJ : le serveur dit s'il l'a lancé, pourquoi
+    // pas, ou qu'il tourne encore (cf. suivreVizLast).
+    const v=(j.viz&&typeof j.viz==='object')?j.viz:null;
+    con.innerHTML=H(head+(j.output||'')+'\n\n')+verdict+(v?'\n'+vizConsoleLigne(v):'');
+    if(v&&v.pending) NOTIF.update(nid,{detail:'contrôle visuel VizProof…',progress:null});
+    else NOTIF.done(nid,{ok:!!(j.ok||anom),warn:anom||(v?vizEtat(v)==='warn':false),
+      message:anom?'anomalies visuelles détectées'
+        :(j.ok?(v?'contrôle visuel : '+vizPhrase(v):'')
+              :stripPhpNoise(String(j.output||j.error||'')).slice(-160)||('rc '+(j.rc??'?')))});
     if((j.ok||anom)&&act!=='rescan'&&act!=='verify_checksums'){ await api('/api/actions/run',{server:s.srv,domain:s.domain,action:'rescan'}); }
     const html=con.innerHTML;
     await loadFleet(); openDrawer(s.srv,s.domain); const c2=document.getElementById('console'); c2.style.display='block'; c2.innerHTML=html;
-  }catch(e){ con.innerHTML+=H('\n')+`<b class="err">❌ ${H(String(e))}</b>`; btn.disabled=false; btn.textContent=btn.dataset.label||act; } }
+    if(v&&v.pending) suivreVizLast(s.srv,s.domain,nid);
+  }catch(e){ con.innerHTML+=H('\n')+`<b class="err">❌ ${H(String(e))}</b>`; btn.disabled=false; btn.textContent=btn.dataset.label||act;
+    NOTIF.done(nid,{ok:false,message:String(e)}); } }
 
 /* journal */
 document.getElementById('logbtn').onclick=async()=>{ document.getElementById('logmodal').classList.add('open');
@@ -2057,8 +2388,16 @@ function pollCollect(){
     document.getElementById('cb-lines').textContent=(j.lines||[]).join('\n');
     if(j.running){ btn.disabled=true; box.dataset.w='1'; document.getElementById('cb-title').textContent='Collecte en cours…';
       document.getElementById('cb-step').textContent=`serveur ${Math.min(j.done+1,j.total)}/${j.total} · ${j.started||''}`;
+      // La collecte peut aussi avoir été lancée ailleurs (cron, autre onglet) :
+      // `start` est idempotent sur un même identifiant tant que la ligne tourne.
+      if(!NOTIF.encours('collect'))
+        NOTIF.start({id:'collect',kind:'collect',label:'Collecte du parc',progress:0});
+      NOTIF.update('collect',{progress:j.total?Math.min(j.done,j.total)/j.total:null,
+        detail:`serveur ${Math.min(j.done+1,j.total)}/${j.total}`});
       return {fini:false}; }
     btn.disabled=false;
+    NOTIF.done('collect',{ok:j.rc===0,
+      message:j.rc===0?(j.total?j.total+' serveur'+(j.total>1?'s':'')+' relevé'+(j.total>1?'s':''):''):'échec (rc '+j.rc+')'});
     if(box.dataset.w!=='1'){ box.style.display='none'; return {fini:true}; }
     document.getElementById('cb-title').textContent=j.rc===0?'✅ Collecte terminée':'❌ échec (rc '+j.rc+')';
     document.getElementById('cb-step').textContent='';
@@ -2584,7 +2923,8 @@ function renderVulnsParExtension(sitesFiltres){
       : {server:d.cible.server,domain:d.cible.domain,action:'plugin_update',arg:ext});
     let r; try{ r=await api('/api/actions/bulk',{tasks,mode:'continue',backup_first:true,viz_verify:false}); }
     catch(err){ r={error:String(err)}; }
-    if(r&&r.job){ CURJOB=r.job; openBulkModal(`Mise à jour de ${ext}`); pollBulk(); }
+    if(r&&r.job) demarrerJob(r.job,`Mise à jour de ${ext}`,
+      resolus.length+' site'+(resolus.length>1?'s':''));
     else askInfo('Mise à jour groupée impossible',(r&&r.error)?H(r.error):'Le serveur n\'a pas renvoyé de tâche.');
   });
 }
@@ -2959,7 +3299,7 @@ document.getElementById('verify-all').onclick=async()=>{ const btn=document.getE
   btn.disabled=true; msg.innerHTML='<span class="muted">⏳ lancement…</span>';
   try{ const j=await api('/api/sec/checksums/run',{})||{};
     if(!j.job){ msg.innerHTML=`<span class="pill err">échec</span> <span class="muted">${H(j.error||'aucun job renvoyé')}</span>`; btn.disabled=false; return; }
-    msg.innerHTML=''; CURJOB=j.job; openBulkModal('Vérification des checksums'); pollBulk();
+    msg.innerHTML=''; demarrerJob(j.job,'Vérification des checksums','tout le parc');
   }catch(e){ msg.innerHTML=`<span class="pill err">échec</span> <span class="muted">${H(String(e))}</span>`; }
   btn.disabled=false; };
 document.getElementById('plug-q').oninput=debounce(e=>{ const q=e.target.value.toLowerCase().trim(); const tb=document.getElementById('plug-tb'), res=document.getElementById('plug-res');
@@ -3046,7 +3386,7 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
 /* ===== RÉGLAGES — mise à jour sûre =====
    SETTINGS est mémorisé : la modale de confirmation de la MAJ sûre pré-coche sa
    case avec ce réglage sans refaire un aller-retour réseau à chaque ouverture. */
-let SETTINGS={viz_anomaly_rollback:false}, SETTINGSLU=false;
+let SETTINGS={viz_anomaly_rollback:false,viz_scan_after_update:true}, SETTINGSLU=false;
 /* Lecture paresseuse : la modale de MAJ sûre a besoin du réglage même si
    personne n'a jamais ouvert Réglages. Un seul appel par session. */
 async function ensureSettings(){ if(SETTINGSLU) return SETTINGS;
@@ -3066,10 +3406,24 @@ async function loadSettings(){ const bd=document.getElementById('mset-body');
     <p class="hint" style="margin:6px 0 0">Décoché (défaut) : une anomalie détectée par VizProof après une mise à jour est
       <b>signalée</b> et la mise à jour est conservée — le verdict devient « réussie avec anomalies visuelles ».
       Coché : la mise à jour est <b>annulée</b> automatiquement. Un rendu qui change n'est pas toujours un rendu cassé
-      (bandeau de cookies, carrousel, publicité), d'où le défaut prudent côté « avertir ».</p>`;
+      (bandeau de cookies, carrousel, publicité), d'où le défaut prudent côté « avertir ».</p>
+    <label class="fld mt3"><input type="checkbox" id="set-vizscan"${SETTINGS.viz_scan_after_update===false?'':' checked'}>
+      Scan visuel VizProof après chaque mise à jour (sites reliés)</label>
+    <span id="set-vizscanmsg" class="small muted"></span>
+    <p class="hint" style="margin:6px 0 0">Coché (défaut) : après une mise à jour lancée depuis le tiroir (cœur, extensions,
+      thèmes), un scan visuel part en arrière-plan sur les sites reliés à VizProof. Il <b>informe seulement</b> — le bouton
+      unitaire n'archive rien, il n'y a donc rien à annuler ; le résultat s'affiche dans la barre de notifications, dans la
+      console du tiroir et dans l'historique du site.</p>`;
   document.getElementById('set-vizrb').onchange=async e=>{
     const m=document.getElementById('set-vizrbmsg'), v=e.target.checked; m.textContent='…';
     try{ const r=await api('/api/mgmt/settings',{settings:{viz_anomaly_rollback:v}});
+      if(r&&r.settings) SETTINGS=r.settings;
+      m.innerHTML='<span class="pill ok">enregistré</span>';
+    }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
+    setTimeout(()=>{ m.innerHTML=''; },2500); };
+  document.getElementById('set-vizscan').onchange=async e=>{
+    const m=document.getElementById('set-vizscanmsg'), v=e.target.checked; m.textContent='…';
+    try{ const r=await api('/api/mgmt/settings',{settings:{viz_scan_after_update:v}});
       if(r&&r.settings) SETTINGS=r.settings;
       m.innerHTML='<span class="pill ok">enregistré</span>';
     }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }

@@ -39,6 +39,7 @@ sur les sites sans accès SSH.
 - [L'agent compagnon](#lagent-compagnon)
 - [Sécurité](#sécurité)
 - [Exploitation](#exploitation)
+- [Réglages](#réglages)
 - [VizProof](#vizproof)
 - [Licence](#licence)
 
@@ -295,9 +296,57 @@ contient ce qui a été écrit pendant l'opération, la commande exacte est donn
 pour en faire une décision — et une extension **gelée** n'est jamais mise à
 jour, quel que soit le chemin emprunté.
 
+Les boutons de mise à jour **sans filet** (« Cœur seul », « Extensions seules »,
+le bouton **MAJ** de chaque extension) ne font ni archive ni retour arrière, mais
+déclenchent depuis peu un **contrôle visuel** en arrière-plan sur les sites
+reliés à VizProof — voir [Contrôle visuel après une mise à jour
+unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire).
+
 `POST /api/actions/safe_update {"dry_run": true}` simule sans rien écrire.
 Le corps accepte aussi `"viz_rollback": true|false` pour surcharger, **le temps
 d'une exécution**, le réglage décrit à la section VizProof ci-dessous.
+
+### La barre de notifications
+
+Toute action lancée depuis l'interface s'inscrit dans une **barre de
+notifications** en haut à droite (sous l'en-tête, au-dessus de tout le reste) :
+mise à jour unitaire, re-scan d'une ligne, installation ou connexion VizProof,
+MAJ sûre, action groupée, collecte, vérification des checksums.
+
+- **Progression déterminée** quand le serveur en fournit une (collecte : serveurs
+  relevés ; groupé : tâches faites/total ; MAJ sûre : étapes franchies),
+  **indéterminée** sinon (une action unitaire ne sait pas où elle en est).
+- À la fin, la ligne devient un **verdict** : vert et effacé après 8 s ; **orange**
+  (anomalie visuelle, lot partiellement réussi) ou **rouge** conservés jusqu'au ✕.
+  Un clic ouvre le tiroir du site concerné, ou la modale de l'action groupée.
+- Elle **survit** à la fermeture du tiroir, de la modale groupée et au changement
+  d'onglet : c'est tout son intérêt. Elle ne remplace ni la console du tiroir ni
+  la modale groupée, elle les résume.
+
+Corollaire : fermer la modale d'une action groupée n'arrête plus son suivi — le
+job continuait déjà côté serveur, il reste maintenant visible.
+
+### Réglages
+
+**Réglages ⚙** regroupe la cadence de collecte, les clés SSH, les alertes
+Telegram, le jeton VizProof et deux réglages de comportement, stockés dans
+`data/settings.json` (fichier **0600**) :
+
+| Réglage | Défaut | Effet |
+|---|---|---|
+| **Retour arrière automatique sur anomalie visuelle** (`viz_anomaly_rollback`) | décoché | Pendant une **MAJ sûre**, une anomalie VizProof (rc 2) annule la mise à jour au lieu de la conserver. Voir [VizProof](#vizproof). |
+| **Scan visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis le tiroir (cœur, extensions, thèmes), un scan visuel part **en arrière-plan** sur les sites reliés. Il **informe seulement**. |
+
+Ils se lisent et s'écrivent aussi en direct ; les clés inconnues sont ignorées et
+une valeur d'un autre type est ramenée au type attendu :
+
+```bash
+curl -s ... /api/mgmt/settings                                    # → {"settings": {...}, "defaults": {...}}
+curl -s ... -d '{"settings":{"viz_scan_after_update":false}}' ... /api/mgmt/settings
+```
+
+`GET /api/mgmt/settings` ne renvoie **jamais** le jeton VizProof : il ressort en
+`vizproof_token_set` et `vizproof_token_tail`.
 
 ### VizProof
 
@@ -317,7 +366,9 @@ site dans la colonne **Vizproof** du tableau.
 | Reliée | `v1.3.6 · N pages` (vert) | Rien. La pastille du dernier scan suit. |
 
 Un site sans inventaire d'extensions affiche `—`. Le tiroir reprend le même état
-en une phrase, avec les mêmes boutons et un lien **ouvrir dans wp-admin**.
+en une phrase, avec les mêmes boutons, un lien **ouvrir dans wp-admin** et, pour
+un site relié, la ligne **Dernier scan** : date relative, verdict (aucune
+anomalie / N anomalies / échec) et lien vers le rapport.
 
 > Avant, un plugin installé mais jamais relié était **indiscernable d'un plugin
 > absent** : `wp vizproof status` sort en 1 dans ce cas, et la collecte jetait
@@ -441,12 +492,64 @@ de chaque MAJ sûre : on décide donc au coup par coup sans toucher au réglage.
 scan qui échoue **techniquement** (tout rc autre que 0 ou 2) reste bloquant dans
 les deux cas.
 
-Le réglage se lit et s'écrit aussi en direct :
+Le réglage se lit et s'écrit aussi en direct (voir [Réglages](#réglages)).
+
+#### Contrôle visuel après une mise à jour unitaire
+
+Le bouton **MAJ** du tiroir passe par `/api/actions/run`, qui ne faisait
+**aucun** contrôle visuel : seules la MAJ sûre et l'action groupée « vérifiée
+visuellement » en faisaient un. Avec le réglage **« Scan visuel VizProof après
+chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
+`plugins_update_all`, `plugins_update_except`, `core_update` et
+`themes_update_all` enchaînent désormais un `wp vizproof scan --wait` quand :
+
+1. le réglage est actif, **et**
+2. la mise à jour a réussi (rc 0), **et**
+3. le site est **relié** (`vizproof.configured`/`connected` de l'inventaire ; à
+   défaut, une sonde `wp vizproof status --format=json` sur le site), **et**
+4. la commande `wp vizproof` existe (`viz_available`).
+
+**Le scan n'est pas attendu par la réponse HTTP.** `wp vizproof scan --wait`
+photographie toutes les pages suivies et dure couramment plus d'une minute ;
+`/api/actions/run` tient la connexion pendant toute l'action et nginx la coupe à
+**340 s** (`proxy_read_timeout`, `deploy/nginx-dashboard.conf`). Enchaîner MAJ
+*puis* scan dans la même réponse ferait donc perdre, sur un gros site, non
+seulement le scan mais le **résultat d'une mise à jour déjà appliquée**. La route
+répond dès la mise à jour terminée, le scan part dans un thread, et son verdict
+se récupère ensuite.
+
+La réponse conserve son contrat (`ok`, `rc`, `output`, `error`) et gagne un bloc
+`viz` :
+
+```jsonc
+// scan lancé : le verdict viendra
+{"ok": true, "rc": 0, "output": "…", "error": null,
+ "viz": {"ran": true, "pending": true, "message": "scan visuel VizProof en cours…"}}
+// scan impossible : on dit pourquoi
+{"viz": {"ran": false, "reason": "non relié" | "CLI absente" | "désactivé"
+                                 | "mise à jour en échec"}}
+```
 
 ```bash
-curl -s ... /api/mgmt/settings                                  # → {"settings": {...}, "defaults": {...}}
-curl -s ... -d '{"settings":{"viz_anomaly_rollback":true}}' ... # les clés inconnues sont ignorées
+curl -s ... '/api/actions/viz_last?domain=elwave.fr'
+# → {"viz":{"ran":true,"pending":false,"rc":2,"anomalies":true,
+#           "report_url":"https://vizproof.com/r/42","message":"anomalies visuelles détectées"}}
 ```
+
+- `rc 2` = **anomalies visuelles** : `viz.anomalies` passe à `true` et l'alerte
+  Telegram `viz_anomaly` part, comme pour une action groupée.
+- **Aucun retour arrière ici** : le bouton unitaire n'archive rien avant de
+  mettre à jour, il n'y a donc rien à annuler — on informe, on n'annule pas.
+- Le scan est journalisé dans `data/actions.log` avec la source
+  `auto-after-update` : il apparaît dans l'**historique du site**. Un `rescan`
+  suit, pour que la ligne « Dernier scan » du tiroir soit à jour.
+- `GET /api/actions/viz_last?domain=` est une **mémoire de processus** (bornée,
+  vidée au redémarrage du service) : l'historique, lui, est dans `actions.log`.
+
+Côté interface : la console du tiroir ajoute « Contrôle visuel VizProof : … »
+(remplacée par le verdict quand il arrive, avec le lien du rapport), et la
+[barre de notifications](#la-barre-de-notifications) montre l'étape puis le
+verdict — en **orange** s'il y a des anomalies.
 
 ### Tâches périodiques
 
