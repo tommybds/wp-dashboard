@@ -41,6 +41,18 @@ FLEET_PATH = os.path.join(DATA, "fleet.json")
 # ---- vizproof (produit public : lecture seule, scan visuel et statut) ----
 VIZ_ANOMALY_RC = 2  # code de sortie « anomalies visuelles détectées » : pas une erreur technique
 VIZ_ACTIONS = ("viz_baseline", "viz_scan")
+# Connexion d'un site à VizProof (`wp vizproof connect`, plugin ≥ 1.3.6).
+VIZ_SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+# Jeton de compte : jeu de caractères des jetons porteurs usuels, sur UNE ligne.
+# Le refus du saut de ligne n'est pas cosmétique : le jeton voyage dans un
+# document ici (heredoc) sur l'entrée standard de la commande distante.
+VIZ_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~:/+=-]{8,512}$")
+VIZ_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")   # code de connexion à usage unique
+VIZ_SCOPES = ("site", "selected_pages")
+VIZ_OLD_RC = 99   # même convention que AGENT_OLD_RC : « le site a une version trop ancienne »
+VIZ_OLD_MSG = "plugin VizProof trop ancien sur ce site : mettre à jour vers 1.3.6"
+VIZ_OLD_RE = re.compile(r"is not a registered (?:sub)?command|"
+                        r"n'est pas une (?:sous-)?commande", re.I)
 # ---- agent privé de liaison au dashboard (mu-plugin distinct de vizproof) ----
 DASH_BASE = CONFIG["dashboard_url"]              # racine publique du dashboard
 DASH_ENDPOINT = DASH_BASE + "/api/ingest"        # où les agents poussent leurs évènements
@@ -80,6 +92,8 @@ ALERTS_PATH = os.path.join(DATA, "alerts.json")
 ALERTS_STATE_PATH = os.path.join(DATA, "alerts_state.json")
 ALERTS_LOG = os.path.join(DATA, "alerts.log")
 ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 24 h
+# Réglages généraux du dashboard (distincts des alertes, qui ont leur fichier).
+SETTINGS_PATH = os.path.join(DATA, "settings.json")
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 PHPERR_PATH = os.path.join(DATA, "php_errors.json")
@@ -124,6 +138,9 @@ ACTIONS = {
     "vizproof_install":   ("Installer vizproof-timeline", False, "plugin install vizproof-timeline --activate"),
     "viz_baseline":       ("Baseline visuelle VizProof", False, "vizproof baseline --wait --format=json"),
     "viz_scan":           ("Scan visuel VizProof", False, "vizproof scan --wait --format=json"),
+    # La connexion, elle, n'est PAS ici : elle transporte un jeton, qui ne doit
+    # jamais passer par une ligne de commande (cf. viz_connect_run).
+    "viz_disconnect":     ("Dissocier VizProof", False, "vizproof disconnect --format=json"),
 }
 # actions bulk qui doivent d'abord backuper si UpdraftPlus est présent
 BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except", "themes_update_all"}
@@ -794,6 +811,57 @@ def record_checksum(domain, rc, out):
         save_json(CHECKSUMS_PATH, store)
 
 
+# ---------- réglages persistants (data/settings.json) ----------
+# Un seul fichier pour les réglages qui ne sont ni des alertes, ni une cadence
+# de cron. Le type de la valeur par défaut fait foi à l'écriture : une clé
+# inconnue est ignorée, une valeur d'un autre type est ramenée au type attendu.
+SETTINGS_DEFAULTS = {
+    # Anomalie visuelle pendant une MAJ sûre : par défaut on AVERTIT sans
+    # annuler. Un rendu qui change n'est pas forcément un rendu cassé (bandeau
+    # de cookies, carrousel, publicité) et le retour arrière automatique coûtait
+    # plus de mises à jour perdues qu'il n'évitait de régressions.
+    "viz_anomaly_rollback": False,
+}
+
+
+def settings_cfg():
+    """Réglages persistants, complétés par les valeurs par défaut."""
+    raw = load_json(SETTINGS_PATH, {})
+    cfg = dict(SETTINGS_DEFAULTS)
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k in SETTINGS_DEFAULTS:
+                cfg[k] = coerce_setting(k, v)
+    return cfg
+
+
+def coerce_setting(key, value):
+    """Normalise un réglage selon le type de sa valeur par défaut."""
+    ref = SETTINGS_DEFAULTS.get(key)
+    if isinstance(ref, bool):
+        return bool(value)
+    if isinstance(ref, int):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return ref
+    return value
+
+
+def settings_write(patch):
+    """Applique un lot de réglages (clés inconnues ignorées) → configuration écrite."""
+    def _muter(cur):
+        base = cur if isinstance(cur, dict) else {}
+        out = {k: v for k, v in base.items() if k in SETTINGS_DEFAULTS}
+        for k, v in (patch or {}).items():
+            if k in SETTINGS_DEFAULTS:
+                out[k] = coerce_setting(k, v)
+        return out
+
+    update_json(SETTINGS_PATH, _muter, {})
+    return settings_cfg()
+
+
 # ---------- vizproof : lecture du couple (rc, sortie) ----------
 VIZ_NOT_CONFIGURED_RE = re.compile(
     r"not a registered|n'est pas une commande|pas configur|non configur|not configured|"
@@ -857,9 +925,43 @@ SAFE_DISK_MARGIN_MB = 500   # marge exigée en plus du double du volume à archi
 BODY_MIN_RATIO = 0.5   # une page qui perd plus de la moitié de son poids = suspecte
 
 
-def safe_step(label, ok, detail=""):
-    SAFE["steps"].append({"label": label, "ok": ok, "detail": str(detail or "")[:600],
+def safe_step(label, ok, detail="", warn=False):
+    """Étape du journal de la MAJ sûre. `warn` = ni vert ni rouge : constat sans
+    conséquence (anomalie visuelle qu'on a choisi de ne pas annuler)."""
+    SAFE["steps"].append({"label": label, "ok": ok, "warn": bool(warn),
+                          "detail": str(detail or "")[:600],
                           "ts": datetime.datetime.now().strftime("%H:%M:%S")})
+
+
+def viz_report_url(out):
+    """URL de rapport (`report_url`) contenue dans le JSON d'un scan, si elle est http(s)."""
+    for ligne in reversed(str(out or "").splitlines()):
+        if ligne.lstrip()[:1] != "{":
+            continue
+        try:
+            d = json.loads(ligne.strip())
+        except ValueError:
+            continue
+        u = str((d or {}).get("report_url") or "") if isinstance(d, dict) else ""
+        return u if u.startswith("http://") or u.startswith("https://") else None
+    return None
+
+
+def viz_decide(rc, rollback):
+    """Suite à donner à un scan visuel de MAJ sûre → (bloquant, libellé, anomalie).
+
+    `bloquant` True = le scan compte comme un échec de santé, donc retour
+    arrière. Une anomalie visuelle (rc 2) n'est bloquante que si le réglage
+    `viz_anomaly_rollback` le demande ; toute AUTRE sortie non nulle est un
+    échec technique du scan, et reste bloquante quel que soit le réglage.
+    """
+    if rc == 0:
+        return False, "aucune anomalie visuelle", False
+    if rc == VIZ_ANOMALY_RC:
+        if rollback:
+            return True, "anomalies détectées — retour arrière déclenché (réglage)", True
+        return False, "anomalies détectées — avertissement, mise à jour conservée (réglage)", True
+    return True, "", False
 
 
 def site_home_url(site):
@@ -891,8 +993,88 @@ def viz_available(srv, site):
     return rc == 0
 
 
+# --------------------------------------------------------------------------- #
+#  Connexion d'un site à VizProof                                             #
+#                                                                             #
+#  Le jeton de compte part sur l'ENTRÉE STANDARD de la commande distante       #
+#  (`--token-stdin`). Jamais en argument : sur un serveur mutualisé, la ligne   #
+#  de commande d'un processus est lisible par tous les comptes (`ps aux`), et   #
+#  elle finirait en clair dans actions.log et dans la réponse HTTP. Il n'est    #
+#  pas non plus enregistré côté dashboard : il ne sert qu'à cet appel.          #
+# --------------------------------------------------------------------------- #
+def viz_connect_script(site_id, api_base=None, scope=None, token=None, code=None):
+    """Corps bash de la connexion → (body, marqueur du document ici ou None).
+
+    `run` du template ne convient pas : il faut rediriger l'entrée standard de
+    la commande, ce que `run` ne permet pas. On appelle donc `asuser` en direct.
+    """
+    args = ["vizproof", "connect", "--site-id=" + sq(site_id), "--format=json"]
+    if api_base:
+        args.append("--api-base=" + sq(api_base))
+    if scope:
+        args.append("--scope=" + sq(scope))
+    if code:
+        args.append("--code=" + sq(code))
+    marker = None
+    if token:
+        args.append("--token-stdin")
+        marker = "VIZTOK_" + secrets.token_hex(8)
+    cmd = " ".join(args)
+    body = f'out=$(asuser "$base wp {cmd} $extra --no-color"'
+    if marker:
+        # Document ici : le contenu est lu dans le script lui-même (que ssh
+        # transmet à `bash -s`), pas dans un fichier — rien n'est écrit sur le
+        # disque du serveur du site.
+        body += f" <<'{marker}'\n{token}\n{marker}\n)"
+    else:
+        body += ")"
+    body += '\nrc=$?\nprintf "%s\\n" "$out"\nexit $rc\n'
+    return body, marker
+
+
+def viz_connect_run(server_name, domain, site_id, api_base=None, scope=None,
+                    token=None, code=None, source="ui"):
+    """Exécute `wp vizproof connect` sur un site → (rc, sortie MASQUÉE).
+
+    Journalise l'action `viz_connect` avec la même sortie masquée : ni le
+    jeton ni le code de connexion ne doivent apparaître dans actions.log.
+    """
+    t0 = time.time()
+    secret = str(token or code or "")
+
+    def fin(rc, out):
+        out = mask_secret(str(out or ""), secret)
+        append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": source, "server": server_name, "domain": domain,
+                    "action": "viz_connect", "arg": site_id, "rc": rc,
+                    "duration_s": round(time.time() - t0, 1),
+                    "output_tail": out[-2000:]})
+        return rc, out
+
+    srv, site = find_site(server_name, domain)
+    if not srv or not site:
+        if rest_target(server_name, domain):
+            return fin(REST_UNSUPPORTED_RC, REST_UNSUPPORTED_MSG)
+        return fin(92, "site inconnu")
+    body, marker = viz_connect_script(site_id, api_base, scope, token, code)
+    if marker and re.search(rf"^{marker}$", str(token), re.M):
+        return fin(96, "marqueur de transfert en collision avec le jeton")
+    try:
+        rc, out = remote_bash(srv, site, body, timeout=180)
+    except subprocess.TimeoutExpired:
+        return fin(93, "timeout")
+    except Exception as e:
+        return fin(94, f"erreur interne: {e}")
+    # « 'connect' is not a registered subcommand » : le site tourne sur un
+    # plugin d'avant 1.3.6. C'est un diagnostic, pas une panne — même
+    # convention que AGENT_OLD_RC pour l'agent.
+    if rc != 0 and VIZ_OLD_RE.search(out or ""):
+        return fin(VIZ_OLD_RC, VIZ_OLD_MSG)
+    return fin(rc, out)
+
+
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
-                    with_core=False, dry_run=False):
+                    with_core=False, dry_run=False, viz_rollback=None):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
@@ -900,7 +1082,11 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
     restaurables, MAIS les migrations de base de données déclenchées par
     `core update-db` ne sont PAS annulées par le retour arrière — c'est la
     sauvegarde UpdraftPlus qui sert de recours pour la base.
+    `viz_rollback` None = on suit le réglage `viz_anomaly_rollback` ;
+    True/False le surchargent pour cette exécution seulement.
     """
+    if viz_rollback is None:
+        viz_rollback = bool(settings_cfg().get("viz_anomaly_rollback"))
     SAFE.update({"running": True, "domain": domain, "steps": [], "verdict": "",
                  "started": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "finished": None})
@@ -1190,14 +1376,21 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
                   (outw or "")[-200:] if wp_regression
                   else ("ok" if rcw == 0 else "en erreur, mais déjà avant l'opération — non imputé"))
 
-        viz_ok, viz_used = True, False
+        viz_ok, viz_used, viz_anomaly = True, False, False
         if use_viz and viz_available(srv, site):
             viz_used = True
             rcv, outv = remote_bash(srv, site,
                                     'run vizproof scan --wait --format=json', timeout=600)
-            viz_ok = (rcv == 0)
-            safe_step("Contrôle visuel VizProof", viz_ok,
-                      "anomalies visuelles détectées" if rcv == VIZ_ANOMALY_RC else (outv or "")[-300:])
+            bloquant, libelle, viz_anomaly = viz_decide(rcv, viz_rollback)
+            viz_ok = not bloquant
+            detail = libelle or (outv or "")[-300:]
+            rapport = viz_report_url(outv)
+            if rapport:
+                detail += " · rapport : " + rapport
+            # Une anomalie qu'on a choisi de ne pas annuler n'est ni « ok » ni
+            # « échec » : elle réclame un œil, pas une alarme.
+            safe_step("Contrôle visuel VizProof", viz_ok and not viz_anomaly, detail,
+                      warn=viz_anomaly and viz_ok)
         elif use_viz:
             safe_step("Contrôle visuel VizProof", True,
                       "indisponible sur ce site (commande wp vizproof absente) — ignoré")
@@ -1215,7 +1408,15 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
                         f'| tail -n +{SAFE_KEEP_SETS + 1} | xargs -r rm -rf', timeout=60)
             safe_step("Terminé", True,
                       f"mise à jour conservée · point de restauration gardé ({arc})")
-            SAFE["verdict"] = "réussi"
+            # Verdict distinct : « réussi » doit rester le mot qui veut dire
+            # « rien à regarder ». Une MAJ conservée malgré des anomalies
+            # visuelles demande une vérification humaine.
+            SAFE["verdict"] = ("réussie avec anomalies visuelles" if viz_anomaly
+                               else "réussi")
+            if viz_anomaly:
+                alert(f"viz_anomaly:{domain}", "viz_anomaly",
+                      f"⚠️ <b>{esc_html(domain)}</b> — mise à jour conservée, mais VizProof "
+                      "signale des anomalies visuelles : à vérifier à l'œil.")
         else:
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
@@ -3297,6 +3498,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         elif p == "/api/mgmt/schedule":
             self._send(200, read_schedule())
+        elif p == "/api/mgmt/settings":
+            self._send(200, {"settings": settings_cfg(), "defaults": SETTINGS_DEFAULTS})
         elif p == "/api/mgmt/alerts":
             # le token n'est jamais renvoyé en clair : booléen + 4 derniers caractères
             cfg = alerts_cfg()
@@ -3475,6 +3678,66 @@ class Handler(BaseHTTPRequestHandler):
             soft = anomaly or rc == REST_UNSUPPORTED_RC
             return self._send(200 if (rc == 0 or soft) else 500,
                               {"ok": rc == 0, "rc": rc, "viz_anomaly": anomaly, "output": out,
+                               "error": None if rc == 0 else out})
+
+        if p == "/api/actions/viz_connect":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            site_id = str(body.get("site_id", "")).strip()
+            if not VIZ_SITE_ID_RE.match(site_id):
+                return self._send(400, {"error": "identifiant de site invalide "
+                                                 "(lettres, chiffres, « _ » et « - », 80 max)"})
+            token = str(body.get("token") or "").strip()
+            code = str(body.get("code") or "").strip()
+            if token and code:
+                return self._send(400, {"error": "jeton et code de connexion sont exclusifs"})
+            if not token and not code:
+                return self._send(400, {"error": "jeton ou code de connexion requis"})
+            if token and not VIZ_TOKEN_RE.match(token):
+                return self._send(400, {"error": "jeton invalide (une ligne, 8 à 512 caractères)"})
+            if code and not VIZ_CODE_RE.match(code):
+                return self._send(400, {"error": "code de connexion invalide"})
+            scope = str(body.get("scope") or "").strip() or None
+            if scope and scope not in VIZ_SCOPES:
+                return self._send(400, {"error": "portée invalide (site ou selected_pages)"})
+            api_base = str(body.get("api_base") or "").strip() or None
+            if api_base:
+                # Même garde SSRF que le sondage d'URL : le champ est saisi dans
+                # l'interface, il ne doit pas pouvoir viser un réseau interne.
+                u, err = validate_public_url(api_base)
+                if err:
+                    return self._send(400, {"error": f"base API refusée : {err}"})
+                if u.scheme != "https":
+                    return self._send(400, {"error": "base API : https exigé"})
+            rc, out = viz_connect_run(server, domain, site_id, api_base, scope, token, code)
+            if rc == 0:
+                try:   # la colonne VizProof doit refléter l'état tout de suite
+                    logged_action(server, domain, "rescan", None, source="viz_connect")
+                except Exception as e:
+                    out += f"\n(re-scan à refaire : {e})"
+            # rc 99 (plugin trop ancien) et 97 (site sans SSH) sont des réponses,
+            # pas des pannes du dashboard : 200 avec ok=false.
+            soft = rc in (VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            return self._send(200 if (rc == 0 or soft) else 500,
+                              {"ok": rc == 0, "rc": rc, "output": out,
+                               "error": None if rc == 0 else out})
+
+        if p == "/api/actions/viz_disconnect":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            rc, out = logged_action(server, domain, "viz_disconnect", None)
+            if rc != 0 and VIZ_OLD_RE.search(out or ""):
+                rc, out = VIZ_OLD_RC, VIZ_OLD_MSG
+            if rc == 0:
+                try:
+                    logged_action(server, domain, "rescan", None, source="viz_connect")
+                except Exception as e:
+                    out += f"\n(re-scan à refaire : {e})"
+            soft = rc in (VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            return self._send(200 if (rc == 0 or soft) else 500,
+                              {"ok": rc == 0, "rc": rc, "output": out,
                                "error": None if rc == 0 else out})
 
         if p == "/api/actions/bulk":
@@ -3721,10 +3984,14 @@ class Handler(BaseHTTPRequestHandler):
             slugs = body.get("slugs") or None
             if slugs is not None:
                 slugs = [s for s in slugs if isinstance(s, str) and SLUG_RE.match(s)]
+            # viz_rollback absent = on suit le réglage persistant ; présent, il
+            # ne vaut que pour cette exécution (case de la modale de confirmation).
+            vrb = body.get("viz_rollback")
             threading.Thread(target=safe_update_run,
                              args=(server, domain, slugs, bool(body.get("backup", True)),
                                    bool(body.get("viz", True)), bool(body.get("core", False)),
-                                   bool(body.get("dry_run", False))),
+                                   bool(body.get("dry_run", False)),
+                                   None if vrb is None else bool(vrb)),
                              daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
 
@@ -3767,6 +4034,13 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/mgmt/schedule":
             ok, err = write_schedule(body.get("interval_minutes"))
             return self._send(200 if ok else 400, {"ok": ok, "error": err, **read_schedule()})
+
+        if p == "/api/mgmt/settings":
+            patch = body.get("settings")
+            if not isinstance(patch, dict):
+                # tolérance : les réglages peuvent aussi arriver à plat
+                patch = {k: v for k, v in body.items() if k in SETTINGS_DEFAULTS}
+            return self._send(200, {"ok": True, "settings": settings_write(patch)})
 
         if p == "/api/mgmt/alerts":
             cfg = alerts_cfg()

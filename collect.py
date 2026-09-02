@@ -375,7 +375,16 @@ def map_admins(admins):
 
 
 def vizproof_summary(data):
-    """Résumé vizproof à partir d'un objet JSON déjà décodé (SSH ou REST)."""
+    """Résumé vizproof à partir d'un objet JSON déjà décodé (SSH ou REST).
+
+    Trois booléens y sont distincts, et il faut les garder distincts :
+    `has_cli` (la commande `wp vizproof` existe — c'est le seul fait que prouve
+    la présence d'un JSON), `configured` (le site a un identifiant VizProof) et
+    `connected` (la sonde vers l'API a répondu). Avant, l'interface ne voyait
+    que `connected` : un plugin installé mais jamais relié était indiscernable
+    d'un plugin absent, et le bouton proposé était « installer » alors qu'il
+    fallait « connecter ».
+    """
     if not isinstance(data, dict):
         return None
     connected = data.get("connected")
@@ -383,6 +392,14 @@ def vizproof_summary(data):
         connected = data.get("dashboard_connected")
     if connected is None:
         connected = bool(data.get("endpoint"))
+    site_id = str(data.get("site_id") or "") or None
+    # Plugin < 1.3.6 : pas de clé `configured`. On la déduit alors de ce qu'on a.
+    configured = data.get("configured")
+    if configured is None:
+        configured = bool(connected) or bool(site_id)
+    creds = data.get("has_credentials")
+    if creds is None:
+        creds = configured
     pages = data.get("pages")
     if pages is None:
         pages = data.get("pages_count")
@@ -392,9 +409,33 @@ def vizproof_summary(data):
     return {
         "version": str(data.get("version") or data.get("plugin_version") or "") or None,
         "connected": bool(connected),
+        "configured": bool(configured),
+        "has_credentials": bool(creds),
+        "has_cli": True,   # un JSON n'a pu être produit que par la CLI du plugin
+        "site_id": site_id,
         "pages": to_int(pages, 0) or 0,
         "last_run": last if isinstance(last, dict) else None,
     }
+
+
+def vizproof_field(raw, rc):
+    """Résumé vizproof depuis le champ brut « +vizproof » et son code de sortie.
+
+    `wp vizproof status` sort en **1** quand le site n'est pas configuré, tout
+    en imprimant quand même son JSON. Le même rc 1 est renvoyé par wp-cli quand
+    la commande n'existe pas du tout (plugin absent, ou trop ancien pour avoir
+    une CLI) — et là il n'y a rien à lire. Seul le premier cas porte la clé
+    `configured` : c'est ce qui sépare « installé mais non connecté » de
+    « pas de CLI », deux états qui donnaient tous les deux `vizproof: None`.
+    """
+    if rc == 0:
+        return vizproof_summary(extract_json(raw))
+    if rc != 1:
+        return None
+    data = extract_json(raw)
+    if isinstance(data, dict) and "configured" in data:
+        return vizproof_summary(data)
+    return None
 
 
 def postprocess(raw):
@@ -467,8 +508,10 @@ def postprocess(raw):
             "extrarules": rules,
         }
 
-    # vizproof-timeline : collecté avec les plugins chargés (champ « +vizproof »)
-    site["vizproof"] = vizproof_summary(extract_json(f.get("vizproof", ""))) if ok("vizproof") else None
+    # vizproof-timeline : collecté avec les plugins chargés (champ « +vizproof »).
+    # Le rc 1 est accepté quand il porte un JSON : c'est le site « pas encore
+    # connecté », pas un site sans plugin (cf. vizproof_field).
+    site["vizproof"] = vizproof_field(f.get("vizproof", ""), rcs.get("vizproof", 99))
 
     m = re.search(r"PHP version:\s*([0-9][0-9.]*)", f.get("cliinfo", ""))
     site["php_version"] = m.group(1) if m else None

@@ -17,6 +17,7 @@ import inspect
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -27,6 +28,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import actions_server as A
 
@@ -788,6 +790,451 @@ class TestDivers(BaseTmp):
         for n in arbre.body:
             if not isinstance(n, ast.If):
                 self.assertNotIn("serve_forever", ast.dump(n))
+
+
+# --------------------------------------------------------------------------- #
+#  VizProof : connexion d'un site (le jeton ne doit fuir NULLE PART)            #
+# --------------------------------------------------------------------------- #
+JETON = "vzp_LIVE_abcdef0123456789"
+
+
+class TestVizConnect(BaseTmp):
+    """`run_remote_script` est bouché : on inspecte le script envoyé au serveur."""
+
+    def setUp(self):
+        super().setUp()
+        self.envoyes = []
+        self.reponse = (0, '{"connected":true,"configured":true,"site_id":"a-fr",'
+                           '"api_base_url":"https://vizproof.com","pages_count":3,'
+                           '"plugin_version":"1.3.6"}')
+        srv = {"name": "s1", "host": "203.0.113.1", "port": 22, "patterns": ["/x/*"]}
+        site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www"}
+        for cible, valeur in (("run_remote_script", self._faux),
+                              ("find_site", lambda s, d: (srv, site))):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _faux(self, srv, script, timeout=300, max_out=6000):
+        self.envoyes.append(script)
+        return self.reponse
+
+    def connect(self, **kw):
+        kw.setdefault("site_id", "a-fr")
+        return A.viz_connect_run("s1", "a.fr", **kw)
+
+    def log(self):
+        if not os.path.exists(A.LOG):
+            return []
+        with open(A.LOG) as fh:
+            return [json.loads(l) for l in fh]
+
+    def log_brut(self):
+        with open(A.LOG) as fh:
+            return fh.read()
+
+    # ---- le jeton : sur stdin, et seulement là ----
+    def test_le_jeton_est_sur_stdin_pas_dans_la_commande(self):
+        rc, _ = self.connect(token=JETON)
+        self.assertEqual(rc, 0)
+        script = self.envoyes[0]
+        ligne_cmd = [l for l in script.splitlines() if "vizproof connect" in l][0]
+        self.assertNotIn(JETON, ligne_cmd)          # rien sur la ligne de commande
+        self.assertIn("--token-stdin", ligne_cmd)
+        # le jeton est bien transmis, mais dans le document ici qui alimente stdin
+        self.assertIn(JETON, script)
+        self.assertRegex(script, r"<<'VIZTOK_[0-9a-f]{16}'\n" + re.escape(JETON))
+
+    def test_le_jeton_n_est_pas_dans_le_journal(self):
+        self.reponse = (0, "connecté (jeton " + JETON + " accepté)")
+        rc, out = self.connect(token=JETON)
+        self.assertNotIn(JETON, out)
+        self.assertIn("***", out)
+        entrees = [e for e in self.log() if e["action"] == "viz_connect"]
+        self.assertEqual(len(entrees), 1)
+        self.assertNotIn(JETON, json.dumps(entrees[0], ensure_ascii=False))
+
+    def test_le_jeton_n_est_dans_aucune_ligne_du_journal(self):
+        self.reponse = (1, "refusé : " + JETON)
+        self.connect(token=JETON)
+        self.assertNotIn(JETON, self.log_brut())
+
+    def test_le_code_de_connexion_est_masque_aussi(self):
+        self.reponse = (0, "code ABC-123 consommé")
+        rc, out = self.connect(code="ABC-123")
+        self.assertNotIn("ABC-123", out)
+        self.assertNotIn("ABC-123", self.log_brut())
+
+    def test_sans_jeton_pas_de_token_stdin(self):
+        self.connect(code="ABC-123")
+        self.assertNotIn("--token-stdin", self.envoyes[0])
+        self.assertIn("--code='ABC-123'", self.envoyes[0])
+
+    # ---- traduction du plugin trop ancien ----
+    def test_not_a_registered_subcommand_donne_rc_99(self):
+        self.reponse = (1, "Error: 'connect' is not a registered subcommand of 'vizproof'.")
+        rc, out = self.connect(token=JETON)
+        self.assertEqual(rc, A.VIZ_OLD_RC)
+        self.assertEqual(rc, 99)
+        self.assertEqual(out, A.VIZ_OLD_MSG)
+        self.assertIn("1.3.6", out)
+
+    def test_un_autre_echec_garde_son_rc(self):
+        self.reponse = (7, "API injoignable")
+        rc, out = self.connect(token=JETON)
+        self.assertEqual(rc, 7)
+        self.assertEqual(out, "API injoignable")
+
+    def test_rc_99_est_journalise(self):
+        self.reponse = (1, "Error: 'connect' is not a registered subcommand.")
+        self.connect(token=JETON)
+        e = [x for x in self.log() if x["action"] == "viz_connect"][0]
+        self.assertEqual(e["rc"], 99)
+
+    # ---- construction de la commande ----
+    def test_options_facultatives_absentes_par_defaut(self):
+        self.connect(token=JETON)
+        cmd = [l for l in self.envoyes[0].splitlines() if "vizproof connect" in l][0]
+        self.assertNotIn("--api-base", cmd)
+        self.assertNotIn("--scope", cmd)
+        self.assertIn("--site-id='a-fr'", cmd)
+        self.assertIn("--format=json", cmd)
+
+    def test_options_transmises_quotees(self):
+        self.connect(token=JETON, api_base="https://viz.example.com", scope="selected_pages")
+        cmd = [l for l in self.envoyes[0].splitlines() if "vizproof connect" in l][0]
+        self.assertIn("--api-base='https://viz.example.com'", cmd)
+        self.assertIn("--scope='selected_pages'", cmd)
+
+    def test_site_inconnu_sans_ssh(self):
+        with mock.patch.object(A, "find_site", lambda s, d: (None, None)):
+            rc, out = self.connect(token=JETON)
+        self.assertEqual(rc, 92)
+        self.assertEqual(self.envoyes, [])
+
+
+class TestVizEntrees(unittest.TestCase):
+    """L'identifiant part dans une commande distante : le jeu est fermé."""
+
+    def test_site_id_acceptes(self):
+        for v in ("a", "elwave-fr", "SITE_42", "a" * 80):
+            self.assertTrue(A.VIZ_SITE_ID_RE.match(v), v)
+
+    def test_site_id_refuses(self):
+        for v in ("", "a" * 81, "a b", "a'; rm -rf /", "a.fr", "a/b", "a$(id)", "a\nb", "é"):
+            self.assertFalse(A.VIZ_SITE_ID_RE.match(v), repr(v))
+
+    def test_jeton_sur_une_seule_ligne(self):
+        self.assertTrue(A.VIZ_TOKEN_RE.match("vzp_LIVE_abc.def-123:456/=+~"))
+        for v in ("court", "a" * 513, "avec espace", "avec\nsaut", "avec'quote", "`id`"):
+            self.assertFalse(A.VIZ_TOKEN_RE.match(v), repr(v))
+
+    def test_portees(self):
+        self.assertEqual(A.VIZ_SCOPES, ("site", "selected_pages"))
+
+
+class TestVizConnectRoute(BaseTmp):
+    """Validation d'entrée de POST /api/actions/viz_connect, sans toucher au réseau."""
+
+    BON = {"server": "s1", "domain": "a.fr", "site_id": "a-fr", "token": JETON}
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+        self.appels = []
+        p = mock.patch.object(A, "viz_connect_run", self._faux)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _faux(self, *a, **kw):
+        self.appels.append((a, kw))
+        return 0, "ok"
+
+    def post(self, chemin, corps):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("POST", chemin, body=json.dumps(corps).encode(),
+                      headers={"Cookie": self.cookie, "X-Dash": "1",
+                               "Content-Type": "application/json"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def test_site_id_invalide_refuse_avant_tout_ssh(self):
+        for mauvais in ("", "a b", "a'; id", "a" * 81, "a.fr"):
+            st, j = self.post("/api/actions/viz_connect", dict(self.BON, site_id=mauvais))
+            self.assertEqual(st, 400, mauvais)
+            self.assertIn("identifiant", j["error"])
+        self.assertEqual(self.appels, [])
+
+    def test_cible_invalide_refusee(self):
+        st, _ = self.post("/api/actions/viz_connect", dict(self.BON, server="../x"))
+        self.assertEqual(st, 400)
+        st, _ = self.post("/api/actions/viz_connect", dict(self.BON, domain="a b"))
+        self.assertEqual(st, 400)
+        self.assertEqual(self.appels, [])
+
+    def test_ni_jeton_ni_code(self):
+        corps = dict(self.BON)
+        corps.pop("token")
+        st, j = self.post("/api/actions/viz_connect", corps)
+        self.assertEqual(st, 400)
+        self.assertIn("requis", j["error"])
+
+    def test_jeton_et_code_exclusifs(self):
+        st, j = self.post("/api/actions/viz_connect", dict(self.BON, code="ABC-123"))
+        self.assertEqual(st, 400)
+        self.assertIn("exclusifs", j["error"])
+
+    def test_jeton_multiligne_refuse(self):
+        st, _ = self.post("/api/actions/viz_connect", dict(self.BON, token="a\nb"))
+        self.assertEqual(st, 400)
+        self.assertEqual(self.appels, [])
+
+    def test_portee_inconnue_refusee(self):
+        st, _ = self.post("/api/actions/viz_connect", dict(self.BON, scope="tout"))
+        self.assertEqual(st, 400)
+
+    def test_api_base_non_publique_refusee(self):
+        """La garde SSRF existante s'applique : ni boucle locale, ni http://."""
+        for u in ("https://127.0.0.1/api", "http://vizproof.com", "ftp://x/y"):
+            st, _ = self.post("/api/actions/viz_connect", dict(self.BON, api_base=u))
+            self.assertEqual(st, 400, u)
+            self.assertEqual(self.appels, [])
+
+    def test_appel_nominal_transmet_tout(self):
+        with mock.patch.object(A, "logged_action", lambda *a, **k: (0, "")):
+            st, j = self.post("/api/actions/viz_connect", dict(self.BON, scope="site"))
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        a = self.appels[0][0]
+        self.assertEqual(a, ("s1", "a.fr", "a-fr", None, "site", JETON, ""))
+
+    def test_le_jeton_ne_revient_pas_dans_la_reponse(self):
+        with mock.patch.object(A, "logged_action", lambda *a, **k: (0, "")):
+            _st, j = self.post("/api/actions/viz_connect", self.BON)
+        self.assertNotIn(JETON, json.dumps(j))
+
+    def test_rc_99_repond_200_avec_ok_false(self):
+        with mock.patch.object(A, "viz_connect_run",
+                               lambda *a, **k: (A.VIZ_OLD_RC, A.VIZ_OLD_MSG)):
+            st, j = self.post("/api/actions/viz_connect", self.BON)
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["rc"], 99)
+
+    def test_disconnect_valide_sa_cible(self):
+        st, _ = self.post("/api/actions/viz_disconnect", {"server": "s1", "domain": "a b"})
+        self.assertEqual(st, 400)
+
+    def test_disconnect_passe_par_la_liste_blanche(self):
+        vus = []
+        with mock.patch.object(A, "logged_action",
+                               lambda s, d, act, arg, **k: (vus.append(act), (0, "ok"))[1]):
+            st, _j = self.post("/api/actions/viz_disconnect",
+                               {"server": "s1", "domain": "a.fr"})
+        self.assertEqual(st, 200)
+        self.assertEqual(vus[0], "viz_disconnect")
+        self.assertIn("viz_disconnect", A.ACTIONS)
+
+    def test_viz_connect_n_est_pas_dans_la_liste_blanche_generique(self):
+        """Il ne doit PAS être atteignable par /api/actions/run : le jeton y
+        passerait en argument, donc dans la ligne de commande et le journal."""
+        self.assertNotIn("viz_connect", A.ACTIONS)
+
+
+# --------------------------------------------------------------------------- #
+#  Réglages persistants + décision sur anomalie visuelle                        #
+# --------------------------------------------------------------------------- #
+class TestSettings(BaseTmp):
+
+    def setUp(self):
+        super().setUp()
+        self._sp = A.SETTINGS_PATH
+        A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
+        self.addCleanup(lambda: setattr(A, "SETTINGS_PATH", self._sp))
+
+    def test_defaut_avertir_sans_annuler(self):
+        self.assertFalse(A.SETTINGS_DEFAULTS["viz_anomaly_rollback"])
+        self.assertEqual(A.settings_cfg(), {"viz_anomaly_rollback": False})
+
+    def test_ecriture_et_relecture(self):
+        self.assertTrue(A.settings_write({"viz_anomaly_rollback": True})["viz_anomaly_rollback"])
+        self.assertTrue(A.settings_cfg()["viz_anomaly_rollback"])
+        self.assertTrue(lire_json(A.SETTINGS_PATH)["viz_anomaly_rollback"])
+        A.settings_write({"viz_anomaly_rollback": False})
+        self.assertFalse(A.settings_cfg()["viz_anomaly_rollback"])
+
+    def test_cle_inconnue_ignoree(self):
+        A.settings_write({"viz_anomaly_rollback": True, "rm_rf": "/"})
+        self.assertNotIn("rm_rf", lire_json(A.SETTINGS_PATH))
+
+    def test_valeur_d_un_autre_type_ramenee_au_bon_type(self):
+        A.settings_write({"viz_anomaly_rollback": "oui"})
+        self.assertIs(A.settings_cfg()["viz_anomaly_rollback"], True)
+        A.settings_write({"viz_anomaly_rollback": 0})
+        self.assertIs(A.settings_cfg()["viz_anomaly_rollback"], False)
+
+    def test_fichier_illisible_rend_les_defauts(self):
+        with open(A.SETTINGS_PATH, "w") as fh:
+            fh.write("{cassé")
+        self.assertEqual(A.settings_cfg(), dict(A.SETTINGS_DEFAULTS))
+
+    def test_fichier_en_0600(self):
+        A.settings_write({"viz_anomaly_rollback": True})
+        self.assertEqual(mode_of(A.SETTINGS_PATH), 0o600)
+
+
+class TestVizDecide(unittest.TestCase):
+    """La décision est isolée : rc du scan × réglage → (bloquant, libellé, anomalie)."""
+
+    def test_scan_propre(self):
+        for rb in (False, True):
+            bloq, lbl, anom = A.viz_decide(0, rb)
+            self.assertEqual((bloq, anom), (False, False))
+            self.assertIn("aucune anomalie", lbl)
+
+    def test_anomalies_sans_rollback_avertissent(self):
+        bloq, lbl, anom = A.viz_decide(A.VIZ_ANOMALY_RC, False)
+        self.assertFalse(bloq)          # pas de retour arrière
+        self.assertTrue(anom)
+        self.assertIn("avertissement", lbl)
+        self.assertIn("conservée", lbl)
+        self.assertIn("(réglage)", lbl)
+
+    def test_anomalies_avec_rollback_annulent(self):
+        bloq, lbl, anom = A.viz_decide(A.VIZ_ANOMALY_RC, True)
+        self.assertTrue(bloq)
+        self.assertTrue(anom)
+        self.assertIn("retour arrière", lbl)
+        self.assertIn("(réglage)", lbl)
+
+    def test_echec_technique_bloque_quel_que_soit_le_reglage(self):
+        """rc 1 ou 90, ce n'est pas « le rendu a changé », c'est « le scan a raté »."""
+        for rc in (1, 3, 90, 93):
+            for rb in (False, True):
+                bloq, _lbl, anom = A.viz_decide(rc, rb)
+                self.assertTrue(bloq, (rc, rb))
+                self.assertFalse(anom, (rc, rb))
+
+    def test_url_de_rapport_extraite(self):
+        out = 'Deprecated: [x]\n{"anomalies":2,"report_url":"https://vizproof.com/r/42"}'
+        self.assertEqual(A.viz_report_url(out), "https://vizproof.com/r/42")
+
+    def test_url_de_rapport_non_http_ignoree(self):
+        self.assertIsNone(A.viz_report_url('{"report_url":"javascript:alert(1)"}'))
+        self.assertIsNone(A.viz_report_url('{"anomalies":1}'))
+        self.assertIsNone(A.viz_report_url("pas de json"))
+        self.assertIsNone(A.viz_report_url(""))
+
+
+# Le bloc bash de retour arrière est le SEUL à citer les archives d'extensions :
+# c'est notre marqueur pour dire « un retour arrière a bien été tenté ».
+ROLLBACK_MARQUEUR = "plugin__*.tgz"
+
+
+class TestSafeUpdateViz(BaseTmp):
+    """Bout du fil : le verdict de la MAJ sûre selon le scan visuel et le réglage.
+
+    `safe_update_run` est exécutée pour de vrai, tous ses appels distants
+    bouchonnés — c'est le seul moyen de vérifier que le rc 2 ne déclenche PLUS
+    de retour arrière par défaut.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._sp, self._ri = A.SETTINGS_PATH, A.ROLLBACK_INDEX_PATH
+        A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
+        A.ROLLBACK_INDEX_PATH = os.path.join(self.data, "rollback_index.json")
+        self.addCleanup(lambda: setattr(A, "SETTINGS_PATH", self._sp))
+        self.addCleanup(lambda: setattr(A, "ROLLBACK_INDEX_PATH", self._ri))
+        A.SAFE.update({"running": False, "domain": "", "steps": [], "verdict": ""})
+        self.rc_scan = A.VIZ_ANOMALY_RC
+        self.bash = []
+        srv = {"name": "s1", "host": "203.0.113.1", "port": 22, "patterns": ["/x/*"]}
+        site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
+                "siteurl": "https://a.fr", "core_version": "6.5.2",
+                "plugins_list": [{"name": "akismet", "version": "5.3",
+                                  "update": "available", "update_version": "5.4"}]}
+        for cible, valeur in (
+                ("find_site", lambda s, d: (srv, site)),
+                ("viz_available", lambda s, x: True),
+                ("health_probe", lambda x: (True, 200, 5000, "HTTP 200, 5000 octets")),
+                ("remote_bash", self._bash),
+                ("alert", lambda *a, **k: None),
+        ):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _bash(self, srv, site, body, timeout=300):
+        """Sorties distantes plausibles, une par étape que la fonction lit."""
+        self.bash.append(body)
+        if "vizproof scan" in body:
+            return self.rc_scan, '{"anomalies":2,"report_url":"https://vizproof.com/r/9"}'
+        if "plugin list --update=available" in body:
+            return 0, "akismet"
+        if "plugin list --fields=name,version" in body:
+            return 0, "name,version\nakismet,5.3"
+        if "BESOIN_MO" in body:                      # bloc d'archivage
+            return 0, ("PLUGDIR=/var/www/a.fr/wp-content/plugins\nDB_MO=12\n"
+                       "BESOIN_MO=30\nLIBRE_MO=90000\narchivé akismet\n"
+                       "BDD_MO=3\narchivé (base)\nTAILLE_ARCHIVES_MO=4")
+        if ROLLBACK_MARQUEUR in body:                # bloc de retour arrière
+            return 0, "restauré akismet"
+        return 0, "Success: Updated 1 of 1 plugins."
+
+    def lancer(self, viz_rollback=None):
+        A.safe_update_run("s1", "a.fr", slugs=["akismet"], do_backup=False,
+                          viz_rollback=viz_rollback)
+        return dict(A.SAFE)
+
+    def etape_viz(self, st):
+        return next((x for x in st["steps"] if "VizProof" in x["label"]), None)
+
+    def test_par_defaut_anomalies_conservees(self):
+        st = self.lancer()
+        self.assertEqual(st["verdict"], "réussie avec anomalies visuelles",
+                         [x["label"] + "/" + x["detail"][:80] for x in st["steps"]])
+        e = self.etape_viz(st)
+        self.assertTrue(e["warn"])
+        self.assertIn("avertissement", e["detail"])
+        self.assertIn("https://vizproof.com/r/9", e["detail"])   # lien du rapport
+        self.assertFalse(any(ROLLBACK_MARQUEUR in b for b in self.bash),
+                         "retour arrière déclenché alors qu'on ne le voulait pas")
+
+    def test_reglage_actif_declenche_le_retour_arriere(self):
+        A.settings_write({"viz_anomaly_rollback": True})
+        st = self.lancer()
+        self.assertNotEqual(st["verdict"], "réussie avec anomalies visuelles")
+        self.assertIn("retour arrière", self.etape_viz(st)["detail"])
+        self.assertTrue(any(ROLLBACK_MARQUEUR in b for b in self.bash),
+                        "aucun retour arrière tenté")
+
+    def test_surcharge_par_execution_gagne_sur_le_reglage(self):
+        A.settings_write({"viz_anomaly_rollback": True})
+        self.assertEqual(self.lancer(viz_rollback=False)["verdict"],
+                         "réussie avec anomalies visuelles")
+        A.settings_write({"viz_anomaly_rollback": False})
+        self.assertNotEqual(self.lancer(viz_rollback=True)["verdict"],
+                            "réussie avec anomalies visuelles")
+
+    def test_scan_propre_donne_le_verdict_habituel(self):
+        self.rc_scan = 0
+        st = self.lancer()
+        self.assertEqual(st["verdict"], "réussi")
+        self.assertFalse(self.etape_viz(st)["warn"])
+
+    def test_echec_technique_du_scan_annule_meme_sans_reglage(self):
+        self.rc_scan = 90
+        st = self.lancer()
+        self.assertNotIn("réussi", st["verdict"])
 
 
 if __name__ == "__main__":

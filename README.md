@@ -39,6 +39,7 @@ sur les sites sans accès SSH.
 - [L'agent compagnon](#lagent-compagnon)
 - [Sécurité](#sécurité)
 - [Exploitation](#exploitation)
+- [VizProof](#vizproof)
 - [Licence](#licence)
 
 ---
@@ -295,6 +296,96 @@ pour en faire une décision — et une extension **gelée** n'est jamais mise à
 jour, quel que soit le chemin emprunté.
 
 `POST /api/actions/safe_update {"dry_run": true}` simule sans rien écrire.
+Le corps accepte aussi `"viz_rollback": true|false` pour surcharger, **le temps
+d'une exécution**, le réglage décrit à la section VizProof ci-dessous.
+
+### VizProof
+
+**VizProof Timeline** est une extension publique qui photographie le rendu des
+pages d'un site et signale les **régressions visuelles**. Le dashboard s'en sert
+comme contrôle de fin de parcours dans la MAJ sûre, et affiche l'état de chaque
+site dans la colonne **Vizproof** du tableau.
+
+#### Les cinq états de la colonne
+
+| État | Affichage | Ce qu'il faut faire |
+|---|---|---|
+| Extension absente | `＋ installer` | Le bouton installe et active l'extension. |
+| Installée, sans CLI | `v1.0.3 · à mettre à jour` | La commande `wp vizproof` n'existe qu'à partir de la 1.3 : mettre l'extension à jour (bouton de MAJ habituel), puis connecter. |
+| Installée mais désactivée | `v1.3.6 · inactif` | À activer depuis wp-admin. |
+| CLI présente, non reliée | `v1.3.6 · non connecté` + **Connecter** | Voir ci-dessous. |
+| Reliée | `v1.3.6 · N pages` (vert) | Rien. La pastille du dernier scan suit. |
+
+Un site sans inventaire d'extensions affiche `—`. Le tiroir reprend le même état
+en une phrase, avec les mêmes boutons et un lien **ouvrir dans wp-admin**.
+
+> Avant, un plugin installé mais jamais relié était **indiscernable d'un plugin
+> absent** : `wp vizproof status` sort en 1 dans ce cas, et la collecte jetait
+> tout ce qui n'était pas rc 0. Le collecteur accepte désormais ce rc 1 **quand
+> la sortie contient un JSON portant la clé `configured`** — le seul signe qui
+> distingue « le site répond mais n'est pas configuré » de « la commande
+> n'existe pas ». La fiche `vizproof` d'un site porte donc `has_cli`,
+> `configured`, `has_credentials`, `connected` et `site_id`, en plus de
+> `version`, `pages` et `last_run`.
+
+#### Connecter un site
+
+Le bouton **Connecter** (colonne ou tiroir) ouvre une modale : un **identifiant
+de site** (`[A-Za-z0-9_-]`, 80 caractères au plus) et, au choix, le **jeton** du
+compte VizProof ou un **code de connexion** à usage unique. Le jeton se crée dans
+**VizProof → Réglages → API**. Les options repliées permettent de viser une autre
+base API (https obligatoire, mêmes gardes anti-SSRF que le reste du dashboard) et
+de choisir la portée (`site` ou `selected_pages`).
+
+Depuis la **barre d'actions groupées**, « Connecter VizProof… » ouvre la même
+modale avec une ligne par site coché : l'identifiant est propre à chaque site,
+mais le jeton de compte vaut pour tous, et les appels s'enchaînent avec leur
+résultat en face de chaque ligne. Les sites non éligibles (sans SSH, sans CLI,
+extension absente) sont écartés de la liste.
+
+- Un site géré **sans SSH** ne peut pas être connecté d'ici (l'agent est en
+  lecture seule) : seul le lien wp-admin est proposé.
+- Sur une extension antérieure à 1.3.6, wp-cli répond « `connect` is not a
+  registered subcommand » ; le dashboard le traduit en **rc 99** et en un message
+  clair plutôt qu'en échec opaque.
+- **Le jeton n'est jamais enregistré** côté dashboard, ne passe **jamais** par la
+  ligne de commande distante (il est transmis sur l'entrée standard de
+  `wp vizproof connect --token-stdin`, via un document ici — rien n'est écrit sur
+  le disque du site) et il est masqué dans `data/actions.log` comme dans la
+  réponse HTTP. Sur un mutualisé, un argument de commande est lisible par tous
+  les comptes du serveur (`ps aux`) : c'est la raison de ce détour. C'est aussi
+  pourquoi `viz_connect` n'est **pas** dans le dictionnaire `ACTIONS` : il n'est
+  pas atteignable par `/api/actions/run`, qui journalise son argument.
+
+`POST /api/actions/viz_disconnect {server, domain}` fait l'inverse (bouton
+**Dissocier** du tiroir) ; l'extension reste installée.
+
+#### Anomalie visuelle pendant une MAJ sûre
+
+Quand VizProof détecte des anomalies après une mise à jour (`rc 2`), deux
+conduites sont possibles. Le réglage **« Retour arrière automatique sur anomalie
+visuelle »** (Réglages ⚙, stocké dans `data/settings.json`) les départage :
+
+- **décoché — défaut** : la mise à jour est **conservée**, l'étape est marquée
+  *attention* avec le lien du rapport si le scan en fournit un, et le verdict
+  devient **« réussie avec anomalies visuelles »** — affiché en orange, pas en
+  vert. Une alerte part si la règle `viz_anomaly` est active ;
+- **coché** : retour arrière automatique, comme pour un site cassé.
+
+Le défaut est volontairement prudent côté « avertir » : un rendu qui change n'est
+pas forcément un rendu cassé (bandeau de cookies, carrousel, publicité), et
+annuler systématiquement coûtait plus de mises à jour perdues qu'il n'évitait de
+régressions. La case est reprise, **pré-remplie**, dans la modale de confirmation
+de chaque MAJ sûre : on décide donc au coup par coup sans toucher au réglage. Un
+scan qui échoue **techniquement** (tout rc autre que 0 ou 2) reste bloquant dans
+les deux cas.
+
+Le réglage se lit et s'écrit aussi en direct :
+
+```bash
+curl -s ... /api/mgmt/settings                                  # → {"settings": {...}, "defaults": {...}}
+curl -s ... -d '{"settings":{"viz_anomaly_rollback":true}}' ... # les clés inconnues sont ignorées
+```
 
 ### Tâches périodiques
 

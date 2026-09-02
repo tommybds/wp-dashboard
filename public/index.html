@@ -221,6 +221,9 @@ tbody tr:hover .rowscan,tbody tr:focus-within .rowscan,.rowscan:focus-visible,.r
 .steps ol{margin:10px 0 0 20px;padding:0;line-height:2}
 .choice{flex:1;min-width:250px} .choice b{font-size:var(--f-md);margin-bottom:4px} .choice small{display:block;line-height:1.55}
 .fld{display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;font-size:var(--f-sm)}
+/* `display` de classe l'emporte sur la règle [hidden] du navigateur : sans
+   ceci, un `.fld` masqué par l'attribut hidden reste affiché. */
+.fld[hidden]{display:none}
 .errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-md);padding:9px 12px;font:var(--f-sm)/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 /* Meme forme que .errbox, ton avertissement : donnees incompletes plutot que fausses. */
 .warnbox{background:var(--warn-bg);color:var(--warn);border-radius:var(--r-md);padding:9px 12px;line-height:1.5}
@@ -519,6 +522,7 @@ th[aria-sort="descending"]::after{content:"▼"}
   <label class="small"><input type="checkbox" id="bulk-stop"> arrêt sur erreur</label>
   <label class="small" title="Après l'action, VizProof compare le rendu du site à sa baseline et signale les régressions visuelles."><input type="checkbox" id="bulk-viz"> vérif. visuelle VizProof</label>
   <button class="btn primary" id="bulk-run">Exécuter</button>
+  <button class="btn sm" id="bulk-vizconnect" title="Relier les sites sélectionnés à VizProof : un identifiant par site, un seul jeton de compte">Connecter VizProof…</button>
   <button class="btn sm" id="bulk-clear">Désélectionner</button>
 </div>
 
@@ -535,6 +539,8 @@ th[aria-sort="descending"]::after{content:"▼"}
   <div id="sched-body"><span class="muted small">chargement…</span></div>
   <h3>Clés SSH</h3>
   <div id="set-body"><span class="muted small">chargement…</span></div>
+  <h3>Mise à jour sûre</h3>
+  <div id="mset-body"><span class="muted small">chargement…</span></div>
   <h3>Alertes Telegram</h3>
   <div id="alert-body"><span class="muted small">chargement…</span></div>
 </div></div>
@@ -551,6 +557,43 @@ th[aria-sort="descending"]::after{content:"▼"}
   <div class="actions jend mt4">
     <button class="btn" id="ask-cancel">Annuler</button>
     <button class="btn primary" id="ask-ok">Valider</button>
+  </div>
+</div></div>
+<div class="modal" id="vizmodal"><div class="box" style="max-width:620px" role="dialog" aria-modal="true" aria-labelledby="vz-title">
+  <h2 class="mt0" id="vz-title">Connecter VizProof</h2>
+  <p class="hint" id="vz-intro"></p>
+  <div id="vz-rows"></div>
+  <div class="filters mt3" style="align-items:flex-end">
+    <label class="fld small">mode
+      <select class="inp" id="vz-mode" style="width:170px">
+        <option value="token">jeton de compte</option>
+        <option value="code">code de connexion</option>
+      </select></label>
+    <label class="fld small" id="vz-tokwrap">jeton
+      <input class="inp" id="vz-token" type="password" autocomplete="off" spellcheck="false"
+             placeholder="jeton VizProof" style="width:280px"></label>
+    <label class="fld small" id="vz-codewrap" hidden>code
+      <input class="inp" id="vz-code" autocomplete="off" spellcheck="false"
+             placeholder="code à usage unique" style="width:220px"></label>
+  </div>
+  <p class="hint" style="margin:6px 0 0">Le jeton se crée dans <b>VizProof → Réglages → API</b>. Il n'est pas enregistré par le dashboard : il ne sert qu'à cet appel.</p>
+  <p class="hint" style="margin:6px 0 0"><button class="btn sm" id="vz-adv">Options avancées</button></p>
+  <div id="vz-advbox" hidden>
+    <div class="filters" style="align-items:flex-end">
+      <label class="fld small">base API
+        <input class="inp" id="vz-api" autocomplete="off" placeholder="https://vizproof.com" style="width:260px"></label>
+      <label class="fld small">portée
+        <select class="inp" id="vz-scope" style="width:170px">
+          <option value="">(défaut du site)</option>
+          <option value="site">site entier</option>
+          <option value="selected_pages">pages choisies</option>
+        </select></label>
+    </div>
+  </div>
+  <div id="vz-out" class="small"></div>
+  <div class="mt4" style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn" id="vz-cancel">Annuler</button>
+    <button class="btn primary" id="vz-go">Connecter</button>
   </div>
 </div></div>
 <div class="modal" id="rbmodal"><div class="box" style="max-width:560px" role="dialog" aria-modal="true" aria-labelledby="rb-title">
@@ -789,28 +832,86 @@ function vizConnected(s){ const v=vizInfo(s); return !!(v&&v.connected); }
 function vizRun(s){ const v=vizInfo(s); const r=v&&v.last_run; return (r&&typeof r==='object')?r:null; }
 function vizAnom(s){ const r=vizRun(s); if(!r) return false;
   return (Number(r.anomalies)>0)||/anomal/i.test(String(r.status??'')); }
-/* tri : anomalies(-1) < absent(0) < non connecté(1) < connecté sans run(2) < connecté OK(3) < sans données(4) */
-function vizVal(s){ const list=s.plugins_list||[], p=vizOf(s), v=vizInfo(s);
-  if(v){ if(vizAnom(s)) return -1; if(!v.connected) return 1; return vizRun(s)?3:2; }
-  if(!list.length) return 4;
-  if(!p) return 0;
-  return p.update==='available'?1:3; }
-function vizCell(s){ const v=vizInfo(s), p=vizOf(s), list=s.plugins_list||[];
-  if(!v){ if(!list.length) return '—';
-    if(!p) return '<button class="btn sm" data-vizinstall>＋ installer</button>';
-    return p.update==='available'?`<span class="pill warn">v${H(p.version||'?')} → MAJ</span>`:`<span class="pill ok">v${H(p.version||'?')}</span>`; }
-  const ver=H(v.version||(p&&p.version)||'?');
-  if(!v.connected) return `<span class="pill warn" title="plugin installé mais non relié au dashboard">v${ver} non connecté</span>`;
-  const n=Number(v.pages)||0;
-  let out=`<span class="pill ok">v${ver} · ${n} page${n>1?'s':''}</span>`;
-  const r=vizRun(s);
-  if(r){ const bad=vizAnom(s), an=Number(r.anomalies)||0;
-    const ttl=H('dernier scan : '+(r.at?absTime(r.at):'?')+' · '+(bad?((an||'?')+' anomalie(s) visuelle(s)'):'aucune anomalie'));
-    const body=bad?`<span class="pill err">⚠ ${H(an||'anomalies')}</span>`:'<span class="dot up"></span>';
-    const u=safeUrl(r.url);
-    out+=' '+(u?`<a class="vizrun" data-vizrun href="${H(u)}" target="_blank" rel="noopener noreferrer" title="${ttl}">${body}</a>`
-                :`<span class="vizrun" title="${ttl}">${body}</span>`); }
-  return out; }
+/* `configured` est arrivé avec la 1.3.6 côté plugin ; sur un inventaire plus
+   ancien, la connexion établie est la seule preuve disponible. */
+function vizConfigured(s){ const v=vizInfo(s); if(!v) return false;
+  return v.configured===undefined?!!v.connected:!!v.configured; }
+/* La CLI `wp vizproof` n'existe qu'à partir de la 1.3 : en dessous, le plugin
+   est bien là mais le dashboard ne peut rien en faire tant qu'il n'est pas à jour. */
+function vizVerOld(ver){ const m=/^(\d+)\.(\d+)/.exec(String(ver||'')); if(!m) return true;
+  const M=+m[1], n=+m[2]; return M<1||(M===1&&n<3); }
+/* État d'un site vis-à-vis de VizProof, en un seul mot. Toute la colonne et le
+   tiroir en découlent — un seul endroit à corriger si la règle change.
+   'nodata' inventaire absent · 'absent' pas installé · 'inactif' plugin désactivé
+   · 'nocli' installé mais trop ancien pour la CLI · 'nonconnecte' CLI présente,
+   site pas relié · 'connecte' relié et sonde OK. */
+function vizState(s){ const list=s.plugins_list||[], p=vizOf(s), v=vizInfo(s);
+  if(!p&&!v) return list.length?'absent':'nodata';
+  if(p&&p.status&&p.status!=='active') return 'inactif';
+  // Aucun JSON de statut = aucune CLI exploitable (extension d'avant la 1.3, ou
+  // commande absente). Dans les deux cas la réponse est « mettre à jour », pas
+  // « installer » : c'est ce que l'ancienne colonne ne savait pas dire.
+  const ver=(v&&v.version)||(p&&p.version)||'';
+  if(!v||v.has_cli===false||(ver&&vizVerOld(ver))) return 'nocli';
+  return (vizConfigured(s)&&v.connected)?'connecte':'nonconnecte'; }
+function vizVersion(s){ const v=vizInfo(s), p=vizOf(s); return (v&&v.version)||(p&&p.version)||'?'; }
+/* Le site est-il connectable depuis ici ? Il faut du SSH : l'agent REST est en lecture seule. */
+function vizConnectable(s){ return s.via!=='rest'&&['nonconnecte','connecte'].includes(vizState(s)); }
+function vizAdminUrl(s){ return safeUrl((s.siteurl||('https://'+s.domain)).replace(/\/+$/,'')
+  +'/wp-admin/admin.php?page=vizproof-timeline'); }
+/* tri : anomalies(-1) < absent(0) < inactif(.5) < sans CLI(.8) < non connecté(1)
+   < connecté sans run(2) < connecté OK(3) < sans données(4) */
+function vizVal(s){ const e=vizState(s);
+  if(e==='nodata') return 4;
+  if(e==='absent') return 0;
+  if(e==='inactif') return .5;
+  if(e==='nocli') return .8;
+  if(e==='nonconnecte') return 1;
+  if(vizAnom(s)) return -1;
+  return vizRun(s)?3:2; }
+/* Pastille du dernier scan, commune à la colonne et au tiroir. */
+function vizRunBadge(s){ const r=vizRun(s); if(!r) return '';
+  const bad=vizAnom(s), an=Number(r.anomalies)||0;
+  const ttl=H('dernier scan : '+(r.at?absTime(r.at):'?')+' · '+(bad?((an||'?')+' anomalie(s) visuelle(s)'):'aucune anomalie'));
+  const body=bad?`<span class="pill err">⚠ ${H(an||'anomalies')}</span>`:'<span class="dot up"></span>';
+  const u=safeUrl(r.url);
+  return ' '+(u?`<a class="vizrun" data-vizrun href="${H(u)}" target="_blank" rel="noopener noreferrer" title="${ttl}">${body}</a>`
+               :`<span class="vizrun" title="${ttl}">${body}</span>`); }
+function vizAdminLink(s,txt){ const u=vizAdminUrl(s); if(!u) return '';
+  return ` <a class="small" data-vizrun href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(txt||'ouvrir dans wp-admin')}</a>`; }
+function vizCell(s){ const e=vizState(s), ver=H(vizVersion(s));
+  if(e==='nodata') return '—';
+  if(e==='absent') return '<button class="btn sm" data-vizinstall>＋ installer</button>';
+  if(e==='inactif') return `<span class="pill mut" title="extension présente mais désactivée">v${ver} · inactif</span>`;
+  if(e==='nocli') return `<span class="pill warn" title="cette version n'expose pas la commande wp vizproof — mettez l'extension à jour (bouton MAJ)">v${ver} · à mettre à jour</span>`;
+  if(e==='nonconnecte') return `<span class="pill warn" title="extension installée mais pas encore reliée à VizProof">v${ver} · non connecté</span>`
+    +(s.via==='rest'?'':' <button class="btn sm" data-vizconnect>Connecter</button>')
+    +vizAdminLink(s);
+  const n=Number((vizInfo(s)||{}).pages)||0;
+  return `<span class="pill ok">v${ver} · ${n} page${n>1?'s':''}</span>`+vizRunBadge(s); }
+/* Bloc VizProof du tiroir : le MÊME état que la colonne, dit en une phrase.
+   Deux endroits qui déduisent l'état séparément finissent par se contredire :
+   ils partagent donc vizState(). */
+function vizDrawerBlock(s){ const e=vizState(s); if(e==='nodata') return '';
+  const ver=H(vizVersion(s)), rest=s.via==='rest', n=Number((vizInfo(s)||{}).pages)||0;
+  const sid=(vizInfo(s)||{}).site_id;
+  let txt='', btns='';
+  if(e==='absent'){ txt='Extension non installée sur ce site.';
+    // Sans SSH, l'installation passe par l'autorisation WordPress : le bouton
+    // est posé par wpCredActions() une fois les identifiants connus, pas ici.
+    if(!rest) btns='<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'; }
+  else if(e==='inactif'){ txt=`Extension présente en v${ver} mais <b>désactivée</b> — à activer depuis wp-admin.`; }
+  else if(e==='nocli'){ txt=`Extension en v${ver} : cette version n'expose pas la commande <code>wp vizproof</code>.
+    Mettez-la à jour (bouton de MAJ de l'extension) pour pouvoir la connecter d'ici.`; }
+  else if(e==='nonconnecte'){ txt=`Extension en v${ver} installée, mais <b>pas encore reliée</b> à VizProof.`
+      +(rest?' Ce site est géré sans SSH : la connexion se fait depuis wp-admin.':'');
+    if(!rest) btns='<button class="btn primary sm" data-vizconnect>Connecter VizProof</button>'; }
+  else { txt=`Reliée à VizProof · <b>${n} page${n>1?'s':''}</b> suivie${n>1?'s':''}`
+      +(sid?` · identifiant <code>${H(sid)}</code>`:'')+'.';
+    if(!rest) btns='<button class="btn sm" data-vizdisconnect>Dissocier</button>'; }
+  return `<div class="agroup"><span class="glbl">VizProof</span>
+    <p class="hint" style="margin:0 0 6px">${txt}${vizAdminLink(s)}${e==='connecte'?vizRunBadge(s):''}</p>
+    ${btns?`<div class="actions">${btns}</div>`:''}</div>`; }
 
 /* Dédoublonnage : plusieurs actions enchaînées (bulk terminé, re-scan, retour
    d'autorisation) déclenchaient trois collectes de fleet.json en parallèle. */
@@ -918,6 +1019,10 @@ function render(){ if(!FLEET) return; cards(); updMeta();
       if(e.target.checked) SEL.add(key(s)); else SEL.delete(key(s)); bulkBar(); };
     const vb=tr.querySelector('[data-vizinstall]');
     if(vb) vb.onclick=e=>{ e.stopPropagation(); vizInstall(vb,tr.dataset.s,tr.dataset.d); };
+    const vc=tr.querySelector('[data-vizconnect]');
+    if(vc) vc.onclick=e=>{ e.stopPropagation();
+      const s=allSites().find(x=>x.srv===tr.dataset.s&&x.domain===tr.dataset.d);
+      if(s) openVizConnect([s]); };
     tr.querySelectorAll('[data-vizrun]').forEach(a=>a.onclick=e=>e.stopPropagation());
     const rs=tr.querySelector('[data-rowscan]');
     if(rs){ rs.dataset.key=tr.dataset.s+'|'+tr.dataset.d;
@@ -974,6 +1079,96 @@ async function vizInstall(btn,srv,dom){
         b3.title='Re-scanner ce site maintenant'; delete b3.dataset.busy; } },2500); }
   }catch(e){ echec(String(e)); } }
 
+/* ---- connexion d'un site (ou d'un lot) à VizProof ----
+   Un `site_id` est propre à chaque site : il n'y a donc pas d'action groupée
+   possible au sens habituel (une action, N cibles). En revanche le JETON, lui,
+   est celui du compte VizProof et vaut pour tous : la modale liste les sites
+   cochés avec un champ site_id chacun, un seul champ jeton, et enchaîne les
+   appels unitaires. */
+let VZSITES=[];
+function vizSlug(d){ return String(d||'').toLowerCase().replace(/[^a-z0-9_-]+/g,'-')
+  .replace(/^-+|-+$/g,'').slice(0,80); }
+const VZ_ID_RE=/^[A-Za-z0-9_-]{1,80}$/;
+function closeViz(){ document.getElementById('vizmodal').classList.remove('open'); }
+document.getElementById('vz-cancel').onclick=closeViz;
+document.getElementById('vizmodal').onclick=e=>{ if(e.target.id==='vizmodal') closeViz(); };
+document.getElementById('vz-adv').onclick=()=>{ const b=document.getElementById('vz-advbox');
+  b.hidden=!b.hidden; document.getElementById('vz-adv').textContent=b.hidden?'Options avancées':'Masquer les options'; };
+document.getElementById('vz-mode').onchange=e=>{ const tok=e.target.value==='token';
+  document.getElementById('vz-tokwrap').hidden=!tok;
+  document.getElementById('vz-codewrap').hidden=tok; };
+function openVizConnect(sites){
+  // Sont éligibles : accès SSH (l'agent REST est en lecture seule) et une CLI
+  // vizproof réellement disponible sur le site — cf. vizConnectable().
+  VZSITES=(sites||[]).filter(s=>s&&vizConnectable(s));
+  if(!VZSITES.length){ askInfo('Connecter VizProof',
+    "Aucun site éligible dans la sélection. Il faut un accès <b>SSH</b> et une extension VizProof assez récente "
+    +"pour exposer <code>wp vizproof</code> (pastille « à mettre à jour » sinon)."); return; }
+  document.getElementById('vz-intro').innerHTML=VZSITES.length>1
+    ? `<b>${VZSITES.length}</b> site(s) à relier. L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.`
+    : `Relier <b>${H(kName(VZSITES[0])||VZSITES[0].domain)}</b> à VizProof.`;
+  document.getElementById('vz-rows').innerHTML=VZSITES.map((s,i)=>{
+    const cur=(vizInfo(s)||{}).site_id||vizSlug(s.domain);
+    return `<div class="logline"><b>${H(kName(s)||s.domain)}</b>
+      <span class="muted small">${H(s.srv)}</span>
+      <input class="inp" data-vzid="${i}" aria-label="${H('identifiant VizProof de '+s.domain)}"
+             autocomplete="off" spellcheck="false" value="${H(cur)}" style="width:230px">
+      <span class="small" data-vzres="${i}"></span></div>`; }).join('');
+  document.getElementById('vz-out').innerHTML='';
+  document.getElementById('vz-token').value='';
+  document.getElementById('vz-code').value='';
+  const go=document.getElementById('vz-go');
+  go.disabled=false; go.textContent='Connecter'; go.onclick=runVizConnect;
+  const an=document.getElementById('vz-cancel'); an.textContent='Annuler'; an.className='btn';
+  document.getElementById('vizmodal').classList.add('open');
+  const f=document.querySelector('#vz-rows input'); if(f) f.focus(); }
+async function runVizConnect(){
+  const mode=document.getElementById('vz-mode').value;
+  const token=document.getElementById('vz-token').value.trim();
+  const code=document.getElementById('vz-code').value.trim();
+  const api_base=document.getElementById('vz-api').value.trim();
+  const scope=document.getElementById('vz-scope').value;
+  const out=document.getElementById('vz-out');
+  const ids=VZSITES.map((s,i)=>document.querySelector(`#vz-rows [data-vzid="${i}"]`).value.trim());
+  const mauvais=ids.findIndex(v=>!VZ_ID_RE.test(v));
+  if(mauvais>=0){ out.innerHTML='<span class="pill err">identifiant invalide</span> <span class="muted">lettres, chiffres, « _ » et « - », 80 caractères au plus.</span>';
+    document.querySelector(`#vz-rows [data-vzid="${mauvais}"]`).focus(); return; }
+  if(mode==='token'&&!token){ out.innerHTML='<span class="pill err">jeton manquant</span>'; return; }
+  if(mode==='code'&&!code){ out.innerHTML='<span class="pill err">code manquant</span>'; return; }
+  const go=document.getElementById('vz-go'); go.disabled=true; go.textContent='en cours…';
+  out.innerHTML='';
+  let nok=0;
+  for(let i=0;i<VZSITES.length;i++){
+    const s=VZSITES[i], res=document.querySelector(`#vz-rows [data-vzres="${i}"]`);
+    if(res) res.innerHTML='<span class="pill mut">…</span>';
+    const corps={server:s.srv,domain:s.domain,site_id:ids[i]};
+    if(mode==='token') corps.token=token; else corps.code=code;
+    if(api_base) corps.api_base=api_base;
+    if(scope) corps.scope=scope;
+    let j; try{ j=await api('/api/actions/viz_connect',corps)||{}; }
+    catch(e){ j={ok:false,rc:'—',error:String(e)}; }
+    if(j.ok) nok++;
+    const det=stripPhpNoise(String(j.output||j.error||'')).slice(-200);
+    if(res) res.innerHTML=j.ok?'<span class="pill ok">connecté</span>'
+      :`<span class="pill err" title="${H(det)}">rc ${H(j.rc??'?')}</span>`;
+    if(!j.ok) out.innerHTML+=`<div class="logline"><b>${H(s.domain)}</b> <code>${H(det||'échec')}</code></div>`; }
+  // Le champ jeton n'est jamais réinjecté : il est vidé dès l'envoi.
+  document.getElementById('vz-token').value='';
+  document.getElementById('vz-code').value='';
+  out.innerHTML=`<div class="mt2"><span class="pill ${nok===VZSITES.length?'ok':nok?'warn':'err'}">${nok}/${VZSITES.length} connecté(s)</span></div>`+out.innerHTML;
+  go.textContent='Connecter'; go.disabled=false;
+  const an=document.getElementById('vz-cancel'); an.textContent='Fermer'; an.className='btn primary';
+  if(nok) loadFleet().catch(()=>{}); }
+async function vizDisconnect(btn,s){
+  if(!await askConfirm(`Dissocier <b>${H(s.domain)}</b> de VizProof ?<br><br>Le suivi visuel s'arrête ; l'extension reste installée.`,
+      {titre:'Dissocier VizProof',ok:'Dissocier',danger:true})) return;
+  const lbl=btn.textContent; btn.disabled=true; btn.textContent='…';
+  let j; try{ j=await api('/api/actions/viz_disconnect',{server:s.srv,domain:s.domain})||{}; }
+  catch(e){ j={ok:false,error:String(e)}; }
+  btn.disabled=false; btn.textContent=lbl;
+  if(!j.ok){ askInfo('Dissociation impossible',H(stripPhpNoise(String(j.output||j.error||'')).slice(-300)||'échec')); return; }
+  await loadFleet(); openDrawer(s.srv,s.domain); }
+
 document.getElementById('q').oninput=debounce(e=>{ FILT.q=e.target.value; render(); },200);
 ['fsrv','fgrp','fst'].forEach(id=>{ const map={fsrv:'srv',fgrp:'grp',fst:'st'};
   document.getElementById(id).onchange=e=>{ FILT[map[id]]=e.target.value; render(); }; });
@@ -994,6 +1189,7 @@ document.getElementById('selall').onclick=e=>{ filtered().forEach(s=>{ if(e.targ
 function bulkBar(){ document.getElementById('bulk-n').textContent=SEL.size+' sélectionné'+(SEL.size>1?'s':'');
   document.getElementById('bulkbar').classList.toggle('open',SEL.size>0); }
 document.getElementById('bulk-clear').onclick=()=>{ SEL.clear(); render(); };
+document.getElementById('bulk-vizconnect').onclick=()=>openVizConnect(allSites().filter(s=>SEL.has(key(s))));
 document.getElementById('bulk-run').onclick=async()=>{
   const act=document.getElementById('bulk-act').value; let arg=null;
   // « MAJ plugins sauf… » retiré : le gel par extension (tiroir du site)
@@ -1021,7 +1217,9 @@ document.getElementById('bm-cancel').onclick=()=>{ if(CURJOB) api('/api/actions/
 function refreshSecIfActive(){ try{ if(document.getElementById('page-sec').classList.contains('active')) loadSec(true); }catch(e){} }
 /* verdict VizProof d'une tâche de masse (champ optionnel `viz`) */
 function vizTaskBadge(v){ if(v===null||v===undefined||v==='') return '';
-  const s=String(v), m={'ok':['ok','visuel OK'],'anomalies':['err','anomalies'],'échec':['err','visuel échoué'],'non configuré':['mut','visuel non configuré']}[s]||['mut',s];
+  // « anomalies » est un avertissement, pas un échec : le rendu a changé, ce
+  // qui n'est pas la même chose qu'un scan qui n'a pas pu tourner.
+  const s=String(v), m={'ok':['ok','visuel OK'],'anomalies':['warn','anomalies visuelles'],'échec':['err','visuel échoué'],'non configuré':['mut','visuel non configuré']}[s]||['mut',s];
   return ` <span class="pill ${m[0]}" title="vérification visuelle VizProof">${H(m[1])}</span>`; }
 function pollBulk(){ if(!CURJOB) return;
   const job=CURJOB;
@@ -1076,7 +1274,12 @@ let CUR=null;
 let DRAWERSEQ=0, DRAWEROPENER=null;
 function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain===dom); if(!s) return; CUR=s;
   DRAWERSEQ++; stopPoll('safe');
-  DRAWEROPENER=document.activeElement;
+  // Un tiroir rouvert depuis un tiroir déjà ouvert (clic sur une autre ligne,
+  // re-rendu après action) prendrait « ✕ » pour son ouvreur : à la fermeture, le
+  // focus reviendrait DANS un tiroir devenu aria-hidden. On ne retient donc
+  // qu'un ouvreur extérieur au tiroir.
+  const ouvreur=document.activeElement;
+  DRAWEROPENER=(ouvreur&&document.getElementById('drawer').contains(ouvreur))?DRAWEROPENER:ouvreur;
   const v=st(s); document.getElementById('ddot').className='dot '+(v===1?'up':v===0?'down':v===2?'pending':'');
   document.getElementById('dtitle').textContent=kName(s)||s.domain;
   const ud=s.updraft, age=bkAge(s);
@@ -1126,7 +1329,8 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
            <button class="btn sm" data-act="rescan">↻ Re-scan</button></div></div>
          <p class="hint" id="rest-note" style="margin:8px 0 0">Site géré <b>sans SSH</b> : l'agent est en lecture seule, les actions
          distantes (mises à jour, sauvegarde, checksums, caches) ne sont pas disponibles ici. À faire depuis wp-admin,
-         ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>`
+         ou en rattachant le serveur en SSH depuis Gestion → Serveurs.</p>
+         ${vizDrawerBlock(s)}`
       : `${(s.plugins_updates||s.core_update)?`<div class="agroup"><span class="glbl">Mettre à jour</span><div class="actions">
       <button class="btn primary sm" id="safeup" data-core="${s.core_update?1:0}" data-n="${s.plugins_updates||0}" title="Archive ce qui va changer (fichiers + base), met à jour, contrôle le site, et remet en arrière automatiquement si quelque chose casse">🛡 MAJ sûre${s.core_update?' — cœur'+(s.plugins_updates?' + '+s.plugins_updates+' ext.':''):' — '+s.plugins_updates+' ext.'}</button>
       ${s.core_update?'<button class="btn sm" data-act="core_update">Cœur seul (sans filet)</button>':''}
@@ -1136,9 +1340,9 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
       <div class="agroup"><span class="glbl">Vérifier</span><div class="actions">
       <button class="btn sm" data-act="verify_checksums">Intégrité du cœur</button>
       ${vizConnected(s)?'<button class="btn sm" data-act="viz_scan">Scan visuel</button><button class="btn sm" data-act="viz_baseline">Capturer une baseline</button>':''}
-      ${(vizOf(s)||vizInfo(s))?'':'<button class="btn sm" data-act="vizproof_install">Installer vizproof</button>'}
       <button class="btn sm" data-act="rescan">↻ Re-scan</button>
       </div></div>
+      ${vizDrawerBlock(s)}
       <div class="agroup"><span class="glbl">Maintenance</span><div class="actions">
       <button class="btn sm" data-act="cache_flush">Vider les caches</button>
       ${(s.plugins_total&&(s.plugins_auto_update??0)<s.plugins_total)
@@ -1183,6 +1387,8 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
     <div class="dsec"><h3>Historique</h3>
     <div id="timeline"><span class="muted small">chargement…</span></div></div>`;
   document.querySelectorAll('#dbody [data-act]').forEach(b=>b.onclick=()=>confirmRun(b));
+  document.querySelectorAll('#dbody [data-vizconnect]').forEach(b=>b.onclick=()=>openVizConnect([s]));
+  document.querySelectorAll('#dbody [data-vizdisconnect]').forEach(b=>b.onclick=()=>vizDisconnect(b,s));
   const su=document.getElementById('safeup'); if(su) su.onclick=()=>startSafeUpdate(s.srv,s.domain,su);
   loadPolicy(s.srv,s.domain);
   loadRollbackPoints(s.srv,s.domain);
@@ -1309,6 +1515,7 @@ window.addEventListener('resize',()=>{ if(TIPEL) fermerTips(); });
 function fermerModale(m){
   if(!m) return;
   if(m.id==='askmodal'){ document.getElementById('ask-cancel').click(); return; }
+  if(m.id==='vizmodal'){ closeViz(); return; }
   if(m.id==='rbmodal'){ closeRb(); return; }
   if(m.id==='addmodal'){ closeAdd(); return; }
   if(m.id==='bulkmodal'){ document.getElementById('bm-close').click(); return; }
@@ -1317,7 +1524,7 @@ function fermerModale(m){
 /* Ordre de fermeture : l'ordre du DOM ne dit pas laquelle est au-dessus (toutes
    les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
    viennent en tête. */
-const MODALES=['askmodal','rbmodal','addmodal','bulkmodal','setmodal','logmodal'];
+const MODALES=['askmodal','vizmodal','rbmodal','addmodal','bulkmodal','setmodal','logmodal'];
 document.addEventListener('keydown',e=>{
   if(e.key!=='Escape') return;
   if(TIPEL){ fermerTips(); return; }
@@ -1497,6 +1704,8 @@ async function drawerVulns(dom){
 
 /* ---- mise à jour sûre : archive → MAJ → contrôle → retour arrière si cassé ---- */
 function safeVerdictPill(v){
+  // « réussie avec anomalies visuelles » n'est PAS vert : la mise à jour tient,
+  // mais le rendu a bougé et personne ne l'a encore regardé.
   const ok=v==='réussi', neutre=(v==='rien à faire');
   const cls=ok?'ok':neutre?'mut':(v||'').startsWith('ÉCHEC')?'err':'warn';
   return `<span class="pill ${cls}">${H(v||'…')}</span>`;
@@ -1512,7 +1721,7 @@ function renderSafe(st,dom){
   const box=consoleDe(dom); if(!box) return;
   box.style.display='block';
   const lignes=(st.steps||[]).map(x=>
-    `<div class="logline"><span class="pill ${x.ok?'ok':'err'}">${x.ok?'ok':'échec'}</span>
+    `<div class="logline"><span class="pill ${x.warn?'warn':x.ok?'ok':'err'}">${x.warn?'attention':x.ok?'ok':'échec'}</span>
       <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
       ${x.detail?`<div class="muted small wrapline" style="margin-left:8px">${H(stripPhpNoise(x.detail))}</div>`:''}</div>`).join('');
   box.innerHTML=`<div style="margin-bottom:6px"><b>🛡 Mise à jour sûre</b> ${st.running?'<span class="pill mut">en cours…</span>':safeVerdictPill(st.verdict)}</div>${lignes}`;
@@ -1551,14 +1760,27 @@ async function loadSafeStatus(dom){
 }
 async function startSafeUpdate(srv,dom,btn){
   const withCore=btn.dataset.core==='1';
+  await ensureSettings();
   let msg=`Mise à jour sûre de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
   if(withCore) msg+=`<br><br>⚠️ Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
   msg+=`<br><br>L'opération peut durer plusieurs minutes.`;
-  if(!await askConfirm(msg,{titre:'Mise à jour sûre',ok:'Lancer'})) return;
+  // La case est pré-remplie avec le réglage, mais reste modifiable POUR CETTE
+  // exécution : c'est au moment de lancer qu'on sait si le site supporte mal
+  // une régression visuelle.
+  const corps=`<label class="fld"><input type="checkbox" id="su-vizrb"${SETTINGS.viz_anomaly_rollback?' checked':''}>
+      Annuler la mise à jour si VizProof détecte des anomalies visuelles</label>
+    <p class="hint" style="margin:4px 0 0">Pré-réglé d'après <b>Réglages ⚙</b>. Décoché : les anomalies sont signalées et la mise à jour est conservée.</p>`;
+  const rep=await new Promise(res=>{
+    askOpen('Mise à jour sûre',msg,corps,
+      ()=>res({go:true,rb:document.getElementById('su-vizrb').checked}),
+      ()=>res({go:false}));
+    const b=document.getElementById('ask-ok'); b.textContent='Lancer'; });
+  if(!rep.go) return;
   const lbl=btn.textContent; btn.dataset.label=lbl;
   btn.disabled=true; btn.textContent='en cours…';
   let r;
-  try{ r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true,core:withCore}); }
+  try{ r=await api('/api/actions/safe_update',{server:srv,domain:dom,backup:true,viz:true,
+        core:withCore,viz_rollback:rep.rb}); }
   catch(e){ r={error:'lancement impossible : '+e}; }
   if(!r||r.error){ askInfo('Mise à jour sûre impossible',H((r&&r.error)||'réponse vide'));
     btn.disabled=false; btn.textContent=lbl; return; }
@@ -2649,7 +2871,7 @@ document.getElementById('plug-q').oninput=debounce(e=>{ const q=e.target.value.t
 let KEYS=null;
 function keyOpts(cur){ return (KEYS?.keys||[]).map(k=>`<option value="${H(k.path)}"${k.path===cur?' selected':''}>${H(k.name)}</option>`).join(''); }
 function refreshKeySelects(){ document.querySelectorAll('#set-body select[data-akey], #set-body select#k-allsel').forEach(sel=>{ sel.innerHTML=keyOpts(sel.value); }); }
-document.getElementById('setbtn').onclick=()=>{ document.getElementById('setmodal').classList.add('open'); loadSchedule(); loadKeys(); loadAlerts(); };
+document.getElementById('setbtn').onclick=()=>{ document.getElementById('setmodal').classList.add('open'); loadSchedule(); loadKeys(); loadSettings(); loadAlerts(); };
 document.getElementById('setmodal').onclick=e=>{ if(e.target.id==='setmodal') e.target.classList.remove('open'); };
 
 async function loadKeys(){ const bd=document.getElementById('set-body');
@@ -2719,6 +2941,37 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
       msg.innerHTML=j.ok?'<span class="pill ok">assignée partout</span>':`<span class="pill err">échec</span> <span class="muted small">${H(j.error||'')}</span>`;
       if(j.ok) setTimeout(loadKeys,1500);
     }catch(e){ msg.innerHTML=`<span class="pill err">${H(String(e))}</span>`; } }; }
+
+/* ===== RÉGLAGES — mise à jour sûre =====
+   SETTINGS est mémorisé : la modale de confirmation de la MAJ sûre pré-coche sa
+   case avec ce réglage sans refaire un aller-retour réseau à chaque ouverture. */
+let SETTINGS={viz_anomaly_rollback:false}, SETTINGSLU=false;
+/* Lecture paresseuse : la modale de MAJ sûre a besoin du réglage même si
+   personne n'a jamais ouvert Réglages. Un seul appel par session. */
+async function ensureSettings(){ if(SETTINGSLU) return SETTINGS;
+  try{ const j=await api('/api/mgmt/settings');
+    if(j&&j.settings&&typeof j.settings==='object') SETTINGS=j.settings; SETTINGSLU=true;
+  }catch(e){}
+  return SETTINGS; }
+async function loadSettings(){ const bd=document.getElementById('mset-body');
+  bd.innerHTML='<span class="muted small">chargement…</span>';
+  let j; try{ j=await api('/api/mgmt/settings'); }
+  catch(e){ bd.innerHTML=`<span class="pill mut">réglages indisponibles</span> <span class="muted small">${H(String(e))}</span>`; return; }
+  if(j&&j.settings&&typeof j.settings==='object'){ SETTINGS=j.settings; SETTINGSLU=true; }
+  bd.innerHTML=`<label class="fld"><input type="checkbox" id="set-vizrb"${SETTINGS.viz_anomaly_rollback?' checked':''}>
+      Retour arrière automatique sur anomalie visuelle</label>
+    <span id="set-vizrbmsg" class="small muted"></span>
+    <p class="hint" style="margin:6px 0 0">Décoché (défaut) : une anomalie détectée par VizProof après une mise à jour est
+      <b>signalée</b> et la mise à jour est conservée — le verdict devient « réussie avec anomalies visuelles ».
+      Coché : la mise à jour est <b>annulée</b> automatiquement. Un rendu qui change n'est pas toujours un rendu cassé
+      (bandeau de cookies, carrousel, publicité), d'où le défaut prudent côté « avertir ».</p>`;
+  document.getElementById('set-vizrb').onchange=async e=>{
+    const m=document.getElementById('set-vizrbmsg'), v=e.target.checked; m.textContent='…';
+    try{ const r=await api('/api/mgmt/settings',{settings:{viz_anomaly_rollback:v}});
+      if(r&&r.settings) SETTINGS=r.settings;
+      m.innerHTML='<span class="pill ok">enregistré</span>';
+    }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
+    setTimeout(()=>{ m.innerHTML=''; },2500); }; }
 
 /* ===== RÉGLAGES — alertes Telegram ===== */
 const AL_CHK=[['new_admin','nouvel administrateur'],['checksum_fail','checksums en anomalie'],['viz_anomaly','anomalie visuelle VizProof'],['site_down','site down (Kuma)']];

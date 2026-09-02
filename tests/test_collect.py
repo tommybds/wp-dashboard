@@ -416,6 +416,85 @@ class TestParsing(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+#  vizproof : « pas de CLI » et « pas encore connecté » sont deux états         #
+# --------------------------------------------------------------------------- #
+class TestVizproof(unittest.TestCase):
+    # Sortie de `wp vizproof status --format=json` sur un site non configuré :
+    # rc 1, mais le JSON est bien imprimé.
+    NON_CONFIG = json.dumps({"configured": False, "connected": False,
+                             "has_credentials": False, "site_id": None,
+                             "pages_count": 0, "plugin_version": "1.3.6",
+                             "last_run": None})
+    CONFIG = json.dumps({"configured": True, "connected": True,
+                         "has_credentials": True, "site_id": "elwave-fr",
+                         "pages_count": 4, "plugin_version": "1.3.6",
+                         "last_run": {"at": "2026-09-01 04:54", "anomalies": 0}})
+
+    def viz(self, raw, rc):
+        return collect.postprocess({"domain": "a.fr", "path": "/p", "owner": "www",
+                                    "fields": {"vizproof": raw},
+                                    "rcs": {"vizproof": rc}})["vizproof"]
+
+    def test_rc1_avec_json_donne_un_resume(self):
+        """Le cœur du correctif : rc 1 + JSON = plugin installé, pas encore connecté."""
+        v = self.viz(self.NON_CONFIG, 1)
+        self.assertIsNotNone(v)
+        self.assertEqual((v["has_cli"], v["configured"], v["connected"]), (True, False, False))
+        self.assertFalse(v["has_credentials"])
+        self.assertIsNone(v["site_id"])
+        self.assertEqual(v["version"], "1.3.6")
+
+    def test_rc1_sans_json_reste_none(self):
+        """« 'vizproof' is not a registered command » : rien à lire, pas de CLI."""
+        self.assertIsNone(self.viz("Error: 'vizproof' is not a registered wp command.", 1))
+
+    def test_rc1_avec_json_sans_cle_configured_reste_none(self):
+        """Un JSON qui n'est pas celui de `vizproof status` ne compte pas."""
+        self.assertIsNone(self.viz('{"autre": true}', 1))
+
+    def test_rc0_inchange(self):
+        v = self.viz(self.CONFIG, 0)
+        self.assertEqual((v["configured"], v["connected"], v["has_credentials"]),
+                         (True, True, True))
+        self.assertEqual(v["site_id"], "elwave-fr")
+        self.assertEqual(v["pages"], 4)
+        self.assertEqual(v["last_run"], {"at": "2026-09-01 04:54", "anomalies": 0})
+
+    def test_autres_rc_ignores(self):
+        for rc in (2, 90, 99, 127):
+            self.assertIsNone(self.viz(self.NON_CONFIG, rc), rc)
+
+    def test_plugin_ancien_sans_cle_configured(self):
+        """1.3.4 : pas de `configured` dans le JSON — on la déduit de la connexion."""
+        v = collect.vizproof_summary({"connected": True, "pages": 2, "version": "1.3.4"})
+        self.assertTrue(v["configured"])
+        self.assertTrue(v["has_credentials"])
+        self.assertTrue(v["has_cli"])
+
+    def test_site_id_seul_vaut_configure(self):
+        v = collect.vizproof_summary({"connected": False, "site_id": "x-fr"})
+        self.assertTrue(v["configured"])
+        self.assertFalse(v["connected"])
+
+    def test_non_dict_reste_none(self):
+        for x in (None, [], "texte", 3):
+            self.assertIsNone(collect.vizproof_summary(x))
+
+    def test_les_champs_precedents_sont_conserves(self):
+        v = collect.vizproof_summary({"connected": True, "pages": 7, "version": "1.3.6",
+                                      "last_run": {"anomalies": 1}})
+        for k in ("version", "connected", "pages", "last_run"):
+            self.assertIn(k, v)
+
+    def test_meme_resume_par_l_agent_rest(self):
+        """La collecte REST passe par vizproof_summary : mêmes clés qu'en SSH."""
+        site = collect.map_rest_inventory({"url": "https://a.fr"},
+                                          {"vizproof": json.loads(self.NON_CONFIG)})
+        self.assertEqual(site["vizproof"]["has_cli"], True)
+        self.assertEqual(site["vizproof"]["configured"], False)
+
+
+# --------------------------------------------------------------------------- #
 #  vulns.version_compare                                                      #
 # --------------------------------------------------------------------------- #
 class TestVersionCompare(unittest.TestCase):
