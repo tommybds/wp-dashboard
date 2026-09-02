@@ -10,6 +10,7 @@ redirigés vers un répertoire temporaire.
 """
 import ast
 import base64
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -1754,15 +1755,19 @@ class TestSafeUpdateViz(BaseTmp):
 # --------------------------------------------------------------------------- #
 #  Contrôle visuel automatique après une mise à jour unitaire                   #
 #                                                                              #
-#  `_spawn` est exécuté SYNCHRONEMENT : en production le scan part dans un      #
+#  `_spawn` est exécuté SYNCHRONEMENT : en production le contrôle part dans un  #
 #  thread (la route /api/actions/run répond sans l'attendre), ici on veut       #
-#  observer son résultat sans course.                                          #
+#  observer son résultat sans course. `remote_bash` est doublé par une SÉQUENCE  #
+#  de réponses `wp vizproof status` : c'est elle, et non l'horloge, qui pilote   #
+#  l'attente du run que le plugin lance lui-même (`_viz_sleep` ne dort pas).     #
 # --------------------------------------------------------------------------- #
 class TestVizAfterUpdate(BaseTmp):
 
     SITE_RELIE = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
                   "siteurl": "https://a.fr",
-                  "vizproof": {"has_cli": True, "configured": True, "connected": True}}
+                  "vizproof": {"has_cli": True, "configured": True, "connected": True,
+                               "last_run": {"id": "run-old", "status": "completed",
+                                            "at": "2026-09-01T09:00:00+00:00"}}}
 
     def setUp(self):
         super().setUp()
@@ -1771,20 +1776,34 @@ class TestVizAfterUpdate(BaseTmp):
         self.addCleanup(lambda: setattr(A, "SETTINGS_PATH", self._sp))
         A.VIZ_LAST.clear()
         self.addCleanup(A.VIZ_LAST.clear)
-        self.site = {k: (dict(v) if isinstance(v, dict) else v)
+        # Délais raccourcis et sommeil neutralisé : l'attente est pilotée par la
+        # SÉQUENCE de réponses `wp vizproof status`, pas par l'horloge.
+        for cle, val in (("VIZ_POLL_S", 1), ("VIZ_WAIT_NEW_S", 3), ("VIZ_WAIT_DONE_S", 6)):
+            p = mock.patch.object(A, cle, val)
+            p.start()
+            self.addCleanup(p.stop)
+        self.site = {k: (json.loads(json.dumps(v)) if isinstance(v, dict) else v)
                      for k, v in self.SITE_RELIE.items()}
         self.srv = {"name": "s1", "host": "203.0.113.1", "port": 22}
         self.cli = True
         self.relie_sonde = True
         self.rc_scan = 0
         self.sortie_scan = '{"anomalies":0,"report_url":"https://vizproof.com/r/1"}'
+        # Le plugin scanne de lui-même : réponses successives de `wp vizproof
+        # status` (la dernière est répétée tant qu'on interroge).
+        self.statuts = [self.run_neuf(statut="queued"), self.run_neuf()]
+        self.option = {"enable_update_scan_by_default": True}
+        self.option_rc = 0
         self.actions = []          # (action, source) réellement exécutées
         self.alertes = []
+        self.phases = []           # phases publiées pendant l'attente
         for cible, valeur in (
                 ("find_site", lambda s, d: (self.srv, self.site)),
                 ("viz_available", lambda s, x: self.cli),
                 ("viz_linked_probe", lambda s, x: self.relie_sonde),
                 ("logged_action", self._logged),
+                ("remote_bash", self._remote),
+                ("_viz_sleep", lambda _s: None),
                 ("alert", lambda k, r, t: self.alertes.append((k, r, t))),
                 ("_spawn", lambda fn, *a: fn(*a)),
         ):
@@ -1792,65 +1811,255 @@ class TestVizAfterUpdate(BaseTmp):
             p.start()
             self.addCleanup(p.stop)
 
+    # ---- fabriques ----
+    def iso(self, delta=0):
+        return (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(seconds=delta)).isoformat()
+
+    def run_neuf(self, statut="completed", anomalies=0, rid="run-neuf", delta=1):
+        return {"id": rid, "at": self.iso(delta), "status": statut,
+                "anomalies": anomalies, "url": "https://vizproof.com/r/9"}
+
+    # ---- doublures ----
     def _logged(self, server, domain, action, arg, source="manuel"):
         self.actions.append((action, source))
         if action == "viz_scan":
+            self.phases.append(A.viz_last_get(domain).get("phase"))
             return self.rc_scan, self.sortie_scan
         return 0, "ok"
 
+    def _remote(self, srv, site, body, timeout=300):
+        if "vizproof status" in body:
+            self.phases.append(A.viz_last_get("a.fr").get("phase"))
+            st = self.statuts.pop(0) if len(self.statuts) > 1 else (self.statuts or [None])[0]
+            corps = {"configured": True}
+            if st:
+                corps["last_run"] = st
+            return 0, json.dumps(corps)
+        if "option get" in body:
+            return self.option_rc, ("" if self.option is None else json.dumps(self.option))
+        return 0, ""
+
     def faites(self):
         return [a for a, _s in self.actions]
+
+    def journal(self, action):
+        """Entrées de data/actions.log portant cette action."""
+        if not os.path.exists(A.LOG):
+            return []
+        with open(A.LOG) as fh:
+            return [json.loads(l) for l in fh if l.strip()
+                    and json.loads(l).get("action") == action]
 
     # ---- réglage ----
     def test_reglage_actif_par_defaut(self):
         self.assertIs(A.SETTINGS_DEFAULTS["viz_scan_after_update"], True)
         self.assertIs(A.settings_cfg()["viz_scan_after_update"], True)
 
-    # ---- cas nominal ----
-    def test_scan_enchaine_quand_relie_et_cli(self):
-        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0)
+    # ---- cas nominal : c'est le PLUGIN qui scanne ----
+    def test_le_verdict_vient_du_scan_du_plugin(self):
+        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
         self.assertTrue(viz["ran"])
         self.assertTrue(viz["pending"], "la route ne doit pas attendre le scan")
-        self.assertEqual(self.faites(), ["viz_scan", "rescan"])
+        self.assertEqual(viz["phase"], A.VIZ_PHASE_WAIT)
+        # aucun scan lancé par nous : le plugin l'avait déjà fait
+        self.assertEqual(self.faites(), ["rescan"])
         self.assertTrue(all(s == A.VIZ_AFTER_SOURCE for _a, s in self.actions))
         fin = A.viz_last_get("a.fr")
         self.assertTrue(fin["ran"])
         self.assertFalse(fin["pending"])
+        self.assertEqual(fin["source"], A.VIZ_SRC_PLUGIN)
         self.assertEqual(fin["rc"], 0)
         self.assertFalse(fin["anomalies"])
-        self.assertEqual(fin["report_url"], "https://vizproof.com/r/1")
+        self.assertEqual(fin["anomalies_count"], 0)
+        self.assertEqual(fin["run_id"], "run-neuf")
+        self.assertEqual(fin["report_url"], "https://vizproof.com/r/9")
+        self.assertIsNone(fin["phase"])
         self.assertEqual(self.alertes, [])
+
+    def test_les_phases_sont_publiees_pendant_l_attente(self):
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        # 1re interrogation : on attend encore ; 2e : le run est repéré, il tourne
+        self.assertEqual(self.phases, [A.VIZ_PHASE_WAIT, A.VIZ_PHASE_RUNNING])
+
+    def test_verdict_journalise_meme_sans_action_de_notre_part(self):
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        entrees = self.journal("viz_verdict")
+        self.assertEqual(len(entrees), 1)
+        e = entrees[0]
+        self.assertEqual(e["source"], A.VIZ_AFTER_SOURCE)
+        self.assertEqual(e["arg"], "run-neuf")
+        self.assertEqual(e["rc"], 0)
+        self.assertIn(A.VIZ_SRC_PLUGIN, e["output_tail"])
 
     def test_toutes_les_actions_de_mise_a_jour_sont_couvertes(self):
         for act in A.VIZ_AFTER_UPDATE_ACTIONS:
-            self.actions = []
-            self.assertTrue(A.viz_after_update("s1", "a.fr", act, 0)["ran"], act)
-            self.assertIn("viz_scan", self.faites(), act)
+            A.VIZ_LAST.clear()
+            self.statuts = [self.run_neuf(statut="queued"), self.run_neuf()]
+            self.assertTrue(A.viz_after_update("s1", "a.fr", act, 0, time.time())["ran"], act)
+            self.assertEqual(A.viz_last_get("a.fr")["source"], A.VIZ_SRC_PLUGIN, act)
+
+    # ---- anomalies ----
+    def test_anomalies_du_plugin_alertent(self):
+        self.statuts = [self.run_neuf(statut="queued"),
+                        self.run_neuf(anomalies=3)]
+        A.viz_after_update("s1", "a.fr", "plugins_update_all", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertTrue(fin["ran"])
+        self.assertTrue(fin["anomalies"])
+        self.assertEqual(fin["anomalies_count"], 3)
+        self.assertEqual(fin["rc"], A.VIZ_ANOMALY_RC)
+        self.assertEqual(fin["source"], A.VIZ_SRC_PLUGIN)
+        self.assertEqual(len(self.alertes), 1)
+        cle, regle, texte = self.alertes[0]
+        self.assertEqual((cle, regle), ("viz_anomaly:a.fr", "viz_anomaly"))
+        self.assertIn("a.fr", texte)
+        self.assertEqual(self.journal("viz_verdict")[0]["rc"], A.VIZ_ANOMALY_RC)
+        # une anomalie visuelle n'empêche pas la remise à jour de l'inventaire
+        self.assertEqual(self.faites(), ["rescan"])
+
+    def test_run_du_plugin_en_echec_n_est_pas_un_ok(self):
+        self.statuts = [self.run_neuf(statut="failed")]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertEqual(fin["status"], "échec")
+        self.assertNotEqual(fin["rc"], 0)
+        self.assertFalse(fin["anomalies"])
+        self.assertEqual(self.alertes, [])
+
+    def test_run_toujours_en_file_ne_donne_pas_de_verdict(self):
+        self.statuts = [self.run_neuf(statut="queued")]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertTrue(fin["ran"])
+        self.assertIsNone(fin["rc"])
+        self.assertEqual(fin["status"], "en cours")
+        self.assertEqual(self.journal("viz_verdict"), [])   # pas de verdict, rien à tracer
+        self.assertNotIn("viz_scan", self.faites())
+
+    # ---- le plugin n'a rien lancé ----
+    def test_aucun_nouveau_run_et_option_active_ne_lance_rien(self):
+        self.statuts = [dict(self.site["vizproof"]["last_run"], at=self.iso(1))]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertFalse(fin["ran"])
+        self.assertEqual(fin["reason"], "le plugin n'a lancé aucun scan")
+        self.assertNotIn("viz_scan", self.faites())          # surtout pas de doublon tardif
+        self.assertIsNone(fin["source"])
+
+    def test_aucun_run_du_tout_et_option_active(self):
+        self.statuts = []
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        self.assertEqual(A.viz_last_get("a.fr")["reason"], "le plugin n'a lancé aucun scan")
+        self.assertNotIn("viz_scan", self.faites())
+
+    def test_option_inactive_repli_sur_le_scan_du_dashboard(self):
+        self.statuts = []
+        self.option = {"enable_update_scan_by_default": False}
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertEqual(self.faites(), ["viz_scan", "rescan"])
+        self.assertTrue(fin["ran"])
+        self.assertEqual(fin["source"], A.VIZ_SRC_DASHBOARD)
+        self.assertEqual(fin["rc"], 0)
+        self.assertEqual(fin["report_url"], "https://vizproof.com/r/1")
+        self.assertIn(A.VIZ_PHASE_DASHBOARD, self.phases)
+
+    def test_option_illisible_repli_sur_le_scan_du_dashboard(self):
+        self.statuts = []
+        self.option_rc, self.option = 1, None
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        self.assertEqual(self.faites(), ["viz_scan", "rescan"])
+        self.assertEqual(A.viz_last_get("a.fr")["source"], A.VIZ_SRC_DASHBOARD)
+
+    def test_scan_dashboard_en_anomalies_alerte_aussi(self):
+        self.statuts = []
+        self.option = {"enable_update_scan_by_default": 0}
+        self.rc_scan = A.VIZ_ANOMALY_RC
+        self.sortie_scan = '{"anomalies":2,"report_url":"https://vizproof.com/r/7"}'
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertTrue(fin["anomalies"])
+        self.assertEqual(fin["anomalies_count"], 2)
+        self.assertEqual(fin["source"], A.VIZ_SRC_DASHBOARD)
+        self.assertEqual(len(self.alertes), 1)
+
+    def test_scan_dashboard_en_echec_technique_n_alerte_pas(self):
+        self.statuts = []
+        self.option = {"enable_update_scan_by_default": False}
+        self.rc_scan, self.sortie_scan = 90, "wp-cli: erreur"
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertFalse(fin["anomalies"])
+        self.assertEqual(fin["rc"], 90)
+        self.assertEqual(self.alertes, [])
+
+    def test_site_repondant_non_configure_n_est_pas_compte_comme_scan(self):
+        self.statuts = []
+        self.option = {"enable_update_scan_by_default": False}
+        self.rc_scan, self.sortie_scan = 1, "Error: le site n'est pas configuré"
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertFalse(fin["ran"])
+        self.assertEqual(fin["reason"], "non relié")
+
+    # ---- reconnaissance du run ----
+    def test_viz_run_is_new_exige_un_id_neuf_ET_une_date_recente(self):
+        t0 = time.time()
+        neuf = self.run_neuf(rid="r2", delta=2)
+        self.assertTrue(A.viz_run_is_new(neuf, "r1", t0))
+        # même identifiant, date récente : c'est le run d'avant, pas le nôtre
+        self.assertFalse(A.viz_run_is_new(dict(neuf, id="r1"), "r1", t0))
+        # identifiant neuf mais run antérieur à la mise à jour
+        self.assertFalse(A.viz_run_is_new(self.run_neuf(rid="r2", delta=-600), "r1", t0))
+        # tolérance d'horloge : 30 s avant la MAJ compte encore
+        self.assertTrue(A.viz_run_is_new(self.run_neuf(rid="r2", delta=-30), "r1", t0))
+        # date illisible ou absente : on ne devine pas
+        self.assertFalse(A.viz_run_is_new(dict(neuf, at=""), "r1", t0))
+        self.assertFalse(A.viz_run_is_new(dict(neuf, at="hier"), "r1", t0))
+        self.assertFalse(A.viz_run_is_new({}, "", t0))
+
+    def test_viz_prev_run_id_lit_l_inventaire(self):
+        self.assertEqual(A.viz_prev_run_id(self.site), "run-old")
+        self.assertEqual(A.viz_prev_run_id({}), "")
+        self.assertEqual(A.viz_prev_run_id({"vizproof": {"last_run": None}}), "")
+
+    def test_viz_run_done_ne_bloque_que_sur_la_file(self):
+        for st in A.VIZ_RUN_PENDING:
+            self.assertFalse(A.viz_run_done({"status": st}), st)
+        for st in ("completed", "failed", "", "inconnu"):
+            self.assertTrue(A.viz_run_done({"status": st}), st)
+
+    def test_viz_truthy_lit_les_options_wordpress(self):
+        for v in (True, 1, "1", "true", "yes"):
+            self.assertTrue(A.viz_truthy(v), v)
+        for v in (False, 0, "", "0", "false", None):
+            self.assertFalse(A.viz_truthy(v), v)
 
     # ---- refus ----
     def test_pas_de_scan_si_desactive(self):
         A.settings_write({"viz_scan_after_update": False})
-        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0)
+        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
         self.assertFalse(viz["ran"])
         self.assertEqual(viz["reason"], "désactivé")
         self.assertEqual(self.actions, [])
 
     def test_pas_de_scan_si_la_mise_a_jour_a_echoue(self):
-        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 1)
+        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 1, time.time())
         self.assertFalse(viz["ran"])
         self.assertEqual(viz["reason"], "mise à jour en échec")
         self.assertEqual(self.actions, [])
 
     def test_pas_de_scan_si_le_site_n_est_pas_relie(self):
         self.site["vizproof"] = {"has_cli": True, "configured": False, "connected": False}
-        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0)
+        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
         self.assertFalse(viz["ran"])
         self.assertEqual(viz["reason"], "non relié")
         self.assertEqual(self.actions, [])
 
     def test_pas_de_scan_si_la_cli_est_absente(self):
         self.cli = False
-        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0)
+        viz = A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
         self.assertTrue(viz["pending"])          # l'inventaire ne le savait pas
         fin = A.viz_last_get("a.fr")
         self.assertFalse(fin["ran"])
@@ -1866,12 +2075,14 @@ class TestVizAfterUpdate(BaseTmp):
     def test_inventaire_sans_fiche_vizproof_sonde_le_site(self):
         self.site.pop("vizproof")
         self.relie_sonde = False
-        self.assertTrue(A.viz_after_update("s1", "a.fr", "core_update", 0)["pending"])
+        self.assertTrue(A.viz_after_update("s1", "a.fr", "core_update", 0,
+                                           time.time())["pending"])
         self.assertEqual(A.viz_last_get("a.fr")["reason"], "non relié")
         self.assertEqual(self.actions, [])
         self.relie_sonde = True
-        A.viz_after_update("s1", "a.fr", "core_update", 0)
-        self.assertIn("viz_scan", self.faites())
+        self.statuts = [self.run_neuf()]
+        A.viz_after_update("s1", "a.fr", "core_update", 0, time.time())
+        self.assertEqual(A.viz_last_get("a.fr")["source"], A.VIZ_SRC_PLUGIN)
 
     def test_viz_site_linked_lit_les_deux_temoins(self):
         self.assertIsNone(A.viz_site_linked({}))
@@ -1884,46 +2095,11 @@ class TestVizAfterUpdate(BaseTmp):
         self.assertTrue(A.viz_site_linked({"vizproof": {"configured": True,
                                                         "connected": False}}))
 
-    # ---- anomalies ----
-    def test_rc2_donne_anomalies_et_alerte(self):
-        self.rc_scan = A.VIZ_ANOMALY_RC
-        self.sortie_scan = '{"anomalies":3,"report_url":"https://vizproof.com/r/9"}'
-        A.viz_after_update("s1", "a.fr", "plugins_update_all", 0)
-        fin = A.viz_last_get("a.fr")
-        self.assertTrue(fin["ran"])
-        self.assertTrue(fin["anomalies"])
-        self.assertEqual(fin["rc"], A.VIZ_ANOMALY_RC)
-        self.assertEqual(fin["report_url"], "https://vizproof.com/r/9")
-        self.assertEqual(len(self.alertes), 1)
-        cle, regle, texte = self.alertes[0]
-        self.assertEqual(regle, "viz_anomaly")
-        self.assertEqual(cle, "viz_anomaly:a.fr")
-        self.assertIn("a.fr", texte)
-        # une anomalie visuelle n'empêche pas la remise à jour de l'inventaire
-        self.assertEqual(self.faites(), ["viz_scan", "rescan"])
-
-    def test_scan_en_echec_technique_n_alerte_pas(self):
-        self.rc_scan = 90
-        self.sortie_scan = "wp-cli: erreur"
-        A.viz_after_update("s1", "a.fr", "plugin_update", 0)
-        fin = A.viz_last_get("a.fr")
-        self.assertFalse(fin["anomalies"])
-        self.assertEqual(fin["rc"], 90)
-        self.assertEqual(self.alertes, [])
-
-    def test_site_repondant_non_configure_n_est_pas_compte_comme_scan(self):
-        self.rc_scan = 1
-        self.sortie_scan = "Error: le site n'est pas configuré"
-        A.viz_after_update("s1", "a.fr", "plugin_update", 0)
-        fin = A.viz_last_get("a.fr")
-        self.assertFalse(fin["ran"])
-        self.assertEqual(fin["reason"], "non relié")
-
     def test_une_erreur_du_thread_ne_reste_pas_en_attente(self):
         def boum(_s, _x):
             raise RuntimeError("ssh mort")
         with mock.patch.object(A, "viz_available", boum):
-            A.viz_after_update("s1", "a.fr", "plugin_update", 0)
+            A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
         fin = A.viz_last_get("a.fr")
         self.assertFalse(fin["pending"])
         self.assertEqual(fin["reason"], "erreur")
@@ -1951,12 +2127,17 @@ class TestRunRouteViz(BaseTmp):
         self.addCleanup(self.srv.shutdown)
         self.addCleanup(self.srv.server_close)
         self.cookie = "dash_session=" + A.make_token("tommy")
+        # `has_cli` absent de l'inventaire : le site est relié mais PAS éligible
+        # au job `viz_update` (cf. TestVizUpdateJob), donc la route répond en
+        # synchrone et le bloc `viz` part en tâche de fond — le cas testé ici.
         site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
-                "vizproof": {"has_cli": True, "configured": True, "connected": True}}
+                "vizproof": {"configured": True, "connected": True}}
         for cible, valeur in (
                 ("find_site", lambda s, d: ({"name": "s1"}, site)),
                 ("viz_available", lambda s, x: True),
                 ("logged_action", self._logged),
+                ("remote_bash", self._remote),
+                ("_viz_sleep", lambda _s: None),
                 ("alert", lambda *a, **k: None),
                 ("_spawn", lambda fn, *a: fn(*a)),
         ):
@@ -1968,6 +2149,16 @@ class TestRunRouteViz(BaseTmp):
         if action == "viz_scan":
             return 0, '{"anomalies":0,"report_url":"https://vizproof.com/r/4"}'
         return 0, "ok"
+
+    def _remote(self, srv, site, body, timeout=300):
+        """Le plugin a lancé son propre scan pendant la mise à jour."""
+        if "vizproof status" in body:
+            at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            return 0, json.dumps({"configured": True,
+                                  "last_run": {"id": "run-42", "at": at,
+                                               "status": "completed", "anomalies": 0,
+                                               "url": "https://vizproof.com/r/42"}})
+        return 0, ""
 
     def post(self, chemin, corps):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
@@ -2002,11 +2193,18 @@ class TestRunRouteViz(BaseTmp):
         self.assertIsNone(j["error"])
         self.assertTrue(j["viz"]["ran"])
         self.assertTrue(j["viz"]["pending"])
+        self.assertEqual(j["viz"]["phase"], A.VIZ_PHASE_WAIT)
         # le verdict se récupère ensuite, la route n'ayant pas attendu le scan
         st2, j2 = self.get("/api/actions/viz_last?domain=a.fr")
         self.assertEqual(st2, 200)
-        self.assertEqual(j2["viz"]["rc"], 0)
-        self.assertEqual(j2["viz"]["report_url"], "https://vizproof.com/r/4")
+        v = j2["viz"]
+        self.assertEqual(v["rc"], 0)
+        # verdict du scan lancé par le PLUGIN : le dashboard n'a rien scanné
+        self.assertEqual(v["source"], A.VIZ_SRC_PLUGIN)
+        self.assertEqual(v["run_id"], "run-42")
+        self.assertEqual(v["anomalies_count"], 0)
+        self.assertIsNone(v["phase"])
+        self.assertEqual(v["report_url"], "https://vizproof.com/r/42")
 
     def test_action_hors_perimetre_sans_bloc_viz(self):
         _st, j = self.post("/api/actions/run",
@@ -2072,3 +2270,281 @@ class TestVizResolveApercu(unittest.TestCase):
         with unittest.mock.patch.object(A, "viz_api_call", faux_api):
             r = A.viz_resolve_site("elwave.fr", "https://elwave.fr", "vrt_" + "a" * 20)
         self.assertTrue(r["ok"]); self.assertTrue(r["created"]); self.assertEqual(r["site_id"], "nouveau1")
+
+
+# --------------------------------------------------------------------------- #
+#  Job « baseline → mise à jour → verdict » d'un site relié à VizProof          #
+#                                                                              #
+#  `_spawn` synchrone : en production le job tourne dans un thread et la route  #
+#  répond aussitôt ; ici la réponse est déjà celle d'un job TERMINÉ, ce qui     #
+#  permet d'observer la séquence complète sans course. L'instantané renvoyé par #
+#  la route reste, lui, celui d'avant le démarrage (toutes étapes en attente).  #
+# --------------------------------------------------------------------------- #
+class TestVizUpdateJob(BaseTmp):
+
+    def setUp(self):
+        super().setUp()
+        self._sp = A.SETTINGS_PATH
+        A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
+        self.addCleanup(lambda: setattr(A, "SETTINGS_PATH", self._sp))
+        A.VIZ_LAST.clear()
+        A.VIZUP.clear()
+        self.addCleanup(A.VIZ_LAST.clear)
+        self.addCleanup(A.VIZUP.clear)
+        self._safe = dict(A.SAFE)
+        self.addCleanup(lambda: A.SAFE.update(self._safe))
+        for cle, val in (("VIZ_POLL_S", 1), ("VIZ_WAIT_NEW_S", 3), ("VIZ_WAIT_DONE_S", 6)):
+            p = mock.patch.object(A, cle, val)
+            p.start()
+            self.addCleanup(p.stop)
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+        self.site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
+                     "vizproof": {"has_cli": True, "configured": True, "connected": True,
+                                  "last_run": {"id": "run-old", "status": "completed",
+                                               "at": "2026-09-01T09:00:00+00:00"}}}
+        self.rc_baseline = 0
+        self.rc_maj = 0
+        self.anomalies = 0
+        self.actions = []          # (action, arg, source)
+        self.alertes = []
+        for cible, valeur in (
+                ("find_site", lambda s, d: ({"name": "s1"}, self.site)),
+                ("viz_available", lambda s, x: True),
+                ("logged_action", self._logged),
+                ("remote_bash", self._remote),
+                ("_viz_sleep", lambda _s: None),
+                ("alert", lambda *a, **k: self.alertes.append(a)),
+                ("_spawn", lambda fn, *a: fn(*a)),
+        ):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _logged(self, server, domain, action, arg, source="manuel"):
+        self.actions.append((action, arg, source))
+        if action == "viz_baseline":
+            return self.rc_baseline, ("" if not self.rc_baseline else "Error: pas de page suivie")
+        if action == "viz_scan":
+            return 0, '{"anomalies":0}'
+        return (self.rc_maj, "ok" if not self.rc_maj else "Error: échec de la mise à jour")
+
+    def _remote(self, srv, site, body, timeout=300):
+        """Le plugin a lancé son propre scan pendant la mise à jour."""
+        if "vizproof status" in body:
+            at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            return 0, json.dumps({"configured": True,
+                                  "last_run": {"id": "run-42", "at": at,
+                                               "status": "completed",
+                                               "anomalies": self.anomalies,
+                                               "url": "https://vizproof.com/r/42"}})
+        return 0, ""
+
+    def post(self, chemin, corps):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            c.request("POST", chemin, body=json.dumps(corps).encode(),
+                      headers={"Cookie": self.cookie, "X-Dash": "1",
+                               "Content-Type": "application/json"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def get(self, chemin):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            c.request("GET", chemin, headers={"Cookie": self.cookie, "X-Dash": "1"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def maj(self, action="plugin_update", arg="akismet"):
+        return self.post("/api/actions/run",
+                         {"server": "s1", "domain": "a.fr", "action": action, "arg": arg})
+
+    def etape(self, job, cle):
+        return next((s for s in job["steps"] if s["key"] == cle), None)
+
+    def faites(self):
+        return [a for a, _g, _s in self.actions]
+
+    # ---- déclenchement ----
+    def test_job_demarre_et_la_route_repond_sans_attendre(self):
+        st, j = self.maj()
+        self.assertEqual(st, 200)
+        self.assertEqual(j["job"], "viz_update")
+        self.assertEqual((j["domain"], j["server"], j["action"], j["arg"]),
+                         ("a.fr", "s1", "plugin_update", "akismet"))
+        self.assertTrue(j["ok"])
+        # l'instantané rendu est celui d'AVANT le démarrage
+        self.assertEqual([s["key"] for s in j["steps"]],
+                         ["baseline", "update", "viz", "rescan"])
+        self.assertTrue(all(s["status"] == A.VIZUP_WAIT for s in j["steps"]))
+        # …et la séquence réellement jouée : baseline, MAJ, re-scan
+        self.assertEqual(self.faites(), ["viz_baseline", "plugin_update", "rescan"])
+        self.assertEqual(self.actions[0][2], A.VIZ_PRE_SOURCE)
+
+    def test_statut_du_job_expose_toute_la_sequence(self):
+        self.maj()
+        st, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertEqual(st, 200)
+        self.assertFalse(job["running"])
+        self.assertEqual(job["domain"], "a.fr")
+        self.assertEqual(job["action"], "plugin_update")
+        self.assertEqual(job["arg"], "akismet")
+        self.assertTrue(job["started"] and job["finished"])
+        for cle in ("baseline", "update", "rescan"):
+            self.assertEqual(self.etape(job, cle)["status"], A.VIZUP_OK, cle)
+        viz = self.etape(job, "viz")
+        self.assertEqual(viz["status"], A.VIZUP_OK)
+        self.assertEqual(job["result"]["rc"], 0)
+        self.assertEqual(job["result"]["output"], "ok")
+        self.assertEqual(job["result"]["viz"]["source"], A.VIZ_SRC_PLUGIN)
+        self.assertEqual(job["result"]["viz"]["run_id"], "run-42")
+        # le verdict reste aussi lisible là où l'UI le lisait déjà
+        _st, jl = self.get("/api/actions/viz_last?domain=a.fr")
+        self.assertEqual(jl["viz"]["source"], A.VIZ_SRC_PLUGIN)
+
+    def test_site_non_relie_garde_la_reponse_synchrone(self):
+        self.site["vizproof"] = {"has_cli": False, "configured": False, "connected": False}
+        st, j = self.maj()
+        self.assertEqual(st, 200)
+        self.assertNotIn("job", j)
+        for k in ("ok", "rc", "output", "error"):
+            self.assertIn(k, j)
+        self.assertEqual(j["rc"], 0)
+        self.assertIn("plugin_update", self.faites())
+        self.assertEqual(A.vizup_get("a.fr"), None)
+
+    def test_cli_absente_garde_la_reponse_synchrone(self):
+        # `configured` sans `has_cli` : l'inventaire ne garantit pas la commande
+        self.site["vizproof"] = {"has_cli": False, "configured": True, "connected": True}
+        _st, j = self.maj()
+        self.assertNotIn("job", j)
+
+    def test_les_deux_reglages_eteints_gardent_la_reponse_synchrone(self):
+        A.settings_write({"viz_baseline_before_update": False,
+                          "viz_scan_after_update": False})
+        _st, j = self.maj()
+        self.assertNotIn("job", j)
+        self.assertEqual(j["rc"], 0)
+
+    def test_action_hors_perimetre_ne_declenche_pas_de_job(self):
+        _st, j = self.post("/api/actions/run",
+                           {"server": "s1", "domain": "a.fr", "action": "cache_flush"})
+        self.assertNotIn("job", j)
+
+    # ---- composition des étapes ----
+    def test_sans_baseline_quand_le_reglage_est_eteint(self):
+        A.settings_write({"viz_baseline_before_update": False})
+        _st, j = self.maj()
+        self.assertEqual([s["key"] for s in j["steps"]], ["update", "viz", "rescan"])
+        self.assertNotIn("viz_baseline", self.faites())
+
+    def test_sans_controle_visuel_quand_le_reglage_est_eteint(self):
+        A.settings_write({"viz_scan_after_update": False})
+        _st, j = self.maj()
+        self.assertEqual([s["key"] for s in j["steps"]], ["baseline", "update", "rescan"])
+        _st2, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertIsNone(job["result"]["viz"])
+
+    def test_reglages_par_defaut(self):
+        self.assertIs(A.SETTINGS_DEFAULTS["viz_baseline_before_update"], True)
+        self.assertIs(A.SETTINGS_DEFAULTS["viz_baseline_required"], False)
+
+    # ---- baseline ----
+    def test_baseline_en_echec_avertit_mais_ne_bloque_pas(self):
+        self.rc_baseline = 1
+        self.maj()
+        _st, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertEqual(self.etape(job, "baseline")["status"], A.VIZUP_WARN)
+        self.assertEqual(self.etape(job, "update")["status"], A.VIZUP_OK)
+        self.assertEqual(job["result"]["rc"], 0)
+        self.assertIn("plugin_update", self.faites())
+
+    def test_baseline_requise_annule_la_mise_a_jour(self):
+        A.settings_write({"viz_baseline_required": True})
+        self.rc_baseline = 1
+        self.maj()
+        _st, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertEqual(self.etape(job, "baseline")["status"], A.VIZUP_ERR)
+        self.assertEqual(self.etape(job, "update")["status"], A.VIZUP_ERR)
+        self.assertNotIn("plugin_update", self.faites())   # rien n'a été mis à jour
+        self.assertNotIn("rescan", self.faites())
+        self.assertEqual(job["result"]["rc"], 1)
+
+    # ---- mise à jour en échec ----
+    def test_mise_a_jour_en_echec_n_est_pas_controlee_visuellement(self):
+        self.rc_maj = 1
+        self.maj()
+        _st, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertEqual(self.etape(job, "update")["status"], A.VIZUP_ERR)
+        self.assertEqual(self.etape(job, "viz")["status"], A.VIZUP_WARN)
+        self.assertIsNone(job["result"]["viz"])
+        self.assertIn("rescan", self.faites())
+
+    # ---- anomalies ----
+    def test_anomalies_mettent_l_etape_en_avertissement_et_alertent(self):
+        self.anomalies = 3
+        self.maj()
+        _st, job = self.get("/api/actions/viz_update_status?domain=a.fr")
+        self.assertEqual(self.etape(job, "viz")["status"], A.VIZUP_WARN)
+        self.assertEqual(job["result"]["viz"]["anomalies_count"], 3)
+        self.assertEqual(job["result"]["rc"], 0)          # la MAJ, elle, a réussi
+        self.assertEqual(len(self.alertes), 1)
+
+    # ---- verrous ----
+    def test_un_seul_job_par_site(self):
+        A.VIZUP["a.fr"] = {"running": True, "domain": "a.fr", "steps": [],
+                           "started": "2026-09-02 10:00:00"}
+        st, j = self.maj()
+        self.assertEqual(st, 409)
+        self.assertIn("déjà en cours", j["error"])
+        self.assertEqual(self.actions, [])
+
+    def test_pas_de_job_pendant_une_maj_sure_du_meme_site(self):
+        A.SAFE.update(running=True, domain="a.fr")
+        st, j = self.maj()
+        self.assertEqual(st, 409)
+        self.assertIn("sûre", j["error"])
+        self.assertEqual(self.actions, [])
+
+    def test_une_maj_sure_ailleurs_ne_gene_pas(self):
+        A.SAFE.update(running=True, domain="b.fr")
+        st, j = self.maj()
+        self.assertEqual(st, 200)
+        self.assertEqual(j["job"], "viz_update")
+
+    def test_maj_sure_refusee_pendant_un_job(self):
+        A.VIZUP["a.fr"] = {"running": True, "domain": "a.fr", "steps": [],
+                           "started": "2026-09-02 10:00:00"}
+        st, j = self.post("/api/actions/safe_update", {"server": "s1", "domain": "a.fr"})
+        self.assertEqual(st, 409)
+        self.assertIn("contrôle visuel", j["error"])
+        self.assertFalse(A.SAFE["running"])   # la réservation ne doit pas être prise
+
+    # ---- statut ----
+    def test_statut_vide_pour_un_domaine_sans_job(self):
+        _st, j = self.get("/api/actions/viz_update_status?domain=jamais.fr")
+        self.assertFalse(j["running"])
+        self.assertEqual(j["steps"], [])
+        self.assertIsNone(j["result"])
+
+    def test_statut_valide_sa_cible(self):
+        st, _j = self.get("/api/actions/viz_update_status?domain="
+                          + urllib.parse.quote("a b"))
+        self.assertEqual(st, 400)
+
+    def test_memoire_bornee(self):
+        for i in range(A.VIZUP_MAX + 5):
+            A.VIZUP[f"s{i}.fr"] = {"running": False, "domain": f"s{i}.fr", "steps": [],
+                                   "started": f"2026-09-02 10:{i:02d}:00"}
+        self.maj()
+        self.assertLessEqual(len(A.VIZUP), A.VIZUP_MAX)
+        self.assertIn("a.fr", A.VIZUP)          # le job en cours n'est jamais purgé

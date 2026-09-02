@@ -1133,14 +1133,27 @@ function vizLastRunLine(s){ const r=vizRun(s);
     <span title="${H(absTime(r.at))}">${H(relTime(r.at))}</span>
     <span class="pill ${cls}">${H(quoi)}</span>
     ${u?`<a class="small" data-vizrun href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>`:''}</p>`; }
-/* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ---- */
+/* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ----
+   Le scan est le plus souvent lancé par le PLUGIN lui-même (il accroche
+   `upgrader_process_complete`, y compris sous WP-CLI) : le dashboard attend ce
+   verdict-là et ne scanne qu'en repli. D'où `phase` pendant l'attente et
+   `source` dans le verdict — dire QUI a scanné évite de croire à un doublon. */
+const VIZ_PHASES={'attente du scan du plugin':'le plugin VizProof scanne…',
+  'scan en cours':'scan du plugin en cours…',
+  'scan dashboard':'scan lancé par le dashboard…'};
+function vizSource(v){ return v&&v.source==='plugin'?' (scan du plugin)'
+  :v&&v.source==='dashboard'?' (scan dashboard)':''; }
 function vizPhrase(v){
   if(!v||typeof v!=='object') return '';
-  if(v.pending) return 'scan en cours…';
+  if(v.pending) return VIZ_PHASES[v.phase]||'contrôle en cours…';
   if(!v.ran) return 'non lancé ('+(v.reason||v.message||'?')+')';
-  if(v.anomalies) return 'anomalies détectées';
-  if(Number(v.rc)===0) return 'ok';
-  return 'échec ('+(v.message||('rc '+(v.rc??'?')))+')'; }
+  const n=Number(v.anomalies_count)||0;
+  if(v.anomalies) return 'anomalies détectées'+(n?' ('+n+')':'')+vizSource(v);
+  if(Number(v.rc)===0) return 'aucune anomalie'+vizSource(v);
+  /* rc absent : le scan du plugin n'était pas terminé dans le délai d'attente —
+     ni « ok » ni « échec », un verdict qui n'est pas venu. */
+  if(v.rc==null) return (v.message||'verdict non parvenu')+vizSource(v);
+  return 'échec ('+(v.message||('rc '+(v.rc??'?')))+')'+vizSource(v); }
 /* → '' (neutre) | 'ok' | 'warn' | 'err'.
    « Non lancé » est NEUTRE, pas un avertissement : la grande majorité des sites
    n'est pas reliée à VizProof, tout mettre en orange reviendrait à ne plus rien
@@ -1149,7 +1162,7 @@ function vizEtat(v){
   if(!v) return '';
   if(v.pending) return 'warn';
   if(!v.ran) return '';
-  if(v.anomalies) return 'warn';
+  if(v.anomalies||v.rc==null) return 'warn';
   return Number(v.rc)===0?'ok':'err'; }
 function vizConsoleLigne(v){
   if(!v) return '';
@@ -1162,16 +1175,22 @@ function vizConsoleMaj(dom,v){
   const c=consoleDe(dom); if(!c) return;
   const l=c.querySelector('[data-vizline]');
   if(l) l.outerHTML=vizConsoleLigne(v); else c.innerHTML+='\n'+vizConsoleLigne(v); }
-/* Le scan tourne côté serveur APRÈS la réponse (cf. README §VizProof) : on
+/* Le contrôle se joue côté serveur APRÈS la réponse (cf. README §VizProof) : on
    interroge /api/actions/viz_last jusqu'au verdict. Borné dans le temps —
-   un `pending` qui ne retombe jamais ne doit pas sonder à vie. */
+   un `pending` qui ne retombe jamais ne doit pas sonder à vie. Les `phase`
+   successives sont réaffichées au passage : attendre le scan du plugin dure
+   jusqu'à 90 s, mieux vaut dire ce qu'on attend. */
 function suivreVizLast(srv,dom,nid){
-  let tours=0;
+  let tours=0, vue=null;
   poll('vizlast:'+dom,async()=>{
     if(++tours>150) return {fini:true,perdu:true};       // ≈ 10 min
     const j=await api('/api/actions/viz_last?domain='+encodeURIComponent(dom));
     const v=(j&&j.viz)||null;
-    if(!v||v.pending) return {fini:false};
+    if(!v||v.pending){
+      if(v&&v.phase&&v.phase!==vue){ vue=v.phase;
+        NOTIF.update(nid,{detail:'contrôle visuel : '+vizPhrase(v),progress:null});
+        vizConsoleMaj(dom,v); }
+      return {fini:false}; }
     NOTIF.done(nid,{ok:vizEtat(v)!=='err',warn:vizEtat(v)==='warn',
       message:'contrôle visuel : '+vizPhrase(v)});
     vizConsoleMaj(dom,v);
@@ -1779,6 +1798,7 @@ function openDrawer(srv,dom){ const s=allSites().find(x=>x.srv===srv&&x.domain==
   loadPolicy(s.srv,s.domain);
   loadRollbackPoints(s.srv,s.domain);
   loadSafeStatus(s.domain);
+  loadVizUpStatus(s.srv,s.domain);
   document.querySelectorAll('#dbody .prb').forEach(b=>b.onclick=()=>askVersion(b.dataset.slug,b));
   const pt=document.getElementById('pall-toggle');
   if(pt) pt.onclick=()=>{ const t=document.getElementById('pall-tbl'), hi=document.getElementById('pall-hint');
@@ -2207,6 +2227,100 @@ async function startSafeUpdate(srv,dom,btn){
   suivreSafeNotif(dom,nid);
 }
 
+/* ---- job « baseline → mise à jour → verdict » (réponse {job:"viz_update"}) ----
+   Sur un site relié à VizProof, /api/actions/run ne fait plus la mise à jour
+   dans la réponse : elle démarre un job (baseline AVANT, verdict APRÈS) et rend
+   la main. Même rendu que la MAJ sûre — une liste d'étapes —, parce que c'est
+   la même chose vue par l'utilisateur : une opération longue à suivre. */
+const VIZUP_PILL={attente:['mut','attente'],'en cours':['mut','en cours…'],
+  ok:['ok','ok'],warn:['warn','attention'],erreur:['err','échec']};
+const VIZUP_DETAIL={baseline:'baseline VizProof…',update:'mise à jour…',
+  rescan:'inventaire…'};
+const MAJ_ACTS=new Set(['core_update','plugins_update_all','plugins_update_except',
+  'plugin_update','themes_update_all']);
+function vizupLigne(x){ const [c,l]=VIZUP_PILL[x.status]||['mut',String(x.status||'')];
+  return `<div class="logline"><span class="pill ${c}">${H(l)}</span> <b>${H(x.label)}</b>
+    <span class="muted small">${H(x.ts||'')}</span>
+    ${x.detail?`<div class="muted small wrapline" style="margin-left:8px">${H(stripPhpNoise(x.detail))}</div>`:''}</div>`; }
+/* Étape en cours (ou la dernière jouée) : ce que la barre de notifications dit. */
+function vizupCourante(job){ const st=(job&&job.steps)||[];
+  return st.filter(x=>x.status==='en cours').pop()
+      || st.filter(x=>x.status!=='attente').pop() || st[0] || null; }
+function vizupFaites(job){ return ((job&&job.steps)||[]).filter(x=>x.status!=='attente').length; }
+function vizupDetail(st){ if(!st) return 'préparation…';
+  // Pour le contrôle visuel, le détail de l'étape EST la phase (attente du scan
+  // du plugin, scan en cours, scan dashboard) : on la dit en clair.
+  if(st.key==='viz') return VIZ_PHASES[st.detail]||'contrôle visuel…';
+  return VIZUP_DETAIL[st.key]||st.label||''; }
+/* '' | 'ok' | 'warn' | 'err' — une anomalie visuelle n'est pas un échec du job. */
+function vizupFin(job){ const st=(job&&job.steps)||[];
+  if(st.some(x=>x.status==='erreur')) return 'err';
+  if(st.some(x=>x.status==='warn')) return 'warn';
+  return 'ok'; }
+function vizupVerdict(job){ const f=vizupFin(job);
+  return f==='err'?'échec':f==='warn'?'terminée avec avertissement':'réussie'; }
+function renderVizUp(job,dom){
+  const box=consoleDe(dom); if(!box) return;
+  box.style.display='block';
+  const v=(job.result&&job.result.viz)||null;
+  const tete=job.running?'<span class="pill mut">en cours…</span>'
+    :`<span class="pill ${vizupFin(job)}">${H(vizupVerdict(job))}</span>`;
+  box.innerHTML=`<div style="margin-bottom:6px"><b>◉ Mise à jour sous contrôle visuel</b> ${tete}</div>`
+    +((job.steps||[]).map(vizupLigne).join(''))
+    +(v?vizConsoleLigne(v):'');
+  box.scrollTop=box.scrollHeight; }
+/* Pendant le job, les boutons de mise à jour du site sont hors service : deux
+   mises à jour de front sur le même WordPress, c'est un site cassé sans coupable
+   (le serveur refuse d'ailleurs en 409). */
+function vizupBoutons(dom,off){
+  if(!CUR||CUR.domain!==dom) return;
+  document.querySelectorAll('#dbody [data-act]').forEach(b=>{
+    if(MAJ_ACTS.has(b.dataset.act)) b.disabled=!!off; });
+  document.querySelectorAll('#dbody .prb').forEach(b=>{ b.disabled=!!off; });
+  const su=document.getElementById('safeup'); if(su) su.disabled=!!off; }
+function suivreVizUp(srv,dom,nid){
+  let tours=0;
+  poll('vizup:'+dom,async()=>{
+    if(++tours>600) return {fini:true};        // ≈ 30 min, garde-fou
+    const job=await api('/api/actions/viz_update_status?domain='+encodeURIComponent(dom));
+    if(!job||!(job.steps||[]).length) return {fini:false};
+    if(CUR&&CUR.domain===dom){ renderVizUp(job,dom); vizupBoutons(dom,job.running); }
+    const n=(job.steps||[]).length||1;
+    if(job.running){
+      NOTIF.update(nid,{progress:Math.min(.95,vizupFaites(job)/n),
+        detail:vizupDetail(vizupCourante(job))});
+      return {fini:false}; }
+    const v=(job.result&&job.result.viz)||null, f=vizupFin(job);
+    NOTIF.update(nid,{progress:1});
+    NOTIF.done(nid,{ok:f!=='err',warn:f==='warn',
+      message:vizupVerdict(job)+(v?' · '+vizPhrase(v):'')});
+    // L'inventaire a été re-scanné côté serveur : on recharge, puis on remet la
+    // console du job (openDrawer la réinitialise).
+    loadFleet().then(()=>{ if(CUR&&CUR.domain===dom){ openDrawer(srv,dom); renderVizUp(job,dom); } })
+               .catch(()=>{});
+    return {fini:true};
+  },{every:3000,maxErrors:5,until:r=>!!(r&&r.fini),
+     onStop:()=>{ NOTIF.done(nid,{ok:false,
+       message:'suivi interrompu — voir l’historique du site'});
+       vizupBoutons(dom,false); }});
+}
+/* À l'ouverture du tiroir : si un job tourne encore sur CE site, on le
+   ré-affiche et on se raccroche — le tiroir a pu être fermé entre-temps. */
+async function loadVizUpStatus(srv,dom){
+  const seq=DRAWERSEQ;
+  let job=null;
+  try{ job=await api('/api/actions/viz_update_status?domain='+encodeURIComponent(dom)); }
+  catch(e){ return; }
+  if(seq!==DRAWERSEQ||!job||!(job.steps||[]).length) return;
+  renderVizUp(job,dom);
+  if(!job.running) return;
+  vizupBoutons(dom,true);
+  const nid='vizup:'+dom;
+  if(!NOTIF.encours(nid)) NOTIF.start({id:nid,label:'MAJ contrôlée · '+dom,kind:'maj',
+    progress:0,detail:'reprise du suivi…',site:{srv,domain:dom}});
+  suivreVizUp(srv,dom,nid);
+}
+
 /* historique du site (non bloquant — le tiroir s'affiche sans attendre) */
 let TLSEQ=0;
 const TLKIND={action:'action',collect:'collecte',event:'événement'};
@@ -2346,6 +2460,14 @@ async function runAction(btn){ const act=btn.dataset.act, arg=btn.dataset.arg||n
   const nid=NOTIF.start({label:notifLabel(act,arg,s),site:{srv:s.srv,domain:s.domain},
     kind:ACT_KIND[act]||'action'});
   try{ const j=await api('/api/actions/run',{server:s.srv,domain:s.domain,action:act,arg})||{};
+    /* Site relié à VizProof : la route a démarré un job (baseline → MAJ →
+       verdict) au lieu de faire la mise à jour dans sa réponse. */
+    if(j.job==='viz_update'){
+      renderVizUp({running:true,steps:j.steps||[],result:null},s.domain);
+      vizupBoutons(s.domain,true);
+      NOTIF.update(nid,{progress:0,detail:'démarrage…'});
+      suivreVizUp(s.srv,s.domain,nid);
+      return; }
     /* rc 2 sur un scan visuel = anomalies détectées, pas un échec technique */
     const anom=!j.ok&&Number(j.rc)===2&&/^viz_/.test(act);
     const verdict=j.ok?'<b class="ok">✅ OK</b>'
@@ -2355,7 +2477,7 @@ async function runAction(btn){ const act=btn.dataset.act, arg=btn.dataset.arg||n
     // pas, ou qu'il tourne encore (cf. suivreVizLast).
     const v=(j.viz&&typeof j.viz==='object')?j.viz:null;
     con.innerHTML=H(head+(j.output||'')+'\n\n')+verdict+(v?'\n'+vizConsoleLigne(v):'');
-    if(v&&v.pending) NOTIF.update(nid,{detail:'contrôle visuel VizProof…',progress:null});
+    if(v&&v.pending) NOTIF.update(nid,{detail:'contrôle visuel : '+vizPhrase(v),progress:null});
     else NOTIF.done(nid,{ok:!!(j.ok||anom),warn:anom||(v?vizEtat(v)==='warn':false),
       message:anom?'anomalies visuelles détectées'
         :(j.ok?(v?'contrôle visuel : '+vizPhrase(v):'')
@@ -2370,7 +2492,13 @@ async function runAction(btn){ const act=btn.dataset.act, arg=btn.dataset.arg||n
 /* journal */
 document.getElementById('logbtn').onclick=async()=>{ document.getElementById('logmodal').classList.add('open');
   const j=await api('/api/actions/log');
-  document.getElementById('loglist').innerHTML=(j.log||[]).map(e=>`<div class="logline"><b>${H(e.domain)}</b> · ${H(e.action)}${e.arg?' '+H(e.arg):''} · <span class="pill ${e.rc===0?'ok':'err'}">${e.rc===0?'OK':'échec'}</span> <span class="muted small">${H(e.source||'')} ${H(e.ts)} · ${e.duration_s}s</span><br><code>${H((e.output_tail||'').slice(-240))}</code></div>`).join('')||'Aucune action.'; };
+  document.getElementById('loglist').innerHTML=(j.log||[]).map(e=>{
+    /* rc 2 sur une action vizproof (scan, verdict) = ANOMALIES : l'action a
+       tourné, c'est le rendu du site qui a changé — pastille orange, pas rouge. */
+    const anom=Number(e.rc)===2&&/^viz_/.test(String(e.action||''));
+    const cls=e.rc===0?'ok':(anom?'warn':'err'), lib=e.rc===0?'OK':(anom?'anomalies':'échec');
+    return `<div class="logline"><b>${H(e.domain)}</b> · ${H(e.action)}${e.arg?' '+H(e.arg):''} · <span class="pill ${cls}">${lib}</span> <span class="muted small">${H(e.source||'')} ${H(e.ts)} · ${e.duration_s}s</span><br><code>${H((e.output_tail||'').slice(-240))}</code></div>`;
+  }).join('')||'Aucune action.'; };
 document.getElementById('logmodal').onclick=e=>{ if(e.target.id==='logmodal') e.target.classList.remove('open'); };
 
 /* collecte manuelle */
@@ -3386,7 +3514,8 @@ async function loadKeys(){ const bd=document.getElementById('set-body');
 /* ===== RÉGLAGES — mise à jour sûre =====
    SETTINGS est mémorisé : la modale de confirmation de la MAJ sûre pré-coche sa
    case avec ce réglage sans refaire un aller-retour réseau à chaque ouverture. */
-let SETTINGS={viz_anomaly_rollback:false,viz_scan_after_update:true}, SETTINGSLU=false;
+let SETTINGS={viz_anomaly_rollback:false,viz_scan_after_update:true,
+  viz_baseline_before_update:true,viz_baseline_required:false}, SETTINGSLU=false;
 /* Lecture paresseuse : la modale de MAJ sûre a besoin du réglage même si
    personne n'a jamais ouvert Réglages. Un seul appel par session. */
 async function ensureSettings(){ if(SETTINGSLU) return SETTINGS;
@@ -3408,27 +3537,46 @@ async function loadSettings(){ const bd=document.getElementById('mset-body');
       Coché : la mise à jour est <b>annulée</b> automatiquement. Un rendu qui change n'est pas toujours un rendu cassé
       (bandeau de cookies, carrousel, publicité), d'où le défaut prudent côté « avertir ».</p>
     <label class="fld mt3"><input type="checkbox" id="set-vizscan"${SETTINGS.viz_scan_after_update===false?'':' checked'}>
-      Scan visuel VizProof après chaque mise à jour (sites reliés)</label>
+      Contrôle visuel VizProof après chaque mise à jour (verdict du scan lancé par le plugin, sinon scan par le dashboard)</label>
     <span id="set-vizscanmsg" class="small muted"></span>
     <p class="hint" style="margin:6px 0 0">Coché (défaut) : après une mise à jour lancée depuis le tiroir (cœur, extensions,
-      thèmes), un scan visuel part en arrière-plan sur les sites reliés à VizProof. Il <b>informe seulement</b> — le bouton
-      unitaire n'archive rien, il n'y a donc rien à annuler ; le résultat s'affiche dans la barre de notifications, dans la
-      console du tiroir et dans l'historique du site.</p>`;
-  document.getElementById('set-vizrb').onchange=async e=>{
-    const m=document.getElementById('set-vizrbmsg'), v=e.target.checked; m.textContent='…';
-    try{ const r=await api('/api/mgmt/settings',{settings:{viz_anomaly_rollback:v}});
-      if(r&&r.settings) SETTINGS=r.settings;
-      m.innerHTML='<span class="pill ok">enregistré</span>';
-    }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
-    setTimeout(()=>{ m.innerHTML=''; },2500); };
-  document.getElementById('set-vizscan').onchange=async e=>{
-    const m=document.getElementById('set-vizscanmsg'), v=e.target.checked; m.textContent='…';
-    try{ const r=await api('/api/mgmt/settings',{settings:{viz_scan_after_update:v}});
-      if(r&&r.settings) SETTINGS=r.settings;
-      m.innerHTML='<span class="pill ok">enregistré</span>';
-    }catch(err){ e.target.checked=!v; m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
-    setTimeout(()=>{ m.innerHTML=''; },2500); };
+      thèmes), le dashboard récupère en arrière-plan le verdict visuel des sites reliés à VizProof. L'extension
+      <b>scanne d'elle-même</b> après chaque mise à jour quand son option « scan après mise à jour » est active : on attend
+      donc <b>son</b> scan plutôt que d'en lancer un second, et on ne scanne nous-mêmes que si elle ne l'a pas fait. Il
+      <b>informe seulement</b> — le bouton unitaire n'archive rien, il n'y a donc rien à annuler ; le résultat s'affiche dans
+      la barre de notifications, dans la console du tiroir et dans l'historique du site.</p>
+    <label class="fld mt3"><input type="checkbox" id="set-vizbase"${SETTINGS.viz_baseline_before_update===false?'':' checked'}>
+      Baseline VizProof avant chaque mise à jour unitaire (sites reliés)</label>
+    <span id="set-vizbasemsg" class="small muted"></span>
+    <p class="hint" style="margin:6px 0 0">Coché (défaut) : sur un site relié, la mise à jour lancée depuis le tiroir part
+      dans un <b>déroulé suivi</b> — baseline VizProof, mise à jour, verdict visuel, inventaire — au lieu d'être exécutée
+      d'un bloc. Sans baseline, le contrôle d'après compare au <b>dernier état connu</b> de VizProof, qui peut dater de la
+      veille et mêler d'autres changements ; avec elle, le verdict porte sur <b>cette</b> mise à jour.</p>
+    <label class="fld mt3"><input type="checkbox" id="set-vizbasereq"${SETTINGS.viz_baseline_required?' checked':''}>
+      Exiger la baseline : ne pas mettre à jour si elle échoue</label>
+    <span id="set-vizbasereqmsg" class="small muted"></span>
+    <p class="hint" style="margin:6px 0 0">Décoché (défaut) : une baseline ratée est un <b>avertissement</b> et la mise à
+      jour se fait quand même — VizProof est un filet, pas une condition. Coché : la mise à jour est <b>annulée</b> tant
+      qu'aucun témoin d'avant n'a pu être pris.</p>`;
+  bindSetting('set-vizrb','viz_anomaly_rollback');
+  bindSetting('set-vizscan','viz_scan_after_update');
+  bindSetting('set-vizbase','viz_baseline_before_update');
+  bindSetting('set-vizbasereq','viz_baseline_required');
   renderVizSettings(SETTINGS); }
+/* Une case = un réglage booléen, enregistré à la volée. Le témoin voisin porte
+   le même identifiant suffixé « msg » ; en cas d'échec la case revient à son
+   état d'avant, pour ne jamais afficher un réglage qui n'a pas été écrit. */
+function bindSetting(id,cle){
+  const el=document.getElementById(id); if(!el) return;
+  const m=document.getElementById(id+'msg');
+  el.onchange=async e=>{
+    const v=e.target.checked; if(m) m.textContent='…';
+    try{ const r=await api('/api/mgmt/settings',{settings:{[cle]:v}});
+      if(r&&r.settings) SETTINGS=r.settings;
+      if(m) m.innerHTML='<span class="pill ok">enregistré</span>';
+    }catch(err){ e.target.checked=!v;
+      if(m) m.innerHTML=`<span class="pill err">échec</span> ${H(String(err))}`; }
+    setTimeout(()=>{ if(m) m.innerHTML=''; },2500); }; }
 
 /* ===== RÉGLAGES — VizProof (jeton de compte) =====
    Même modèle que le jeton Telegram : le champ reste vide, la valeur

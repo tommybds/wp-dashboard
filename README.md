@@ -298,8 +298,9 @@ jour, quel que soit le chemin emprunté.
 
 Les boutons de mise à jour **sans filet** (« Cœur seul », « Extensions seules »,
 le bouton **MAJ** de chaque extension) ne font ni archive ni retour arrière, mais
-déclenchent depuis peu un **contrôle visuel** en arrière-plan sur les sites
-reliés à VizProof — voir [Contrôle visuel après une mise à jour
+sur un site relié à VizProof ils passent depuis peu par un **déroulé suivi** —
+baseline, mise à jour, verdict visuel, inventaire — au lieu d'une simple
+commande : voir [Contrôle visuel après une mise à jour
 unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire).
 
 `POST /api/actions/safe_update {"dry_run": true}` simule sans rien écrire.
@@ -335,7 +336,9 @@ Telegram, le jeton VizProof et deux réglages de comportement, stockés dans
 | Réglage | Défaut | Effet |
 |---|---|---|
 | **Retour arrière automatique sur anomalie visuelle** (`viz_anomaly_rollback`) | décoché | Pendant une **MAJ sûre**, une anomalie VizProof (rc 2) annule la mise à jour au lieu de la conserver. Voir [VizProof](#vizproof). |
-| **Scan visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis le tiroir (cœur, extensions, thèmes), un scan visuel part **en arrière-plan** sur les sites reliés. Il **informe seulement**. |
+| **Contrôle visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis le tiroir (cœur, extensions, thèmes), le dashboard récupère **en arrière-plan** le verdict visuel des sites reliés : il **attend le scan que le plugin lance lui-même** et ne scanne qu'en repli. Il **informe seulement**. Voir [Contrôle visuel après une mise à jour unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire). |
+| **Baseline VizProof avant chaque mise à jour unitaire** (`viz_baseline_before_update`) | **coché** | Sur un site relié, la mise à jour lancée depuis le tiroir passe par un **job suivi** : baseline → mise à jour → verdict visuel → inventaire. Sans baseline, le verdict d'après compare au dernier état connu de VizProof. Voir [Baseline avant, verdict après](#baseline-avant-verdict-après--le-job-viz_update). |
+| **Exiger la baseline** (`viz_baseline_required`) | décoché | Décoché : une baseline ratée est un **avertissement**, la mise à jour se fait quand même. Coché : la mise à jour est **annulée** tant qu'aucun témoin d'avant n'a pu être pris. |
 
 Ils se lisent et s'écrivent aussi en direct ; les clés inconnues sont ignorées et
 une valeur d'un autre type est ramenée au type attendu :
@@ -498,10 +501,10 @@ Le réglage se lit et s'écrit aussi en direct (voir [Réglages](#réglages)).
 
 Le bouton **MAJ** du tiroir passe par `/api/actions/run`, qui ne faisait
 **aucun** contrôle visuel : seules la MAJ sûre et l'action groupée « vérifiée
-visuellement » en faisaient un. Avec le réglage **« Scan visuel VizProof après
-chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
+visuellement » en faisaient un. Avec le réglage **« Contrôle visuel VizProof
+après chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
 `plugins_update_all`, `plugins_update_except`, `core_update` et
-`themes_update_all` enchaînent désormais un `wp vizproof scan --wait` quand :
+`themes_update_all` donnent désormais un **verdict visuel** quand :
 
 1. le réglage est actif, **et**
 2. la mise à jour a réussi (rc 0), **et**
@@ -509,47 +512,182 @@ chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
    défaut, une sonde `wp vizproof status --format=json` sur le site), **et**
 4. la commande `wp vizproof` existe (`viz_available`).
 
-**Le scan n'est pas attendu par la réponse HTTP.** `wp vizproof scan --wait`
-photographie toutes les pages suivies et dure couramment plus d'une minute ;
+##### C'est le plugin qui scanne — le dashboard attend son verdict
+
+`vizproof-timeline` (≥ 1.3.6) enregistre ses hooks `upgrader_pre_install` /
+`upgrader_process_complete` **globalement**, donc aussi sous WP-CLI. Quand son
+option de site `enable_update_scan_by_default` est vraie — **son défaut** — un
+`wp plugin update` lancé par le dashboard **met déjà un scan en file** côté
+vizproof.com. Vérifié sur elwave.fr : après une MAJ déclenchée depuis le
+dashboard, `wp vizproof status --format=json` porte un `last_run.at` à
+l'horodatage exact de cette mise à jour. Enchaîner notre propre
+`wp vizproof scan --wait` revenait donc à **photographier deux fois** toutes les
+pages suivies.
+
+Le dashboard **attend le scan du plugin** :
+
+1. l'instant `t0` est pris **avant** de lancer la mise à jour, et l'identifiant
+   `vizproof.last_run.id` connu de `fleet.json` sert de repère ;
+2. la mise à jour faite, un thread interroge `wp vizproof status --format=json`
+   **toutes les 10 s pendant au plus 90 s**, jusqu'à voir un `last_run` dont
+   l'`id` **diffère** du précédent **et** dont l'`at` est ≥ `t0 − 60 s` (les 60 s
+   absorbent l'écart d'horloge entre le dashboard et le serveur du site) ;
+3. **run trouvé** → on le suit jusqu'à son état final (`completed` / `failed`),
+   10 s à la fois, **5 min au total** ; le verdict porte `source: "plugin"`,
+   `rc` 2 si `anomalies > 0` et 0 sinon, plus `anomalies_count`, `run_id` et le
+   `report_url` du run ;
+4. **aucun run après 90 s** → on lit `wp option get vizproof_timeline_options
+   --format=json` :
+   - `enable_update_scan_by_default` **faux ou illisible** → c'est **nous** qui
+     scannons (`wp vizproof scan --wait --format=json`, `source: "dashboard"`),
+     comme avant ;
+   - **vrai** → le plugin aurait dû scanner et ne l'a pas fait (site sans page
+     suivie, non éligible…) : on renvoie `ran: false`,
+     `reason: "le plugin n'a lancé aucun scan"` **sans rien lancer** — un scan
+     tardif ne serait qu'un doublon de plus.
+
+**La baseline d'avant, elle, ne vient pas du plugin** : son option
+`pre_update_baseline_on_auto_updates` est **fausse par défaut**. Elle est prise
+par la **MAJ sûre**, par l'action groupée **« vérification visuelle »**
+(`viz_baseline` puis `viz_scan`), et depuis peu par le job décrit juste après —
+sans quoi le verdict comparerait au dernier état connu de VizProof et non à
+l'état d'avant cette mise à jour.
+
+##### Baseline avant, verdict après : le job `viz_update`
+
+Un verdict visuel ne vaut que par ce à quoi il se compare. Sans baseline prise
+juste avant, VizProof compare au **dernier état connu** — qui peut dater de la
+veille et mêler d'autres changements (une actualité publiée, une bannière
+saisonnière) à ceux de la mise à jour. La **MAJ sûre** prenait déjà sa baseline ;
+la mise à jour unitaire le fait désormais aussi.
+
+Comme baseline + mise à jour + attente du verdict dépassent largement les **340 s**
+que nginx laisse à `/api/actions/run`, la route ne fait plus la mise à jour dans
+sa réponse : elle **démarre un job** et rend la main. C'est le cas quand :
+
+1. l'action est une des cinq mises à jour, **et**
+2. le site est relié d'après `fleet.json` — `vizproof.has_cli` **et**
+   `vizproof.configured` (volontairement plus strict que le contrôle visuel
+   seul : on ne démarre pas un job de plusieurs minutes sur un « peut-être »),
+   **et**
+3. `viz_baseline_before_update` **ou** `viz_scan_after_update` est actif.
+
+Tous les autres cas — site non relié, réglages éteints, action hors périmètre —
+**gardent la réponse synchrone** d'avant (`ok`, `rc`, `output`, `error`, et le
+bloc `viz` en tâche de fond).
+
+```jsonc
+// POST /api/actions/run — réponse immédiate, la mise à jour n'a pas commencé
+{"ok": true, "job": "viz_update", "domain": "elwave.fr", "server": "vps1",
+ "action": "plugin_update", "arg": "akismet",
+ "steps": [{"key": "baseline", "label": "Baseline VizProof", "status": "attente", "detail": "", "ts": ""},
+           {"key": "update",   "label": "Mise à jour",       "status": "attente", "detail": "", "ts": ""},
+           {"key": "viz",      "label": "Contrôle visuel",   "status": "attente", "detail": "", "ts": ""},
+           {"key": "rescan",   "label": "Inventaire à jour", "status": "attente", "detail": "", "ts": ""}]}
+```
+
+Le job enchaîne :
+
+| étape | ce qu'elle fait |
+| --- | --- |
+| `baseline` | `wp vizproof baseline --wait --format=json` (300 s), journalisé sous la source `pre-update`. Absente si `viz_baseline_before_update` est décoché. |
+| `update` | exactement la mise à jour qu'aurait faite la route, journalisée comme avant ; `t0` est pris juste avant. |
+| `viz` | le verdict visuel décrit plus haut : attente du scan du plugin, repli sur le nôtre. Absente si `viz_scan_after_update` est décoché ; en `warn` sans rien lancer si la mise à jour a échoué. |
+| `rescan` | inventaire rafraîchi, pour que le tiroir montre le dernier scan. |
+
+Chaque étape porte un `status` : `attente`, `en cours`, `ok`, `warn`, `erreur`.
+
+- **Baseline en échec** : étape en `warn`, **la mise à jour continue** — VizProof
+  est un filet, pas une condition. Avec `viz_baseline_required` coché, l'étape
+  passe en `erreur` et **la mise à jour n'est pas lancée**.
+- **Anomalies visuelles** : étape `viz` en `warn`, jamais en `erreur` — la mise à
+  jour est passée, c'est le rendu qui a changé. L'alerte `viz_anomaly` part comme
+  ailleurs.
+- **Un seul job par site**, et **jamais en même temps qu'une MAJ sûre** sur ce
+  site : les deux touchent le même WordPress. Les deux routes se réservent sous
+  le **même verrou** et répondent **409** avec le motif.
+
+```bash
+curl -s ... '/api/actions/viz_update_status?domain=elwave.fr'
+# → {"running":false,"domain":"elwave.fr","server":"vps1","action":"plugin_update",
+#    "arg":"akismet","started":"…","finished":"…",
+#    "steps":[{"key":"baseline","label":"Baseline VizProof","status":"ok","detail":"baseline capturée","ts":"14:47:12"}, …],
+#    "result":{"rc":0,"output":"…","viz":{"source":"plugin","anomalies_count":0, …},"duration_s":128.4}}
+```
+
+Un domaine sans job répond un job **vide** (`running: false`, `steps: []`) plutôt
+qu'une erreur. Comme `viz_last`, c'est une **mémoire de processus** bornée, vidée
+au redémarrage du service : l'historique reste dans `actions.log`.
+
+Côté interface, la console du tiroir affiche les étapes **en direct**, du même
+rendu que la MAJ sûre, et la barre de notifications passe en progression
+déterminée (« baseline VizProof… », « mise à jour… », « le plugin VizProof
+scanne… », puis le verdict). Les boutons de mise à jour du site sont désactivés
+pendant le job ; le tiroir peut être fermé et rouvert — à la réouverture, un job
+en cours est **ré-affiché et re-suivi**.
+
+##### Quand la réponse reste synchrone
+
+Hors des conditions du job ci-dessus (site non relié, réglages éteints), la route
+fait la mise à jour elle-même — et là encore **elle n'attend pas le verdict**.
 `/api/actions/run` tient la connexion pendant toute l'action et nginx la coupe à
-**340 s** (`proxy_read_timeout`, `deploy/nginx-dashboard.conf`). Enchaîner MAJ
-*puis* scan dans la même réponse ferait donc perdre, sur un gros site, non
-seulement le scan mais le **résultat d'une mise à jour déjà appliquée**. La route
-répond dès la mise à jour terminée, le scan part dans un thread, et son verdict
-se récupère ensuite.
+**340 s** (`proxy_read_timeout`, `deploy/nginx-dashboard.conf`) : attendre le
+scan dans la réponse ferait perdre, sur un gros site, non seulement le scan mais
+le **résultat d'une mise à jour déjà appliquée**. La route répond dès la mise à
+jour terminée, l'attente part dans un thread, et le verdict se récupère ensuite.
 
 La réponse conserve son contrat (`ok`, `rc`, `output`, `error`) et gagne un bloc
 `viz` :
 
 ```jsonc
-// scan lancé : le verdict viendra
+// contrôle lancé : le verdict viendra
 {"ok": true, "rc": 0, "output": "…", "error": null,
- "viz": {"ran": true, "pending": true, "message": "scan visuel VizProof en cours…"}}
-// scan impossible : on dit pourquoi
+ "viz": {"ran": true, "pending": true, "phase": "attente du scan du plugin",
+         "message": "contrôle visuel VizProof en cours…"}}
+// contrôle impossible : on dit pourquoi
 {"viz": {"ran": false, "reason": "non relié" | "CLI absente" | "désactivé"
-                                 | "mise à jour en échec"}}
+                                 | "mise à jour en échec"
+                                 | "le plugin n'a lancé aucun scan"}}
 ```
 
 ```bash
 curl -s ... '/api/actions/viz_last?domain=elwave.fr'
-# → {"viz":{"ran":true,"pending":false,"rc":2,"anomalies":true,
-#           "report_url":"https://vizproof.com/r/42","message":"anomalies visuelles détectées"}}
+# → {"viz":{"ran":true,"pending":false,"source":"plugin","run_id":"r_42","rc":2,
+#           "anomalies":true,"anomalies_count":3,"phase":null,
+#           "report_url":"https://vizproof.com/r/42",
+#           "message":"anomalies visuelles détectées (3)"}}
 ```
 
+`GET /api/actions/viz_last?domain=` renvoie donc, en plus de l'ancien contrat :
+
+| champ | valeur |
+| --- | --- |
+| `source` | `plugin` (scan du plugin) \| `dashboard` (repli) \| `null` |
+| `run_id` | identifiant du run VizProof, quand il est connu |
+| `anomalies_count` | nombre d'anomalies (0 si aucune ou inconnu) |
+| `phase` | pendant l'attente : `attente du scan du plugin`, `scan en cours`, `scan dashboard` ; `null` une fois le verdict rendu |
+
 - `rc 2` = **anomalies visuelles** : `viz.anomalies` passe à `true` et l'alerte
-  Telegram `viz_anomaly` part, comme pour une action groupée.
+  Telegram `viz_anomaly` part, quel que soit l'auteur du scan.
+- `rc null` avec `ran: true` = le run du plugin n'était **pas terminé** au bout
+  de 5 min : ce n'est ni un « ok » ni un échec, et rien n'est journalisé.
 - **Aucun retour arrière ici** : le bouton unitaire n'archive rien avant de
   mettre à jour, il n'y a donc rien à annuler — on informe, on n'annule pas.
-- Le scan est journalisé dans `data/actions.log` avec la source
-  `auto-after-update` : il apparaît dans l'**historique du site**. Un `rescan`
-  suit, pour que la ligne « Dernier scan » du tiroir soit à jour.
+- Le verdict est journalisé dans `data/actions.log` sous l'action
+  **`viz_verdict`** (source `auto-after-update`, `arg` = `run_id`, `rc` 0/2,
+  sortie = résumé) : sans cette entrée, un scan lancé par le plugin ne laisserait
+  **aucune trace** dans l'historique du site, puisqu'il ne passe pas par nous. Le
+  scan de repli reste en plus journalisé comme `viz_scan`. Un `rescan` suit dans
+  tous les cas, pour que la ligne « Dernier scan » du tiroir soit à jour.
 - `GET /api/actions/viz_last?domain=` est une **mémoire de processus** (bornée,
   vidée au redémarrage du service) : l'historique, lui, est dans `actions.log`.
 
-Côté interface : la console du tiroir ajoute « Contrôle visuel VizProof : … »
-(remplacée par le verdict quand il arrive, avec le lien du rapport), et la
-[barre de notifications](#la-barre-de-notifications) montre l'étape puis le
-verdict — en **orange** s'il y a des anomalies.
+Côté interface : la console du tiroir ajoute « Contrôle visuel VizProof : le
+plugin VizProof scanne… », remplacée au fil des phases puis par le verdict —
+« aucune anomalie *(scan du plugin)* », « anomalies détectées (3) *(scan
+dashboard)* » — avec le lien du rapport ; la
+[barre de notifications](#la-barre-de-notifications) suit les mêmes étapes, en
+**orange** s'il y a des anomalies.
 
 ### Tâches périodiques
 

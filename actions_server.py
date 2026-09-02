@@ -48,6 +48,27 @@ VIZ_ACTIONS = ("viz_baseline", "viz_scan")
 VIZ_AFTER_UPDATE_ACTIONS = ("plugin_update", "plugins_update_all",
                             "plugins_update_except", "core_update", "themes_update_all")
 VIZ_AFTER_SOURCE = "auto-after-update"   # source journalisée du scan automatique
+# Le plugin vizproof-timeline (≥ 1.3.6) accroche `upgrader_process_complete`
+# GLOBALEMENT, donc aussi sous WP-CLI : quand son option de site
+# `enable_update_scan_by_default` est vraie (son défaut), IL LANCE LUI-MÊME un
+# scan à chaque `wp plugin update`. Le dashboard attend donc ce scan-là et ne
+# lance le sien qu'en repli — sans quoi chaque mise à jour en déclenchait deux.
+VIZ_OPTION_NAME = "vizproof_timeline_options"
+VIZ_AUTOSCAN_KEY = "enable_update_scan_by_default"
+VIZ_POLL_S = 10       # cadence d'interrogation de `wp vizproof status`
+VIZ_WAIT_NEW_S = 90   # au plus 90 s pour voir APPARAÎTRE le run lancé par le plugin
+VIZ_WAIT_DONE_S = 300 # et 5 min au total pour le voir se TERMINER
+# Tolérance d'horloge entre le dashboard et le serveur du site : un run daté
+# jusqu'à une minute AVANT la mise à jour compte encore comme postérieur.
+VIZ_CLOCK_SKEW_S = 60
+VIZ_RUN_PENDING = ("queued", "running", "pending", "in_progress", "processing")
+VIZ_RUN_FAILED = ("failed", "error", "cancelled", "canceled", "aborted")
+VIZ_RUN_FAIL_RC = 1   # run du plugin terminé en échec : ni « ok » ni « anomalies »
+VIZ_SRC_PLUGIN = "plugin"       # le scan a été lancé par vizproof-timeline
+VIZ_SRC_DASHBOARD = "dashboard"  # …ou, en repli, par nous
+VIZ_PHASE_WAIT = "attente du scan du plugin"
+VIZ_PHASE_RUNNING = "scan en cours"
+VIZ_PHASE_DASHBOARD = "scan dashboard"
 # Connexion d'un site à VizProof (`wp vizproof connect`, plugin ≥ 1.3.6).
 VIZ_SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # Jeton de compte : jeu de caractères des jetons porteurs usuels, sur UNE ligne.
@@ -848,6 +869,14 @@ SETTINGS_DEFAULTS = {
     # celle après laquelle personne ne regarde le site. On informe seulement —
     # le bouton unitaire n'a pas d'archive, il n'y a rien à annuler.
     "viz_scan_after_update": True,
+    # Baseline VizProof AVANT une mise à jour unitaire, comme en prend la MAJ
+    # sûre. Sans elle, le contrôle d'après compare au dernier état connu de
+    # VizProof — qui peut dater de la veille et mêler d'autres changements.
+    "viz_baseline_before_update": True,
+    # …mais une baseline qui échoue ne doit pas retenir la mise à jour : VizProof
+    # est un filet, pas une condition. Coché, il le devient (site vitrine dont
+    # aucune régression visuelle ne doit passer sans témoin d'avant).
+    "viz_baseline_required": False,
     # Jeton de compte VizProof : sert à retrouver (ou créer) le site VizProof
     # d'après l'URL WordPress, puis à relier le plugin. Le fichier est en 0600
     # et la valeur n'est JAMAIS renvoyée par l'API : cf. settings_public().
@@ -994,8 +1023,12 @@ def safe_step(label, ok, detail="", warn=False):
                           "ts": datetime.datetime.now().strftime("%H:%M:%S")})
 
 
-def viz_report_url(out):
-    """URL de rapport (`report_url`) contenue dans le JSON d'un scan, si elle est http(s)."""
+def viz_json_tail(out):
+    """Dernier objet JSON d'une sortie wp-cli (None si aucun ne se lit).
+
+    Lu par la FIN : wp-cli fait précéder son JSON d'éventuels avertissements
+    PHP, jamais l'inverse.
+    """
     for ligne in reversed(str(out or "").splitlines()):
         if ligne.lstrip()[:1] != "{":
             continue
@@ -1003,9 +1036,28 @@ def viz_report_url(out):
             d = json.loads(ligne.strip())
         except ValueError:
             continue
-        u = str((d or {}).get("report_url") or "") if isinstance(d, dict) else ""
-        return u if u.startswith("http://") or u.startswith("https://") else None
+        return d if isinstance(d, dict) else None
     return None
+
+
+def viz_http_url(u):
+    """URL http(s) ou None — tout le reste (javascript:, chemin relatif) est rejeté."""
+    s = str(u or "")
+    return s if s.startswith("http://") or s.startswith("https://") else None
+
+
+def viz_report_url(out):
+    """URL de rapport (`report_url`) contenue dans le JSON d'un scan, si elle est http(s)."""
+    return viz_http_url((viz_json_tail(out) or {}).get("report_url"))
+
+
+def viz_anomalies_count(src):
+    """Nombre d'anomalies d'un run ou d'un JSON de scan (0 si absent/illisible)."""
+    try:
+        n = int((src or {}).get("anomalies") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(n, 0)
 
 
 def viz_decide(rc, rollback):
@@ -1057,20 +1109,33 @@ def viz_available(srv, site):
 # --------------------------------------------------------------------------- #
 #  Contrôle visuel automatique après une mise à jour unitaire                  #
 #                                                                             #
-#  Pourquoi en tâche de fond : `wp vizproof scan --wait` photographie toutes   #
-#  les pages suivies et dure couramment plus d'une minute — parfois plusieurs. #
+#  Le scan est le plus souvent celui du PLUGIN, qui s'accroche lui-même à la   #
+#  fin d'une mise à jour (cf. viz_wait_plugin_run) ; le nôtre n'est qu'un       #
+#  repli. Dans les deux cas la même règle vaut :                               #
+#                                                                             #
+#  Pourquoi en tâche de fond : attendre le run du plugin coûte jusqu'à 5 min,  #
+#  et `wp vizproof scan --wait` photographie toutes les pages suivies — plus   #
+#  d'une minute couramment, parfois plusieurs.                                 #
 #  La route /api/actions/run tient la connexion HTTP pendant toute l'action,   #
 #  et nginx la coupe à 340 s (proxy_read_timeout, deploy/nginx-dashboard.conf).#
 #  Enchaîner MAJ *puis* scan dans la réponse ferait donc perdre, sur les gros  #
 #  sites, non seulement le scan mais le RÉSULTAT DE LA MISE À JOUR déjà        #
 #  appliquée — le pire des deux mondes. On répond donc dès la MAJ terminée, le #
-#  scan part dans un thread, et son verdict se récupère sur                    #
-#  GET /api/actions/viz_last (l'action est par ailleurs journalisée comme les  #
-#  autres, donc visible dans l'historique du site).                            #
+#  contrôle part dans un thread, et son verdict se récupère sur                #
+#  GET /api/actions/viz_last (journalisé par ailleurs sous `viz_verdict`, donc #
+#  visible dans l'historique du site — y compris quand c'est le plugin qui a   #
+#  scanné, auquel cas rien d'autre n'en garderait la trace).                   #
 # --------------------------------------------------------------------------- #
 VIZ_LAST = {}                 # domaine → dernier contrôle visuel automatique
 VIZ_LAST_LOCK = threading.Lock()
 VIZ_LAST_MAX = 60             # mémoire de processus, bornée : ce n'est pas un journal
+#: squelette d'un bloc `viz` — TOUTES les clés du contrat y figurent, y compris
+#: celles qui restent vides : l'UI lit `source`, `run_id`, `anomalies_count` et
+#: `phase` sans avoir à tester leur présence.
+VIZ_BASE = {"ran": False, "pending": False, "rc": None, "anomalies": False,
+            "anomalies_count": 0, "report_url": None, "message": "", "reason": "",
+            "source": None, "run_id": "", "phase": None,
+            "server": "", "domain": "", "action": "", "ts": ""}
 VIZ_AFTER_MSG = {
     "ok": "aucune anomalie visuelle",
     "anomalies": "anomalies visuelles détectées",
@@ -1138,38 +1203,278 @@ def viz_linked_probe(srv, site):
     return rc == 0
 
 
-def viz_after_update(server, domain, action, rc):
+# --------------------------------------------------------------------------- #
+#  Le scan que le PLUGIN lance tout seul après une mise à jour                 #
+#                                                                             #
+#  vizproof-timeline enregistre `upgrader_pre_install`/`upgrader_process_      #
+#  complete` sans condition : ces hooks partent aussi sous WP-CLI. Quand       #
+#  l'option de site `enable_update_scan_by_default` est vraie — son défaut —   #
+#  un `wp plugin update` met donc DÉJÀ un scan en file côté vizproof.com.      #
+#  Lancer le nôtre par-dessus, c'était payer deux fois la même photo de toutes #
+#  les pages suivies. On attend désormais le run du plugin, et on ne scanne    #
+#  nous-mêmes que si l'option est éteinte (ou illisible).                      #
+# --------------------------------------------------------------------------- #
+def viz_status_json(srv, site):
+    """`wp vizproof status --format=json` côté site → dict (None si illisible).
+
+    Plugins CHARGÉS (helper `run`, pas de `--skip-plugins`) : la commande vient
+    justement du plugin.
+    """
+    _rc, out = remote_bash(srv, site, 'run vizproof status --format=json', timeout=90)
+    return viz_json_tail(out)
+
+
+def viz_run_of(status):
+    """Bloc `last_run` d'un statut vizproof (dict vide s'il n'y en a pas)."""
+    r = (status or {}).get("last_run")
+    return r if isinstance(r, dict) else {}
+
+
+def viz_prev_run_id(site):
+    """`vizproof.last_run.id` de l'inventaire — « » quand il est inconnu.
+
+    C'est le repère qui distingue le run déclenché par NOTRE mise à jour du
+    dernier run déjà connu ; fleet.json n'étant réécrit qu'au re-scan, il porte
+    encore l'état d'AVANT la mise à jour au moment où on le lit.
+    """
+    v = (site or {}).get("vizproof")
+    r = v.get("last_run") if isinstance(v, dict) else None
+    return str(r.get("id") or "") if isinstance(r, dict) else ""
+
+
+def viz_run_epoch(at):
+    """Date ISO d'un run (`2026-09-02T14:48:09+00:00`) → epoch UTC, None si illisible."""
+    s = str(at or "").strip()
+    if not s:
+        return None
+    if s.endswith("Z") or s.endswith("z"):
+        s = s[:-1] + "+00:00"
+    try:
+        d = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if d.tzinfo is None:                      # date sans fuseau : lue en UTC
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    return d.timestamp()
+
+
+def viz_run_is_new(run, prev_id, t0):
+    """Ce `last_run` est-il celui que notre mise à jour vient de déclencher ?
+
+    Deux conditions, l'une sans l'autre ne prouvant rien : un identifiant
+    DIFFÉRENT du dernier connu (un run rejoué garde le sien) ET une date au
+    moins aussi récente que la mise à jour, à `VIZ_CLOCK_SKEW_S` près. Une date
+    illisible ne suffit pas : sans repère d'identifiant fiable (sites jamais
+    scannés, inventaire muet), on prendrait un vieux run pour un verdict.
+    """
+    rid = str((run or {}).get("id") or "").strip()
+    if not rid or (prev_id and rid == str(prev_id)):
+        return False
+    at = viz_run_epoch((run or {}).get("at"))
+    return at is not None and at >= (float(t0) - VIZ_CLOCK_SKEW_S)
+
+
+def viz_run_done(run):
+    """Le run est-il sorti de la file ? Un statut inconnu — ou absent sur une
+    vieille version — compte pour terminé : rien ne sert d'attendre 5 minutes
+    un état qu'on ne saura de toute façon pas lire."""
+    return str((run or {}).get("status") or "").strip().lower() not in VIZ_RUN_PENDING
+
+
+def viz_run_failed(run):
+    return str((run or {}).get("status") or "").strip().lower() in VIZ_RUN_FAILED
+
+
+def _viz_sleep(seconds):
+    """Attente entre deux interrogations — point d'injection unique pour les tests."""
+    time.sleep(seconds)
+
+
+def _tours(total_s, poll_s):
+    """Nombre d'interrogations tenant dans `total_s` à la cadence `poll_s`."""
+    return max(1, (int(total_s) + poll_s - 1) // poll_s)
+
+
+def viz_wait_plugin_run(srv, site, prev_id, t0, on_phase=None):
+    """Attend le run lancé par le plugin → dict `last_run`, ou None.
+
+    None = rien de neuf après `VIZ_WAIT_NEW_S` : le plugin n'a pas déclenché de
+    scan (option éteinte, site sans page suivie…). Un run repéré est ensuite
+    suivi jusqu'à son état final, `VIZ_WAIT_DONE_S` au total ; s'il est encore
+    en file au bout de ce délai, il est rendu tel quel — le verdict sera
+    « scan non terminé », pas un faux « aucune anomalie ».
+    """
+    poll = max(1, int(VIZ_POLL_S))
+    n_attente, n_total = _tours(VIZ_WAIT_NEW_S, poll), _tours(VIZ_WAIT_DONE_S, poll)
+    n_total = max(n_total, n_attente)
+    vu = None
+    if on_phase:
+        on_phase(VIZ_PHASE_WAIT)
+    for tour in range(n_total):
+        if tour:
+            _viz_sleep(poll)
+        run = viz_run_of(viz_status_json(srv, site))
+        if vu is None:
+            if viz_run_is_new(run, prev_id, t0):
+                vu = run
+                if on_phase:
+                    on_phase(VIZ_PHASE_RUNNING)
+        elif str(run.get("id") or "") == str(vu.get("id") or ""):
+            vu = run                       # même run : on rafraîchit son état
+        if vu is not None:
+            if viz_run_done(vu):
+                return vu
+        elif tour + 1 >= n_attente:
+            return None
+    return vu
+
+
+def viz_truthy(v):
+    """Vrai/faux tolérant : une option WordPress ressort en true, 1, "1" ou ""."""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "no", "off", "null")
+    return bool(v)
+
+
+def viz_plugin_autoscan(srv, site):
+    """L'option de site `enable_update_scan_by_default` est-elle active ?
+    None = illisible (option absente, wp-cli en erreur, JSON inattendu) — et
+    dans le doute on scanne nous-mêmes plutôt que de ne rien contrôler."""
+    rc, out = remote_bash(srv, site,
+                          'run option get ' + VIZ_OPTION_NAME + ' --format=json', timeout=90)
+    d = viz_json_tail(out)
+    if rc != 0 or not isinstance(d, dict) or VIZ_AUTOSCAN_KEY not in d:
+        return None
+    return viz_truthy(d.get(VIZ_AUTOSCAN_KEY))
+
+
+def viz_verdict_from_run(run):
+    """Verdict d'un run du plugin (déjà terminé, ou rendu tel quel à l'expiration)."""
+    n = viz_anomalies_count(run)
+    base = {"source": VIZ_SRC_PLUGIN, "run_id": str(run.get("id") or ""),
+            "anomalies_count": n, "report_url": viz_http_url(run.get("url")),
+            "phase": None, "ran": True}
+    if not viz_run_done(run):
+        # Encore en file au bout de 5 min : pas de verdict, et surtout pas un
+        # « aucune anomalie » qui serait faux. rc None = rien à journaliser.
+        return dict(base, rc=None, anomalies=False, status="en cours",
+                    message="scan du plugin toujours en cours (verdict non parvenu)")
+    if viz_run_failed(run):
+        return dict(base, rc=VIZ_RUN_FAIL_RC, anomalies=False, status="échec",
+                    message="le scan lancé par le plugin a échoué")
+    return dict(base, rc=VIZ_ANOMALY_RC if n else 0, anomalies=n > 0,
+                status="anomalies" if n else "ok",
+                message=(VIZ_AFTER_MSG["anomalies"] + " (%d)" % n) if n
+                        else VIZ_AFTER_MSG["ok"])
+
+
+def viz_verdict_dashboard(server, domain):
+    """Repli : c'est le dashboard qui lance le scan (`wp vizproof scan --wait`)."""
+    rcv, out = logged_action(server, domain, "viz_scan", None, source=VIZ_AFTER_SOURCE)
+    statut = viz_status(rcv, out)
+    j = viz_json_tail(out) or {}
+    res = {"source": VIZ_SRC_DASHBOARD, "rc": rcv, "status": statut, "phase": None,
+           "anomalies": rcv == VIZ_ANOMALY_RC, "anomalies_count": viz_anomalies_count(j),
+           "report_url": viz_report_url(out), "run_id": str(j.get("run_id") or j.get("id") or ""),
+           "message": VIZ_AFTER_MSG.get(statut, statut)}
+    # « non configuré » : la commande a bien tourné, mais le site n'est pas
+    # relié — ce n'est pas un scan, on ne le présente pas comme tel.
+    res["ran"] = statut != "non configuré"
+    if not res["ran"]:
+        res["reason"] = "non relié"
+    return res
+
+
+def viz_verdict_after_update(server, domain, srv, site, t0, prev_id, on_phase=None):
+    """Verdict du contrôle visuel : celui du plugin s'il a scanné, sinon le nôtre."""
+    run = viz_wait_plugin_run(srv, site, prev_id, t0, on_phase=on_phase)
+    if run:
+        return viz_verdict_from_run(run)
+    if viz_plugin_autoscan(srv, site):
+        # Le plugin DEVAIT scanner et n'a rien lancé : le site n'était pas
+        # éligible (aucune page suivie, scan désactivé pour ce site…). Lancer
+        # le nôtre maintenant ferait le doublon tardif qu'on cherche à éviter.
+        return {"ran": False, "source": None, "rc": None, "anomalies": False,
+                "anomalies_count": 0, "report_url": None, "run_id": "", "phase": None,
+                "reason": "le plugin n'a lancé aucun scan",
+                "message": "le plugin VizProof n'a lancé aucun scan après cette mise à jour"}
+    if on_phase:
+        on_phase(VIZ_PHASE_DASHBOARD)
+    return viz_verdict_dashboard(server, domain)
+
+
+def viz_log_verdict(server, domain, res, duree=None):
+    """Trace le VERDICT dans actions.log. Sans elle, un scan lancé par le plugin
+    ne laisserait AUCUNE trace dans l'historique du site : il ne passe pas par
+    `logged_action`, puisqu'il ne passe pas par nous."""
+    resume = "%s · %s" % (res.get("source") or "?", res.get("message") or "")
+    if res.get("report_url"):
+        resume += " · " + str(res["report_url"])
+    append_log({"ts": _now_s(), "source": VIZ_AFTER_SOURCE, "server": server,
+                "domain": domain, "action": "viz_verdict", "arg": res.get("run_id") or None,
+                "rc": int(res.get("rc") or 0), "duration_s": round(float(duree or 0), 1),
+                "output_tail": resume[-2000:]})
+
+
+def viz_after_update(server, domain, action, rc, t0=None):
     """Bloc `viz` de la réponse de /api/actions/run — None si l'action n'est pas
     une mise à jour. Les refus « bon marché » (réglage, échec, site non relié
     d'après l'inventaire) répondent tout de suite ; le reste part en tâche de
     fond, y compris la détection de la CLI qui coûte un aller-retour ssh."""
     if action not in VIZ_AFTER_UPDATE_ACTIONS:
         return None
-    base = {"ran": False, "pending": False, "rc": None, "anomalies": False,
-            "report_url": None, "message": "", "reason": "",
-            "server": server, "domain": domain, "action": action, "ts": _now_s()}
+    base = dict(VIZ_BASE, server=server, domain=domain, action=action, ts=_now_s())
     if not settings_cfg().get("viz_scan_after_update"):
         return dict(base, reason="désactivé",
-                    message="scan visuel désactivé dans les Réglages")
+                    message="contrôle visuel désactivé dans les Réglages")
     if rc != 0:
         return dict(base, reason="mise à jour en échec",
-                    message="mise à jour en échec : aucun scan visuel")
+                    message="mise à jour en échec : aucun contrôle visuel")
     srv, site = find_site(server, domain)
     if not srv or not site:
         return dict(base, reason="site introuvable", message="site absent de l'inventaire")
     if viz_site_linked(site) is False:
         return dict(base, reason="non relié", message="site non relié à VizProof")
-    info = dict(base, ran=True, pending=True, message="scan visuel VizProof en cours…")
+    info = dict(base, ran=True, pending=True, phase=VIZ_PHASE_WAIT,
+                message="contrôle visuel VizProof en cours…")
     viz_last_set(domain, info)
-    _spawn(viz_after_update_worker, server, domain, action)
+    # `t0` vient de l'APPELANT, pris avant la mise à jour : le run du plugin est
+    # mis en file PENDANT celle-ci, donc avant que ce thread ne démarre.
+    _spawn(viz_after_update_worker, server, domain, action,
+           float(t0) if t0 is not None else time.time(), viz_prev_run_id(site))
     return dict(info)
 
 
-def viz_after_update_worker(server, domain, action):
-    """Scan visuel de fin de mise à jour : journalisé, alerté, mémorisé."""
-    res = {"ran": False, "pending": False, "rc": None, "anomalies": False,
-           "report_url": None, "message": "", "reason": "",
-           "server": server, "domain": domain, "action": action, "ts": _now_s()}
+def viz_verdict_publish(server, domain, action, res, duree=0):
+    """Suites d'un verdict : journal `viz_verdict` et alerte sur anomalies.
+
+    Commune au thread simple et au job `viz_update`, pour qu'un verdict soit
+    tracé et alerté de la même façon quel que soit le chemin qui l'a produit.
+    """
+    if res.get("rc") is not None:
+        viz_log_verdict(server, domain, res, duree)
+    if res.get("anomalies"):
+        libelle = ACTIONS.get(action, (action,))[0]
+        if "{arg}" in libelle:
+            libelle = action
+        alert(f"viz_anomaly:{domain}", "viz_anomaly",
+              f"👁 <b>Anomalies visuelles</b> après « {esc_html(libelle)} »"
+              f"\nSite : <b>{esc_html(domain)}</b> ({esc_html(server)})"
+              + (f"\n{esc_html(res['report_url'])}" if res.get("report_url") else ""))
+
+
+def viz_after_update_worker(server, domain, action, t0=None, prev_id=""):
+    """Contrôle visuel de fin de mise à jour : attendu, journalisé, alerté, mémorisé."""
+    debut = time.time()
+    t0 = float(t0) if t0 is not None else debut
+    res = dict(VIZ_BASE, server=server, domain=domain, action=action, ts=_now_s())
+
+    def phase(p):
+        """Publie l'étape en cours pour /api/actions/viz_last (progression de l'UI)."""
+        viz_last_set(domain, dict(res, ran=True, pending=True, phase=p,
+                                  message="contrôle visuel VizProof : " + p,
+                                  ts=_now_s()))
+
     try:
         srv, site = find_site(server, domain)
         if not srv or not site:
@@ -1180,24 +1485,11 @@ def viz_after_update_worker(server, domain, action):
         elif viz_site_linked(site) is None and not viz_linked_probe(srv, site):
             res.update(reason="non relié", message="site non relié à VizProof")
         else:
-            rcv, out = logged_action(server, domain, "viz_scan", None, source=VIZ_AFTER_SOURCE)
-            statut = viz_status(rcv, out)
-            res.update(rc=rcv, anomalies=rcv == VIZ_ANOMALY_RC, status=statut,
-                       report_url=viz_report_url(out),
-                       message=VIZ_AFTER_MSG.get(statut, statut))
-            # « non configuré » : la commande a bien tourné, mais le site n'est
-            # pas relié — ce n'est pas un scan, on ne le présente pas comme tel.
-            res["ran"] = statut != "non configuré"
-            if not res["ran"]:
-                res["reason"] = "non relié"
-            if res["anomalies"]:
-                libelle = ACTIONS.get(action, (action,))[0]
-                if "{arg}" in libelle:
-                    libelle = action
-                alert(f"viz_anomaly:{domain}", "viz_anomaly",
-                      f"👁 <b>Anomalies visuelles</b> après « {esc_html(libelle)} »"
-                      f"\nSite : <b>{esc_html(domain)}</b> ({esc_html(server)})"
-                      + (f"\n{esc_html(res['report_url'])}" if res.get("report_url") else ""))
+            res.update(viz_verdict_after_update(server, domain, srv, site, t0,
+                                                prev_id or viz_prev_run_id(site),
+                                                on_phase=phase))
+            res["phase"] = None
+            viz_verdict_publish(server, domain, action, res, time.time() - debut)
             # L'inventaire porte `vizproof.last_run` : sans re-scan, le tiroir
             # continuerait d'afficher le scan précédent.
             logged_action(server, domain, "rescan", None, source=VIZ_AFTER_SOURCE)
@@ -1206,6 +1498,230 @@ def viz_after_update_worker(server, domain, action):
     res["ts"] = _now_s()
     viz_last_set(domain, res)
     return res
+
+
+# --------------------------------------------------------------------------- #
+#  Job « mise à jour sous contrôle visuel » : baseline → MAJ → verdict         #
+#                                                                             #
+#  Le contrôle d'APRÈS compare le rendu à la dernière baseline connue de       #
+#  VizProof — qui peut dater de la veille et mêler d'autres changements. Pour  #
+#  que le verdict porte sur LA mise à jour, il faut une baseline prise juste   #
+#  avant, comme le fait la MAJ sûre. Or baseline + MAJ + attente du verdict    #
+#  dépassent largement les 340 s que nginx laisse à /api/actions/run : quand   #
+#  le site est relié, la route ne fait donc plus la mise à jour elle-même, elle #
+#  DÉMARRE UN JOB et répond aussitôt. L'UI suit sur                            #
+#  GET /api/actions/viz_update_status?domain=.                                 #
+#                                                                             #
+#  Un seul job par site, et jamais en même temps qu'une MAJ sûre sur ce site : #
+#  les deux archivent, mettent à jour et scannent le même WordPress.           #
+# --------------------------------------------------------------------------- #
+VIZUP_LABELS = {"baseline": "Baseline VizProof", "update": "Mise à jour",
+                "viz": "Contrôle visuel", "rescan": "Inventaire à jour"}
+VIZUP_ORDER = ("baseline", "update", "viz", "rescan")
+VIZUP_WAIT, VIZUP_RUN = "attente", "en cours"
+VIZUP_OK, VIZUP_WARN, VIZUP_ERR = "ok", "warn", "erreur"
+VIZUP = {}                    # domaine → job (mémoire de processus, bornée)
+VIZUP_LOCK = threading.Lock()
+VIZUP_MAX = 20
+VIZ_PRE_SOURCE = "pre-update"  # source journalisée de la baseline d'avant MAJ
+
+
+def vizup_empty(domain=""):
+    """Job « aucun » — même forme que les autres, pour que l'UI n'ait rien à tester."""
+    return {"running": False, "domain": str(domain), "server": "", "action": "",
+            "arg": None, "steps": [], "result": None, "started": None, "finished": None}
+
+
+def vizup_copy(job):
+    """Copie profonde suffisante : le job continue d'évoluer pendant la réponse."""
+    if not job:
+        return None
+    r = job.get("result")
+    return dict(job, steps=[dict(s) for s in job.get("steps") or []],
+                result=(dict(r, viz=dict(r["viz"]) if isinstance(r.get("viz"), dict) else r.get("viz"))
+                        if isinstance(r, dict) else None))
+
+
+def vizup_get(domain):
+    with VIZUP_LOCK:
+        return vizup_copy(VIZUP.get(str(domain)))
+
+
+def vizup_running(domain):
+    with VIZUP_LOCK:
+        j = VIZUP.get(str(domain))
+        return bool(j and j.get("running"))
+
+
+def vizup_any_running():
+    """Domaine d'un job en cours, « » s'il n'y en a aucun (garde de la MAJ sûre)."""
+    with VIZUP_LOCK:
+        for dom, j in VIZUP.items():
+            if j.get("running"):
+                return dom
+    return ""
+
+
+def vizup_step(domain, key, statut, detail=""):
+    """Fait avancer une étape du job. Sans effet si le job a disparu."""
+    with VIZUP_LOCK:
+        j = VIZUP.get(str(domain))
+        for s in (j or {}).get("steps") or []:
+            if s["key"] == key:
+                s.update(status=statut, detail=str(detail or "")[:600],
+                         ts=datetime.datetime.now().strftime("%H:%M:%S"))
+                return
+
+
+def vizup_has(domain, key):
+    with VIZUP_LOCK:
+        j = VIZUP.get(str(domain))
+        return any(s["key"] == key for s in (j or {}).get("steps") or [])
+
+
+def vizup_finish(domain, result):
+    with VIZUP_LOCK:
+        j = VIZUP.get(str(domain))
+        if j:
+            j.update(running=False, finished=_now_s(), result=result)
+
+
+def viz_update_eligible(site):
+    """Site à passer par le job : l'inventaire dit la CLI présente ET le site
+    configuré côté VizProof. Volontairement plus strict que `viz_site_linked` —
+    on ne démarre pas un job de plusieurs minutes sur un « peut-être »."""
+    v = (site or {}).get("vizproof")
+    return bool(isinstance(v, dict) and v.get("has_cli") and v.get("configured"))
+
+
+def viz_update_wanted(action):
+    """Cette action mérite-t-elle le job ? (action de MAJ + au moins un contrôle)"""
+    if action not in VIZ_AFTER_UPDATE_ACTIONS:
+        return False
+    cfg = settings_cfg()
+    return bool(cfg.get("viz_baseline_before_update") or cfg.get("viz_scan_after_update"))
+
+
+def vizup_start(server, domain, action, arg):
+    """Réserve et lance le job → (job, erreur).
+
+    La réservation se fait sous SAFE_LOCK, le même verrou que la MAJ sûre :
+    c'est ce qui garantit qu'un site n'est jamais mis à jour deux fois de front.
+    """
+    cfg = settings_cfg()
+    etapes = [k for k in VIZUP_ORDER
+              if (k != "baseline" or cfg.get("viz_baseline_before_update"))
+              and (k != "viz" or cfg.get("viz_scan_after_update"))]
+    with SAFE_LOCK:
+        if SAFE.get("running") and SAFE.get("domain") == domain:
+            return None, f"une mise à jour sûre est déjà en cours sur {domain}"
+        if vizup_running(domain):
+            return None, f"une mise à jour sous contrôle visuel est déjà en cours sur {domain}"
+        job = {"running": True, "domain": domain, "server": server, "action": action,
+               "arg": arg, "started": _now_s(), "finished": None, "result": None,
+               "steps": [{"key": k, "label": VIZUP_LABELS[k], "status": VIZUP_WAIT,
+                          "detail": "", "ts": ""} for k in etapes]}
+        with VIZUP_LOCK:
+            VIZUP[str(domain)] = job
+            if len(VIZUP) > VIZUP_MAX:      # bornée : ce n'est pas un journal
+                vieux = sorted(((d, j) for d, j in VIZUP.items() if not j.get("running")),
+                               key=lambda kv: str(kv[1].get("started") or ""))
+                for d, _j in vieux[:len(VIZUP) - VIZUP_MAX]:
+                    VIZUP.pop(d, None)
+        instantane = vizup_copy(job)
+    _spawn(vizup_run, server, domain, action, arg)
+    return instantane, None
+
+
+def vizup_run(server, domain, action, arg):
+    """Le job lui-même : baseline → mise à jour → verdict visuel → re-scan."""
+    debut = time.time()
+    resultat = {"rc": None, "output": "", "viz": None}
+    try:
+        srv, site = find_site(server, domain)
+        if not srv or not site:
+            vizup_step(domain, "update", VIZUP_ERR, "site absent de l'inventaire")
+            resultat.update(rc=92, output="site inconnu")
+            return resultat
+
+        # (a) baseline — le témoin d'AVANT, sans lequel le verdict d'après ne
+        #     porterait pas sur cette mise à jour.
+        if vizup_has(domain, "baseline"):
+            vizup_step(domain, "baseline", VIZUP_RUN)
+            rcb, outb = logged_action(server, domain, "viz_baseline", None,
+                                      source=VIZ_PRE_SOURCE)
+            if rcb == 0:
+                vizup_step(domain, "baseline", VIZUP_OK, "baseline capturée")
+            elif settings_cfg().get("viz_baseline_required"):
+                vizup_step(domain, "baseline", VIZUP_ERR,
+                           "baseline exigée par les Réglages : " + str(outb or "")[-300:])
+                vizup_step(domain, "update", VIZUP_ERR,
+                           "non lancée : la baseline VizProof a échoué")
+                resultat.update(rc=rcb, output=outb)
+                return resultat
+            else:
+                # VizProof est un filet, pas une condition : une baseline ratée
+                # avertit, elle ne prend pas la mise à jour en otage.
+                vizup_step(domain, "baseline", VIZUP_WARN,
+                           "sans baseline, le contrôle d'après compare au dernier "
+                           "état connu : " + str(outb or "")[-300:])
+
+        # (b) la mise à jour, exactement celle qu'aurait faite la route
+        vizup_step(domain, "update", VIZUP_RUN)
+        t0 = time.time()
+        rc, out = logged_action(server, domain, action, arg, source="manuel")
+        resultat.update(rc=rc, output=out)
+        vizup_step(domain, "update", VIZUP_OK if rc == 0 else VIZUP_ERR,
+                   str(out or "")[-300:])
+
+        # (c) le verdict visuel : celui du plugin s'il scanne, le nôtre sinon
+        if rc == 0 and vizup_has(domain, "viz"):
+            res = dict(VIZ_BASE, server=server, domain=domain, action=action,
+                       ran=True, pending=True, phase=VIZ_PHASE_WAIT, ts=_now_s())
+            viz_last_set(domain, res)
+
+            def phase(p):
+                vizup_step(domain, "viz", VIZUP_RUN, p)
+                viz_last_set(domain, dict(res, phase=p, ts=_now_s(),
+                                          message="contrôle visuel VizProof : " + p))
+
+            vizup_step(domain, "viz", VIZUP_RUN, VIZ_PHASE_WAIT)
+            t1 = time.time()
+            res.update(viz_verdict_after_update(server, domain, srv, site, t0,
+                                                viz_prev_run_id(site), on_phase=phase),
+                       pending=False, phase=None, ts=_now_s())
+            viz_last_set(domain, res)
+            viz_verdict_publish(server, domain, action, res, time.time() - t1)
+            resultat["viz"] = dict(res)
+            vizup_step(domain, "viz", vizup_viz_status(res), res.get("message") or "")
+        elif vizup_has(domain, "viz"):
+            vizup_step(domain, "viz", VIZUP_WARN, "mise à jour en échec : aucun contrôle")
+
+        # (d) inventaire : sans re-scan, le tiroir montrerait le scan précédent
+        vizup_step(domain, "rescan", VIZUP_RUN)
+        rcr, outr = logged_action(server, domain, "rescan", None, source=VIZ_AFTER_SOURCE)
+        vizup_step(domain, "rescan", VIZUP_OK if rcr == 0 else VIZUP_WARN,
+                   "" if rcr == 0 else str(outr or "")[-300:])
+        return resultat
+    except Exception as e:                    # un thread muet ne doit rien avaler
+        vizup_step(domain, "update", VIZUP_ERR, f"erreur interne : {type(e).__name__}: {e}")
+        if resultat.get("rc") is None:
+            resultat["rc"] = 94
+        resultat["output"] = f"erreur interne : {type(e).__name__}: {e}"
+        return resultat
+    finally:
+        resultat["duration_s"] = round(time.time() - debut, 1)
+        vizup_finish(domain, resultat)
+
+
+def vizup_viz_status(res):
+    """Verdict visuel → statut d'étape. Une anomalie n'est pas une erreur du
+    job : la mise à jour est passée, c'est le rendu qui a changé."""
+    if not res.get("ran"):
+        return VIZUP_WARN
+    if res.get("anomalies") or res.get("rc") is None:
+        return VIZUP_WARN
+    return VIZUP_OK if res.get("rc") == 0 else VIZUP_ERR
 
 
 # --------------------------------------------------------------------------- #
@@ -3957,10 +4473,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
         elif p == "/api/actions/safe_update_status":
             self._send(200, dict(SAFE))
+        elif p == "/api/actions/viz_update_status":
+            # Job « baseline → mise à jour → verdict » d'un site : mémoire de
+            # processus, comme viz_last. Un domaine sans job répond un job vide
+            # plutôt qu'une erreur — l'UI interroge avant de savoir.
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            if not SLUG_RE.match(dom):
+                return self._send(400, {"error": "cible invalide"})
+            self._send(200, vizup_get(dom) or vizup_empty(dom))
         elif p == "/api/actions/viz_last":
-            # Verdict du scan visuel lancé après une mise à jour unitaire. Vide
-            # tant qu'aucun n'a eu lieu depuis le démarrage du service : c'est
-            # une mémoire de processus, l'historique reste dans actions.log.
+            # Verdict du contrôle visuel de fin de mise à jour unitaire, avec
+            # `source` (plugin|dashboard), `run_id`, `anomalies_count` et, tant
+            # qu'il n'est pas rendu, la `phase` en cours. Vide tant qu'aucun
+            # contrôle n'a eu lieu depuis le démarrage du service : c'est une
+            # mémoire de processus, l'historique reste dans actions.log.
             dom = urllib.parse.unquote(q.get("domain", ""))
             if not SLUG_RE.match(dom):
                 return self._send(400, {"error": "cible invalide"})
@@ -4109,6 +4635,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "action inconnue"})
             if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
                 return self._send(400, {"error": "cible invalide"})
+            # Site relié à VizProof : la mise à jour est encadrée (baseline
+            # avant, verdict après), ce qui ne tient pas dans une réponse HTTP —
+            # la route démarre un job et rend la main. Tous les autres cas
+            # gardent la réponse synchrone d'avant.
+            if viz_update_wanted(action):
+                _srvj, sitej = find_site(server, domain)
+                if sitej and viz_update_eligible(sitej):
+                    job, err = vizup_start(server, domain, action, arg)
+                    if err:
+                        return self._send(409, {"error": err})
+                    return self._send(200, {"ok": True, "job": "viz_update",
+                                            "domain": domain, "server": server,
+                                            "action": action, "arg": arg,
+                                            "steps": job["steps"]})
+            # `t0` AVANT la mise à jour : le plugin vizproof met son propre scan
+            # en file PENDANT celle-ci, et c'est à cet instant-là qu'on compare
+            # la date du run pour savoir s'il est bien le nôtre.
+            t0 = time.time()
             rc, out = logged_action(server, domain, action, arg)
             # rc 2 sur une action vizproof = anomalies visuelles, pas une erreur technique ;
             # rc 97 = action impossible sans SSH, c'est une réponse, pas une panne serveur
@@ -4119,7 +4663,7 @@ class Handler(BaseHTTPRequestHandler):
             # Contrôle visuel de fin de mise à jour : jamais au prix du résultat
             # de la mise à jour elle-même, qui est déjà appliquée à ce stade.
             try:
-                viz = viz_after_update(server, domain, action, rc)
+                viz = viz_after_update(server, domain, action, rc, t0)
             except Exception as e:
                 viz = {"ran": False, "pending": False, "reason": "erreur",
                        "message": f"contrôle visuel impossible : {e}"}
@@ -4458,6 +5002,11 @@ class Handler(BaseHTTPRequestHandler):
             with SAFE_LOCK:
                 if SAFE["running"]:
                     return self._send(409, {"error": f"mise à jour sûre déjà en cours sur {SAFE['domain']}"})
+                # Même verrou que le job `viz_update` : deux mises à jour de
+                # front sur le même WordPress, c'est un site cassé sans coupable.
+                if vizup_running(domain):
+                    return self._send(409, {"error": "une mise à jour sous contrôle "
+                                                     f"visuel est en cours sur {domain}"})
                 SAFE["running"] = True   # réservation immédiate : évite deux lancements simultanés
             slugs = body.get("slugs") or None
             if slugs is not None:
