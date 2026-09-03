@@ -19,7 +19,7 @@
    champ laissé vide veut dire « inchangé » ; effacer est un geste explicite. */
 
 import { api, logout } from '../lib/api.js';
-import { esc as H, h, mount } from '../lib/dom.js';
+import { esc as H, h, mount, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { store } from '../lib/state.js';
@@ -74,7 +74,7 @@ function sectionEl(id, titre, tete, ...corps) {
 
 /** Ligne « bouton(s) + message » qui ferme une section. */
 function piedSection(msgId, ...boutons) {
-  return h('div', { class: 'filters mt3' }, ...boutons, h('span', { class: 'small', id: msgId }));
+  return h('div', { class: 'filters mt3' }, ...boutons, zoneMessage(msgId));
 }
 
 /* ============================================================================
@@ -205,12 +205,14 @@ async function loadAlerts() {
   chat.value = a.chat_id ?? '';
 
   const cases = AL_CHK.map(([k, l]) => {
-    const c = h('input', { type: 'checkbox', 'data-arule': k });
+    const c = h('input', { type: 'checkbox', 'data-arule': k, 'aria-label': l });
     c.checked = !!r[k];
     return h('label', { class: 'fld' }, c, ' ' + l);
   });
   const nums = AL_NUM.map(([k, l, d]) => {
-    const c = h('input', { class: 'inp w-num', type: 'number', min: '0', step: '1', 'data-arule': k });
+    const c = h('input', {
+      class: 'inp w-num', type: 'number', min: '0', step: '1', 'data-arule': k, 'aria-label': l,
+    });
     c.value = String(r[k] ?? d);
     return h('label', { class: 'fld' }, l + ' ', c);
   });
@@ -419,7 +421,7 @@ function renderVisuel() {
       }
     };
     return h('div', { class: 'field' },
-      h('label', { class: 'fld' }, c, ' ' + titre, ' ', h('span', { class: 'small', id: id + 'msg' })),
+      h('label', { class: 'fld' }, c, ' ' + titre, ' ', zoneMessage(id + 'msg')),
       h('div', { class: 'aide', text: aide }));
   }));
 }
@@ -661,7 +663,7 @@ async function loadKeys() {
         h('th', {}, h('span', { class: 'sr-only', text: 'Clé publique' })))),
       h('tbody', {}, lignes))),
     h('h3', { text: 'Générer une clé dédiée' }),
-    h('div', { class: 'filters' }, nom, gen, h('span', { class: 'small', id: 'k-genmsg' })),
+    h('div', { class: 'filters' }, nom, gen, zoneMessage('k-genmsg')),
     sortie,
     h('h3', { text: 'Affectation par serveur' }),
     h('div', { class: 'wrap' }, h('table', {},
@@ -669,7 +671,7 @@ async function loadKeys() {
         h('th', { text: 'Serveur' }), h('th', { text: 'Clé' }),
         h('th', {}, h('span', { class: 'sr-only', text: 'Actions' })))),
       h('tbody', {}, affect))),
-    h('div', { class: 'filters mt3' }, tous, btnTous, h('span', { class: 'small', id: 'k-allmsg' })));
+    h('div', { class: 'filters mt3' }, tous, btnTous, zoneMessage('k-allmsg')));
   mount('k-sum', chipEl(keys.length + ' clé(s) · ' + noms.length + ' serveur(s)', 'mut'));
 }
 
@@ -684,7 +686,7 @@ function densiteMemorisee() {
 }
 
 /** Appliquée au démarrage (ce module est importé par app.js). */
-export function appliquerPreferences() {
+function appliquerPreferences() {
   const compacte = densiteMemorisee() === 'compacte';
   store.filt.compact = compacte;
   setDensity(compacte);
@@ -720,7 +722,7 @@ function sectionApparence() {
       h('div', { class: 'field' },
         h('label', { for: 'set-dens', text: 'Densité des tableaux' }), dens,
         h('div', { class: 'aide', text: 'Compacte : lignes resserrées, plus de sites à l’écran.' }))),
-    h('div', { class: 'small', id: 'app-msg' }));
+    zoneMessage('app-msg', 'small', 'div'));
 }
 
 /* ============================================================================
@@ -786,4 +788,3 @@ export function loadReglages() {
 
 appliquerPreferences();
 
-export { loadKeys, loadSettings, loadAlerts, loadSchedule };

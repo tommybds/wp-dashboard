@@ -20,7 +20,7 @@
    veut pas d'un écran qui perde une donnée qu'il ne sait pas afficher. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h, mount } from '../lib/dom.js';
+import { esc as H, h, mount, occupe, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime, safeUrl, hostOf, debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { store, kName, loadFleet, loadStatus, cacheFrais, cacheVider } from '../lib/state.js';
@@ -838,7 +838,7 @@ function sectionRest() {
     h('div', { class: 'small', id: 'rest-body' }, h('span', { class: 'muted', text: 'chargement…' })),
     h('h3', { text: 'Ajout manuel' }),
     h('p', { class: 'hint', text: 'Ne sert que si l’agent est déjà installé et appairé sur le site.' }),
-    h('div', { class: 'filters' }, url, nom, add, h('span', { class: 'small', id: 'rest-msg' })));
+    h('div', { class: 'filters' }, url, nom, add, zoneMessage('rest-msg')));
 }
 
 async function ajouterRestManuel(url, nom) {
@@ -1005,7 +1005,7 @@ function sectionDocroots() {
       + 'Le prochain scan les prend en compte. Même règle que les motifs : chemin absolu, caractères ',
       h('code', { text: 'A-Z a-z 0-9 _ . / * @ -' }), ', sans ', h('code', { text: '..' }), '.'),
     h('div', { id: 'doc-list' }),
-    h('div', { class: 'filters mt2' }, srv, path, add, h('span', { class: 'small', id: 'doc-msg' })));
+    h('div', { class: 'filters mt2' }, srv, path, add, zoneMessage('doc-msg')));
 }
 
 function remplirSelectDocroot() {
@@ -1205,6 +1205,8 @@ function wpCredActions(has) {
 async function loadMgmt(force) {
   monterMgmt();
   if (cacheFrais('mgmt', force)) return;
+  // `aria-busy` le temps du relevé : la page n'est pas vide, elle se remplit.
+  occupe('page-mgmt', true);
 
   // Indépendants de /api/mgmt/state : leur échec ne doit pas laisser la page muette.
   loadCandidates();
@@ -1220,6 +1222,7 @@ async function loadMgmt(force) {
     renderMoniteurs();
     const err = document.getElementById('mgmt-err');
     if (err) err.textContent = String(e);
+    occupe('page-mgmt', false);
     return;
   }
   if (!etat || typeof etat !== 'object' || etat.error) {
@@ -1229,6 +1232,7 @@ async function loadMgmt(force) {
     renderMoniteurs();
     const err = document.getElementById('mgmt-err');
     if (err) err.textContent = (etat && etat.error) || 'réponse vide';
+    occupe('page-mgmt', false);
     return;
   }
   etat.kuma_monitors = etat.kuma_monitors || [];
@@ -1245,6 +1249,7 @@ async function loadMgmt(force) {
   remplirSelectDocroot();
   renderDocroots();
   majSommaire();
+  occupe('page-mgmt', false);
 }
 
 /** Les clés SSH ne servent ici qu'à nommer et à choisir la clé d'un serveur. */
@@ -1284,4 +1289,4 @@ document.getElementById('srv-save').onclick = enregistrerJsonServeurs;
 document.getElementById('jsonmodal').onclick = e => { if (e.target.id === 'jsonmodal') fermerJsonServeurs(); };
 registerModalCloser('jsonmodal', fermerJsonServeurs);
 
-export { loadMgmt, loadCandidates, loadRestSites, loadWpCred, openAdd };
+export { loadMgmt, loadWpCred, openAdd };

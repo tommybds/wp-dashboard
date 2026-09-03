@@ -16,7 +16,7 @@
    emmener l'utilisateur jusqu'à la bonne ligne d'install. */
 
 import { api } from '../lib/api.js';
-import { h, mount } from '../lib/dom.js';
+import { h, mount, zoneMessage } from '../lib/dom.js';
 import { safeUrl, hostOf } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { loadFleet } from '../lib/state.js';
@@ -58,7 +58,7 @@ function addStop() {
   if (ADD.poll) { clearTimeout(ADD.poll); ADD.poll = null; }
 }
 
-export function closeAdd() {
+function closeAdd() {
   addStop();
   ADD.open = false;
   document.getElementById('addmodal').classList.remove('open');
@@ -107,7 +107,7 @@ function addStep1() {
   return [
     h('p', { class: 'hint', text: "Saisissez l'URL du site à ajouter : l'analyse détecte WordPress, "
       + "l'état de l'API REST, le multisite et un agent déjà installé." }),
-    h('div', { class: 'filters' }, url, scan, h('span', { class: 'small', id: 'add-msg' })),
+    h('div', { class: 'filters' }, url, scan, zoneMessage('add-msg')),
     h('div', { id: 'add-res' }, ADD.info ? addInfo(ADD.info) : null),
   ];
 }
@@ -234,7 +234,7 @@ function addStep3() {
       h('a', { class: 'btn sm', id: 'add-zip', href: '/api/mgmt/agent.zip', download: true },
         iconEl('download'), " Télécharger l'agent (.zip)"),
       gen,
-      h('span', { class: 'small', id: 'add-genmsg' })),
+      zoneMessage('add-genmsg')),
     h('div', { id: 'add-code' }),
     h('div', { class: 'steps' }, h('ol', { class: 'small' },
       h('li', {}, 'Dans wp-admin : ', h('b', { text: 'Extensions → Ajouter → Téléverser une extension' }),
@@ -339,7 +339,7 @@ async function addPoll() {
       if (ok) mount(m, chipEl("approuvez dans l'onglet ouvert…", 'warn'));
       else mount(m, chipEl('échec', 'err'), ' ', h('span', { class: 'muted small', text: err }));
     });
-    bloc.push(h('div', { class: 'mt3' }, bt, ' ', h('span', { class: 'small', id: 'add-wpmsg' }),
+    bloc.push(h('div', { class: 'mt3' }, bt, ' ', zoneMessage('add-wpmsg'),
       h('div', { class: 'muted small mt1' }, h('b', { text: 'Étape facultative.' }), ' ' + WPAUTH_HELP
         + ' Le dashboard pourra alors installer les extensions publiques (VizProof…) sans SSH.')));
   }

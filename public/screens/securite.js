@@ -22,7 +22,7 @@
    l'insère encore dans un gabarit. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h, mount, activeAuClavier } from '../lib/dom.js';
+import { esc as H, h, mount, activeAuClavier, occupe, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime, safeUrl, debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
@@ -812,7 +812,7 @@ function sectionCerts() {
         h('thead', {}, h('tr', {},
           h('th', { text: 'Moniteur' }), h('th', { text: 'Jours restants' }), h('th', { text: 'Expire le' }))),
         h('tbody', { id: 'cert-tb' }))),
-    h('div', { class: 'small muted mt2', id: 'cert-msg' }));
+    zoneMessage('cert-msg', 'small muted mt2', 'div'));
 }
 
 function renderCerts() {
@@ -864,7 +864,7 @@ function sectionChecksums() {
     setIdle(tout, null);
   };
   return sectionEl('sec-checksums', 'Intégrité du cœur (checksums)',
-    [h('span', { class: 'small', id: 'verify-msg' }), h('span', { class: 'spacer' }), tout],
+    [zoneMessage('verify-msg'), h('span', { class: 'spacer' }), tout],
     h('p', { class: 'hint' }, 'Lance ', h('code', { text: 'wp core verify-checksums' }),
       '. « Vérifier tout le parc » passe sur tous les sites en tâche de fond ; sinon sélectionnez des sites '
       + 'dans le Parc puis « Checksums » dans la barre d’actions, ou lancez ici site par site.'),
@@ -951,6 +951,10 @@ function renderRecherche() {
 async function loadSec(force) {
   monterSec();
   if (cacheFrais('sec', force)) return;
+  // `aria-busy` pendant le chargement : une page qui se remplit par morceaux
+  // n'est pas une page vide, et une technologie d'assistance doit pouvoir le
+  // dire au lieu d'annoncer huit sections encore muettes.
+  occupe('page-sec', true);
   loadVulns(force);        // indépendants : l'un ne bloque pas les autres
   loadPhe(force);
 
@@ -980,6 +984,7 @@ async function loadSec(force) {
   renderRecherche();
   majSommaire();
   majCompteurSec();
+  occupe('page-sec', false);
 }
 
 /* Pastille « Sécurité » de la barre latérale : elle vient du MÊME agrégat que
@@ -987,4 +992,4 @@ async function loadSec(force) {
    pour qu'aucun compteur ne contredise un autre. */
 export function majCompteurSec(force) { majCompteursServeur(force); }
 
-export { loadSec, loadVulns, loadPhe, sevPill, SEVLABEL, SEVRANK, grouperParExtension };
+export { loadSec, sevPill, SEVLABEL, SEVRANK, grouperParExtension };

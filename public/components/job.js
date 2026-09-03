@@ -25,7 +25,7 @@ function refreshSecIfActive() {
   } catch (e) { /* écran absent : rien à rafraîchir */ }
 }
 
-export function openBulkModal(title) {
+function openBulkModal(title) {
   BMTITLE = title || 'Exécution en masse';
   document.getElementById('bulkmodal').classList.add('open');
 }
@@ -63,7 +63,7 @@ export function initJob() {
 }
 
 /* verdict VizProof d'une tâche de masse (champ optionnel `viz`) */
-export function vizTaskBadge(v) {
+function vizTaskBadge(v) {
   if (v === null || v === undefined || v === '') return '';
   // « anomalies » est un avertissement, pas un échec : le rendu a changé, ce
   // qui n'est pas la même chose qu'un scan qui n'a pas pu tourner.
@@ -72,7 +72,7 @@ export function vizTaskBadge(v) {
   return ` <span class="pill ${m[0]}" title="vérification visuelle VizProof">${H(m[1])}</span>`;
 }
 
-export function pollBulk() {
+function pollBulk() {
   if (!store.curjob) return;
   const job = store.curjob;
   poll('bulk', async () => {

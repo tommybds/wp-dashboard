@@ -30,13 +30,13 @@ export function setVizRefresh(fn) { REFRESH = fn; }
 let CONSOLE_DE = () => null;
 export function setVizConsole(fn) { CONSOLE_DE = fn; }
 
-export const VIZ = 'vizproof-timeline';
+const VIZ = 'vizproof-timeline';
 
 export function vizOf(s) { return (s.plugins_list || []).find(p => p.name === VIZ) || null; }
 export function vizInfo(s) { const v = s && s.vizproof; return (v && typeof v === 'object') ? v : null; }
 export function vizConnected(s) { const v = vizInfo(s); return !!(v && v.connected); }
-export function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
-export function vizAnom(s) {
+function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
+function vizAnom(s) {
   const r = vizRun(s);
   if (!r) return false;
   return (Number(r.anomalies) > 0) || /anomal/i.test(String(r.status ?? ''));
@@ -62,10 +62,10 @@ export function vizState(s) {
   if (!v || v.has_cli === false || (ver && vizVerOld(ver))) return 'nocli';
   return (vizConfigured(s) && v.connected) ? 'connecte' : 'nonconnecte';
 }
-export function vizVersion(s) { const v = vizInfo(s), p = vizOf(s); return (v && v.version) || (p && p.version) || '?'; }
+function vizVersion(s) { const v = vizInfo(s), p = vizOf(s); return (v && v.version) || (p && p.version) || '?'; }
 /** Connectable d'ici ? Il faut du SSH : l'agent REST est en lecture seule. */
-export function vizConnectable(s) { return s.via !== 'rest' && ['nonconnecte', 'connecte'].includes(vizState(s)); }
-export function vizAdminUrl(s) {
+function vizConnectable(s) { return s.via !== 'rest' && ['nonconnecte', 'connecte'].includes(vizState(s)); }
+function vizAdminUrl(s) {
   return safeUrl((s.siteurl || ('https://' + s.domain)).replace(/\/+$/, '')
     + '/wp-admin/admin.php?page=vizproof-timeline');
 }
@@ -93,7 +93,7 @@ function lienEl(url, texte, cls) {
 }
 
 /** Pastille du dernier scan, commune à la colonne et à la page site. */
-export function vizRunBadgeEl(s) {
+function vizRunBadgeEl(s) {
   const r = vizRun(s);
   if (!r) return null;
   const bad = vizAnom(s), an = Number(r.anomalies) || 0;
@@ -255,7 +255,7 @@ export function vizConsoleLigne(v) {
   return `<span data-vizline><b class="${vizEtat(v)}">Contrôle visuel VizProof : ${H(vizPhrase(v))}</b>`
     + (u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">rapport</a>` : '') + '</span>';
 }
-export function vizConsoleMaj(dom, v) {
+function vizConsoleMaj(dom, v) {
   const c = CONSOLE_DE(dom);
   if (!c) return;
   const l = c.querySelector('[data-vizline]');
@@ -324,7 +324,7 @@ function vizSlug(d) {
 }
 const VZ_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
-export function closeViz() { document.getElementById('vizmodal').classList.remove('open'); }
+function closeViz() { document.getElementById('vizmodal').classList.remove('open'); }
 
 function brancherModale() {
   document.getElementById('vz-cancel').onclick = closeViz;

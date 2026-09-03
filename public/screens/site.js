@@ -18,7 +18,7 @@
 import { api } from '../lib/api.js';
 import { esc as H, h, mount } from '../lib/dom.js';
 import {
-  absTime, relTime, safeUrl, stripPhpNoise, tsMs,
+  absTime, detailEvenement, relTime, safeUrl, stripPhpNoise, tsMs,
   udIntervalFr, udHorizon, udRulesFr,
 } from '../lib/format.js';
 import { icon, iconEl } from '../lib/icons.js';
@@ -57,6 +57,7 @@ let CLE = '';            // clé d'URL du site affiché
 let VULNS = null;        // dernier croisement pour CE site
 let FROZEN = [];         // extensions gelées
 let INCIDENTS = [];      // incidents de CE site
+let FOCUS_ONGLET = false;   // rendre le focus à l'onglet après une flèche
 
 /** Site du parc derrière une clé d'URL (nom Kuma, sinon vhost). */
 export function siteParCle(cle) {
@@ -143,7 +144,7 @@ export function renderSite(cle, onglet) {
 
 /* Rafraîchissement après une action : la flotte a changé, la console et
    l'onglet courant restent. */
-export function refreshSite() {
+function refreshSite() {
   if (!CUR) return;
   const s = siteParCle(CLE) || siteParCle(cleDeSite(CUR));
   if (!s) return;
@@ -163,11 +164,21 @@ function dessiner() {
   mount('page-site',
     entete(s),
     bandeau(s),
-    ongletsNav(s),
-    h('div', { id: 'site-tab', class: 'sitetab' }),
+    ongletsNav(),
+    h('div', {
+      id: 'site-tab', class: 'sitetab', role: 'tabpanel',
+      'aria-labelledby': 'sitetab-' + ONGLET, tabindex: '0',
+    }),
     h('div', { class: 'console', id: 'site-console', hidden: true, dataset: { domain: s.domain } }));
   renderVulnsSite();
   dessinerOnglet();
+  // Navigation aux flèches : le volet a été reconstruit, on rend le focus à
+  // l'onglet qui vient d'être choisi.
+  if (FOCUS_ONGLET) {
+    FOCUS_ONGLET = false;
+    const b = document.getElementById('sitetab-' + ONGLET);
+    if (b) b.focus();
+  }
 }
 
 /* ---- en-tête -------------------------------------------------------------- */
@@ -239,6 +250,22 @@ function raisons(s) {
   };
 }
 
+/* Porteur d'action DÉTACHÉ. `confirmRun`, `vizInstall` et `vizDisconnect`
+   travaillent sur un élément qui porte `data-act` / `data-arg` et sur lequel
+   elles posent un état de chargement. Lancées depuis une entrée de menu, il
+   n'y a aucun bouton à l'écran : on leur en fabrique un porteur, qui n'entre
+   jamais dans le document.
+
+   Un <span> plutôt qu'un <button> : un bouton hors du document n'a pas de nom
+   accessible, et c'est exactement ce que refuse tools/check_a11y.py — à juste
+   titre, on ne saurait pas quoi y écrire. */
+function porteurAction(act, arg) {
+  const el = h('span', { class: 'btn', hidden: true });
+  if (act) el.dataset.act = act;
+  if (arg) el.dataset.arg = arg;
+  return el;
+}
+
 /* Une entrée du menu qui lance une action unitaire. Elle est DÉCLARÉE
    (`{action, label, …}`) plutôt que construite : c'est cette forme que
    tools/check_front.py croise avec la table ACTIONS du backend. */
@@ -251,12 +278,7 @@ function itemAct(s, def) {
     label: def.label, ic: def.ic,
     attention: def.attention === undefined ? ACT_RISQUE.has(act) : !!def.attention,
     disabled: !!raison, raison,
-    onSelect: () => {
-      const faux = h('button', { type: 'button', class: 'btn' });
-      faux.dataset.act = act;
-      if (def.arg) faux.dataset.arg = def.arg;
-      confirmRun(faux, def.label);
-    },
+    onSelect: () => confirmRun(porteurAction(act, def.arg), def.label),
   };
 }
 
@@ -302,7 +324,7 @@ function menuDuSite(s) {
       label: 'Installer VizProof', ic: 'plus', attention: true,
       disabled: rest || vs !== 'absent',
       raison: rest ? "site sans SSH : passez par « Autoriser WordPress » puis le bloc VizProof" : (vs === 'absent' ? '' : 'extension déjà présente'),
-      onSelect: () => vizInstall(h('button', { type: 'button', class: 'btn' }), s.srv, s.domain),
+      onSelect: () => vizInstall(porteurAction(), s.srv, s.domain),
     },
     {
       label: 'Connecter VizProof', ic: 'link',
@@ -316,7 +338,7 @@ function menuDuSite(s) {
       label: 'Dissocier VizProof', ic: 'x', attention: true,
       disabled: rest || vs !== 'connecte',
       raison: rest ? R.rest : 'site non relié à VizProof',
-      onSelect: () => vizDisconnect(h('button', { type: 'button', class: 'btn' }), s),
+      onSelect: () => vizDisconnect(porteurAction(), s),
     },
     {
       label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
@@ -440,16 +462,36 @@ function renderVulnsSite() {
   cell.querySelector('.ib-s').textContent = n === null ? 'analyse…' : (n ? (SEVLABEL[worst] || worst || 'connues') : 'aucune');
 }
 
-/* ---- onglets -------------------------------------------------------------- */
-function ongletsNav(s) {
-  const nav = h('nav', { class: 'subtabs', 'aria-label': 'Sections du site' });
+/* ---- onglets --------------------------------------------------------------
+   Ce sont de VRAIS onglets — un seul volet à la fois sur un même objet — donc
+   le motif ARIA complet : `role="tablist"`, un `tab` par bouton lié à son
+   `tabpanel`, un seul atteignable par tabulation (tabindex mobile), les
+   flèches pour circuler. Sans ce motif, un lecteur d'écran annonce cinq
+   boutons sans dire qu'ils commandent une même zone.
+
+   En étroit, la liste défile horizontalement : c'est `initDebordement()` qui
+   pose l'ombre de débordement quand il y a de quoi défiler. */
+function ongletsNav() {
+  const nav = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Sections du site' });
   ONGLETS.forEach(([slug, label]) => {
+    const actif = slug === ONGLET;
     const b = h('button', {
-      type: 'button', class: 'subtab' + (slug === ONGLET ? ' active' : ''),
-      'aria-current': slug === ONGLET ? 'true' : 'false',
+      type: 'button', class: 'tab' + (actif ? ' active' : ''),
+      role: 'tab', id: 'sitetab-' + slug, 'aria-controls': 'site-tab',
+      'aria-selected': actif ? 'true' : 'false', tabindex: actif ? '0' : '-1',
       text: label,
     });
     b.onclick = () => allerOnglet(slug);
+    b.onkeydown = e => {
+      const pas = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (pas) {
+        e.preventDefault();
+        const i = ONGLET_SLUGS.indexOf(slug);
+        FOCUS_ONGLET = true;
+        allerOnglet(ONGLET_SLUGS[(i + pas + ONGLET_SLUGS.length) % ONGLET_SLUGS.length]);
+      } else if (e.key === 'Home') { e.preventDefault(); FOCUS_ONGLET = true; allerOnglet(ONGLET_SLUGS[0]); }
+      else if (e.key === 'End') { e.preventDefault(); FOCUS_ONGLET = true; allerOnglet(ONGLET_SLUGS[ONGLET_SLUGS.length - 1]); }
+    };
     nav.append(b);
   });
   return nav;
@@ -663,10 +705,14 @@ function cveChip(nom) {
   return el;
 }
 
+/* `data-l` porte le libellé de colonne : en étroit, le tableau devient une
+   liste empilée et chaque valeur reprend son libellé (voir screens.css). Sans
+   lui, « 4.2.3 → 4.2.4 » se retrouverait seul sous un nom d'extension. */
 function ligneExtension(s, p, maj) {
   const tr = h('tr', { dataset: { plug: p.name } },
-    h('td', {}, h('b', { text: p.name }), cveChip(p.name)),
-    h('td', {}, maj ? h('span', {}, p.version || '?', ' → ', h('b', { text: p.to || '?' })) : (p.version || '?'),
+    h('td', { 'data-l': 'Extension' }, h('b', { text: p.name }), cveChip(p.name)),
+    h('td', { 'data-l': 'Version' },
+      maj ? h('span', {}, p.version || '?', ' → ', h('b', { text: p.to || '?' })) : (p.version || '?'),
       p.status !== 'active' ? h('span', { class: 'pill mut', text: 'inactive' }) : null),
     h('td', { class: 'pcell' }));
   const cell = tr.lastElementChild;
@@ -935,10 +981,15 @@ let TLGROUPS = [], TLSHOWN = 0, TLFILTRE = '';
 const TLPAGE = 20;
 let TLSEQ = 0;
 
+/* Ce n'est PAS un `tablist` : ce sont des bascules de filtre sur une seule
+   liste. Elles portent donc `aria-pressed`, pas `aria-selected`. */
 function ongletHistorique() {
-  const barre = h('div', { class: 'filters' });
+  const barre = h('div', { class: 'tabs', role: 'group', 'aria-label': "Filtrer l'historique" });
   [['', 'Tout'], ...Object.entries(TLKIND)].forEach(([k, lbl]) => {
-    const b = h('button', { type: 'button', class: 'subtab' + (TLFILTRE === k ? ' active' : ''), text: lbl });
+    const b = h('button', {
+      type: 'button', class: 'tab' + (TLFILTRE === k ? ' active' : ''),
+      'aria-pressed': TLFILTRE === k ? 'true' : 'false', text: lbl,
+    });
     b.onclick = () => { TLFILTRE = k; TLSHOWN = TLPAGE; dessinerOnglet(); };
     barre.append(b);
   });
@@ -1022,31 +1073,15 @@ const EVLABEL = {
   switch_theme: 'Thème changé', grant_super_admin: 'Super administrateur accordé',
   wp_initialize_site: 'Sous-site créé',
 };
-/* Détail d'un événement rendu lisible : l'agent pousse du JSON brut. */
+/* Détail d'une ligne d'historique. Un ÉVÈNEMENT d'agent est du JSON brut : sa
+   mise en phrase vit dans lib/format.js (`detailEvenement`), partagée avec
+   l'écran Changements — cet écran en portait une copie jusqu'à la phase 5, et
+   les deux avaient commencé à diverger. Le reste (action, collecte) n'est que
+   de la sortie wp-cli à débruiter. */
 function tlDetail(e) {
-  const raw = e.detail;
-  if (raw == null || raw === '') return '';
-  if (e.kind !== 'event') return stripPhpNoise(raw);
-  let d;
-  try { d = JSON.parse(raw); } catch (err) { return stripPhpNoise(raw).slice(0, 220); }
-  if (!d || typeof d !== 'object') return String(raw).slice(0, 220);
-  const slug = f => String(f).split('/')[0];
-  const lab = String(e.label || '');
-  if (lab === 'upgrader_process_complete') {
-    const items = (d.items || []).map(slug).filter(Boolean);
-    const quoi = { plugin: 'extension', theme: 'thème', core: 'cœur', translation: 'traduction' }[d.type] || d.type || 'élément';
-    if (!items.length) return `${quoi} · ${d.action || 'mise à jour'}`;
-    return `${quoi}${items.length > 1 ? 's' : ''} : ${items.join(', ')}`;
-  }
-  if (lab === 'wp_login') return `${d.login || '?'}${d.ip ? ' · depuis ' + d.ip : ''}`;
-  if (lab === 'user_register' || lab === 'set_user_role' || lab === 'grant_super_admin') {
-    return `${d.login || '?'}${d.email ? ' <' + d.email + '>' : ''}${(d.roles || []).length ? ' · ' + d.roles.join(', ') : ''}`;
-  }
-  if (lab === 'deleted_user') return `${d.login || d.id || '?'}`;
-  if (lab === 'activated_plugin' || lab === 'deactivated_plugin') return slug(d.plugin || d.file || '?');
-  if (lab === 'switch_theme') return d.name || d.stylesheet || '?';
-  return Object.entries(d).filter(([, v]) => v !== null && v !== '' && v !== undefined)
-    .map(([k, v]) => `${k} : ${Array.isArray(v) ? v.map(slug).join(', ') : v}`).join(' · ').slice(0, 220);
+  const brut = e.detail;
+  if (brut === null || brut === undefined || brut === '') return '';
+  return e.kind === 'event' ? detailEvenement(e.label, brut) : stripPhpNoise(brut);
 }
 
 /* ---- chargements différés --------------------------------------------------- */

@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Refonte Parc WordPress</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -87,6 +89,17 @@ figcaption{font-size:.82rem;color:var(--muted);margin-top:8px}
 .wire rect.ste{fill:var(--err-bg);stroke:none}
 .wire line{stroke:var(--line);stroke-width:1}
 .note{border-left:3px solid var(--warn);background:var(--warn-bg);padding:10px 14px;border-radius:0 var(--r) var(--r) 0;font-size:.92rem;max-width:var(--measure)}
+/* Encart « Réalisé » : ajouté en tête à la livraison de la phase 5. Le plan
+   lui-même n'a pas été réécrit — on lit ce qui était prévu, puis ce qui a été
+   fait, sans avoir à deviner l'écart. */
+.fait{border:1px solid var(--ok);border-left-width:4px;background:var(--ok-bg);border-radius:var(--r);
+  padding:14px 18px;margin:0 0 1.6rem;max-width:none}
+.fait h2{margin:0 0 .3rem;border:0;padding:0;font-size:1.1rem;color:var(--ok)}
+.fait ol{margin:.5rem 0 0;padding-left:1.2rem;max-width:none;font-size:.93rem}
+.fait li{margin:.2rem 0}
+.fait li b{font-weight:600}
+.fait p{margin:.2rem 0 0;max-width:none}
+.fait .d{font-family:var(--f-mono);font-size:.78rem;color:var(--muted)}
 .decisions li{margin:.45rem 0}
 @media (prefers-reduced-motion:no-preference){ a{transition:color .15s} }
 </style>
@@ -119,6 +132,21 @@ figcaption{font-size:.82rem;color:var(--muted);margin-top:8px}
     <span>Effort estimé <b>14 à 18 jours</b></span>
   </div>
 </header>
+
+<section class="fait">
+  <h2>Réalisé <span class="d">— 3 septembre 2026</span></h2>
+  <p>Les cinq phases sont livrées et déployées. Le plan ci-dessous est
+  conservé <b>tel qu'il a été écrit</b> : il dit ce qui était prévu, pas ce qui existe. Pour l'état actuel du front,
+  voir la section <span class="mono">Frontend</span> du README et <span class="mono">docs/captures/</span>.</p>
+  <ol>
+    <li>✔ <b>Phase 1 — Fondations</b> : jetons, polices locales, sprite d'icônes, coque, découpage en modules ES, script de déploiement.</li>
+    <li>✔ <b>Phase 2 — Parc et page site</b> : file « à traiter », liste filtrable, page site à cinq onglets, recherche ⌘K, actions groupées.</li>
+    <li>✔ <b>Phase 3 — Incidents, Sécurité, Changements</b> : écran Incidents, pages à ancres, chronologie unifiée ; plus un seul sous-onglet.</li>
+    <li>✔ <b>Phase 4 — Gestion et Réglages</b> : serveurs en formulaires (validation champ par champ), Réglages devenu une page.</li>
+    <li>✔ <b>Phase 5 — Mobile et finition</b> : barre d'onglets basse, liste de cartes, feuille d'actions, passe d'accessibilité
+      (<span class="mono">tools/check_a11y.py</span>), retrait du code mort (<span class="mono">tools/check_dead.py</span>), README et captures.</li>
+  </ol>
+</section>
 
 <h2 id="etat">1. État des lieux</h2>
 <p>Le dashboard a été construit en trois jours, fonctionnalité par fonctionnalité. Il rend service, mais sa forme est celle d'une accumulation : chaque écran a été ajouté là où il y avait de la place, avec la charte qu'il avait sous la main.</p>

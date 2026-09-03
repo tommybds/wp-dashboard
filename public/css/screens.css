@@ -52,8 +52,29 @@
 .nav-user .who{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nav-user .btn{padding:3px 6px}
 
-.nav-back{position:fixed;inset:0;background:var(--overlay);z-index:29;display:none}
-.nav-back.open{display:block}
+/* ---- barre d'onglets basse (≤ 720 px) -------------------------------------
+   Elle remplace la barre latérale, pas le tiroir qui l'ouvrait : sous 720 px
+   il n'y a plus de tiroir du tout. Hauteur tactile de 56 px + l'encoche du bas
+   (`safe-area-inset-bottom`), sans quoi le dernier onglet passe sous la barre
+   d'accueil de l'iPhone. */
+.tabbar{display:none}
+.tab-i{
+  flex:1 1 0;min-width:0;min-height:52px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  padding:6px 2px;border:0;background:none;cursor:pointer;text-decoration:none;
+  color:var(--muted);font-family:var(--f-display);font-size:var(--t-12);font-weight:500;
+}
+.tab-i:hover{text-decoration:none;color:var(--ink-2)}
+.tab-i.active{color:var(--accent)}
+.tab-ic{position:relative;display:inline-flex}
+.tab-l{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab-c{position:absolute;top:-4px;left:11px;min-width:16px;padding:0 4px;
+  border-radius:var(--r-pill);background:var(--neutral-bg);color:var(--muted);
+  font-family:var(--f-body);font-size:10px;line-height:16px;text-align:center;
+  font-variant-numeric:tabular-nums}
+.tab-c.err{background:var(--err-bg);color:var(--err)}
+.tab-c.warn{background:var(--warn-bg);color:var(--warn)}
+.tab-c[hidden]{display:none}
 
 /* ---- en-tête d'écran ------------------------------------------------------ */
 .shead{
@@ -67,23 +88,22 @@
 .shead .meta{font-size:var(--t-12);color:var(--muted)}
 #meta .sep{opacity:.45;margin:0 5px}
 #meta b{color:var(--ink-2);font-weight:600}
-.menubtn{display:none}
 
 .page{display:none;padding:var(--s-16) var(--s-24) var(--s-48)}
 .page.active{display:block}
 
 /* Les sous-onglets de NAVIGATION ont disparu en phase 4 : les cinq
    destinations et la page Réglages sont des pages à ancres (`.anchors` dans
-   components.css). `.subtabs` ne sert plus qu'à la PAGE SITE — ses cinq
-   onglets et le filtre de sa chronologie — où ce sont de vrais onglets : un
-   seul volet à la fois sur un même objet, pas un rangement d'écran. */
-.subtabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 var(--s-16)}
-.subtab{padding:4px 11px;border:1px solid var(--line);background:var(--surface);
+   components.css). Ce qui reste s'appelle depuis la phase 5 ce qu'il est :
+   des ONGLETS (`.tabs` / `.tab`), et il n'y en a qu'à deux endroits — les cinq
+   onglets de la page site (`role="tablist"`, un volet à la fois sur un même
+   objet) et le filtre de sa chronologie (un groupe de bascules). */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 var(--s-16)}
+.tab{padding:4px 11px;border:1px solid var(--line);background:var(--surface);
   color:var(--muted);border-radius:var(--r-pill);cursor:pointer;
-  font-family:var(--f-display);font-size:var(--t-12);font-weight:500}
-.subtab:hover{border-color:var(--accent);color:var(--ink)}
-.subtab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.subtab .cnt{opacity:.75;font-weight:400;margin-left:4px}
+  font-family:var(--f-display);font-size:var(--t-12);font-weight:500;white-space:nowrap}
+.tab:hover{border-color:var(--accent);color:var(--ink)}
+.tab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 
 /* ---- écran vide (Incidents, phase 3) -------------------------------------- */
 .empty{display:flex;flex-direction:column;align-items:center;gap:var(--s-8);
@@ -140,6 +160,40 @@
   padding:var(--s-8) var(--s-12);display:none;align-items:center;gap:6px;flex-wrap:wrap}
 .bulkbar.open{display:flex}
 .bulkbar b{margin-right:var(--s-4)}
+.bulkbar-desk{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+/* Les deux contrôles propres au mobile : la bascule « Sélection » de la barre
+   de filtres et le bouton qui ouvre la feuille d'actions groupées. */
+.bulkbar-mob,.selmode-btn{display:none}
+
+/* ---- liste de cartes (mobile) ----------------------------------------------
+   Sous 720 px, la liste des sites cesse d'être un tableau : une carte est
+   manipulable seule, c'est le seul cas où une carte se justifie ici. Elle est
+   alimentée par le MÊME objet de ligne que le tableau (`objetLigne()` dans
+   screens/parc.js) : les deux ne peuvent pas diverger. */
+.scards{display:none;flex-direction:column;gap:var(--s-8);list-style:none;margin:0;padding:0}
+.scard{display:flex;align-items:stretch;gap:0;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-surf);overflow:hidden}
+.scard.sel{border-color:var(--accent);background:var(--accent-bg)}
+.scard-chk{flex:0 0 auto;display:none;align-items:center;padding:0 var(--s-8) 0 var(--s-12)}
+.scards.selmode .scard-chk{display:flex}
+.scard-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;
+  padding:10px var(--s-12);border:0;background:none;color:inherit;font:inherit;
+  text-align:left;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.scard-h{display:flex;align-items:center;gap:var(--s-8);flex-wrap:wrap}
+.scard-n{flex:1;min-width:0;font-weight:600;font-family:var(--f-display);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scard-sub{color:var(--muted);font-size:var(--t-12);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scard-k{display:flex;gap:var(--s-16);margin-top:2px;flex-wrap:wrap}
+.scard-k>span{display:flex;flex-direction:column;min-width:0}
+.scard-kl{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em}
+.scard-kv{font-size:var(--t-13);font-variant-numeric:tabular-nums}
+.scard-kv.warn{color:var(--warn);font-weight:600}
+.scard-kv.err{color:var(--err);font-weight:600}
+.scard-viz{margin-top:var(--s-4)}
+.scard-vide{padding:var(--s-16);color:var(--muted);font-size:var(--t-13);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf)}
 
 .vizrun{text-decoration:none;vertical-align:middle}
 .vizrun:hover{text-decoration:none}
@@ -296,28 +350,133 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
   .bulkbar{padding-left:var(--s-16);padding-right:var(--s-16)}
 }
 
-/* Sous 720 px la barre latérale sort du flux et s'ouvre par le bouton menu.
-   Le mobile complet (barre d'onglets basse, cartes, feuille d'actions) est la
-   phase 5 : ici on garantit seulement qu'on peut naviguer. */
+/* ============================================================================
+   Mobile — sous 720 px (phase 5)
+   ----------------------------------------------------------------------------
+   Objectif tenu ici : consulter l'état, ouvrir un incident, lancer un re-scan
+   ou une MAJ sûre, sans zoom ni défilement horizontal du document. Trois
+   règles gouvernent le reste :
+
+     * la barre latérale devient la barre d'onglets basse (`.tabbar`) ;
+     * ce qui était une rangée devient une colonne, et ce qui était un menu
+       flottant devient une feuille (components/sheet.js) ;
+     * toute cible tactile fait au moins 44 px.
+
+   Aucune largeur fixe ne subsiste : c'est la seule façon de tenir 320 px.
+   ========================================================================== */
 @media(max-width:720px){
-  .nav{position:fixed;left:0;top:0;z-index:30;width:var(--nav-w);height:100vh;
-    padding-left:var(--s-8);padding-right:var(--s-8);
-    transform:translateX(-100%);transition:transform .18s ease}
-  .nav.open{transform:none;box-shadow:var(--shadow-2)}
-  .nav .nav-l,.nav-brand-t,.nav-user .who{display:block}
-  .nav-i{justify-content:flex-start;padding:6px var(--s-8)}
-  .nav-brand{justify-content:flex-start;padding:var(--s-4) var(--s-8) var(--s-12)}
-  .nav-user{justify-content:flex-start;padding:6px var(--s-8)}
-  .nav-c{position:static;min-width:20px;padding:0 6px;font-size:var(--t-12);line-height:inherit}
-  .menubtn{display:inline-flex}
-  .shead{padding:var(--s-8) var(--s-12);gap:var(--s-8)}
-  .page{padding:var(--s-12) var(--s-12) var(--s-48)}
+  /* ---- coque ---- */
+  .nav{display:none}
+  .tabbar{
+    display:flex;position:fixed;left:0;right:0;bottom:0;z-index:30;
+    background:var(--surface);border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom);
+    box-shadow:0 -1px 0 var(--line-2)}
+  /* La page laisse la place à la barre d'onglets : sans cette réserve, la
+     dernière ligne de chaque écran finit dessous. */
+  .page{padding:var(--s-12) var(--s-12) calc(76px + env(safe-area-inset-bottom))}
+  .shead{padding:var(--s-8) var(--s-12);gap:var(--s-8);row-gap:var(--s-4)}
+  .shead h1{font-size:var(--t-16)}
+  /* Titre + méta sur deux lignes, la méta passe à la ligne en entier. */
+  .shead-t{flex:1 1 100%;order:-1}
+  .shead .meta{white-space:normal}
   .collectbox{margin-left:var(--s-12);margin-right:var(--s-12)}
-  .bulkbar{padding-left:var(--s-12);padding-right:var(--s-12)}
-  .kv{grid-template-columns:110px 1fr}
-  th,td{padding:7px var(--s-8)}
-  .dstats,.iband{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #searchkbd{display:none}
+  #collectbtn .btn-l,#searchbtn .btn-l{position:absolute;width:1px;height:1px;padding:0;
+    margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+  /* ---- cibles tactiles ---- */
+  .btn{min-height:44px;padding:8px var(--s-12)}
+  .btn.sm{min-height:44px;padding:6px 10px;font-size:var(--t-13)}
+  .btn.icon{padding:8px 10px}
+  input[type=checkbox]{width:22px;height:22px}
+  input[type=search],select,input.inp{min-height:44px}
+  .anchor{min-height:36px;padding:6px 12px}
+  .menu-i{min-height:44px}
+
+  /* ---- listes défilables : sommaires d'ancres et onglets ---- */
+  .anchors,.tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+    scrollbar-width:none;-ms-overflow-style:none}
+  .anchors::-webkit-scrollbar,.tabs::-webkit-scrollbar{display:none}
+  .tabs{margin-bottom:var(--s-12);padding-bottom:2px}
+
+  /* ---- Parc : la liste devient une liste de cartes ---- */
+  #parc-wrap{display:none}
+  .scards{display:flex}
+  .counters{gap:6px}
+  .cnt{min-height:36px}
+  /* Barre d'actions groupées : un résumé et un bouton, le reste est dans la
+     feuille — douze boutons n'ont pas leur place sur 360 px. */
+  .bulkbar{padding:var(--s-8) var(--s-12);position:fixed;left:0;right:0;
+    bottom:calc(52px + env(safe-area-inset-bottom));border-radius:0;margin:0;z-index:29}
+  .bulkbar .btn{flex:1 1 auto;justify-content:center}
+  .bulkbar-desk{display:none}
+  .bulkbar-mob,.selmode-btn{display:inline-flex}
+
+  /* ---- file « à traiter » : une carte par incident ---- */
+  .inc{flex-wrap:wrap;padding:var(--s-8) var(--s-8) var(--s-8) 10px}
+  .inc-a{order:2}
+  .inc-b{order:3;width:100%;margin-top:6px}
+  .inc-b .btn{flex:1;justify-content:center}
+  .inc-d{white-space:normal;max-width:none}
+  .incgrp .inclist{padding:0 var(--s-4)}
+
+  /* ---- page site ---- */
   .sitehead{grid-template-columns:minmax(0,1fr)}
-  .siteact{grid-column:1;grid-row:auto;justify-content:flex-start}
-  #collectbtn{flex:1}
+  .sitetitle h1{font-size:var(--t-20)}
+  .siteact{grid-column:1;grid-row:auto;flex-direction:column;align-items:stretch;
+    justify-content:flex-start;gap:6px;margin-top:var(--s-8)}
+  .siteact>.btn,.siteact .menu,.siteact .menu>.btn{width:100%;justify-content:center}
+  .iband{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #site-console{margin-left:calc(-1 * var(--s-12));margin-right:calc(-1 * var(--s-12));
+    border-radius:0;max-height:200px}
+  /* Tableau d'extensions : une ligne empilée, chaque valeur précédée de son
+     libellé. Trois colonnes de 110 px sont illisibles, et les faire défiler
+     ferait perdre le nom de l'extension. */
+  .ptable,.ptable tbody,.ptable tr,.ptable td{display:block;width:100%}
+  .ptable tr{border-bottom:1px solid var(--line-2);padding:var(--s-8) 0}
+  .ptable tr:last-child{border-bottom:0}
+  .ptable td{border-bottom:0;padding:2px 0;white-space:normal}
+  .ptable td[data-l]::before{content:attr(data-l);display:block;
+    font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+    text-transform:uppercase;letter-spacing:.05em}
+  .ptable td.pcell{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .ptable td.pcell .btn{flex:1 1 auto;justify-content:center}
+
+  /* ---- pages longues : formulaires en une colonne, tableaux défilables ---- */
+  .kv{grid-template-columns:minmax(0,1fr);gap:0 0}
+  .kv .k{margin-top:var(--s-8);font-family:var(--f-mono);font-size:var(--t-12);
+    text-transform:uppercase;letter-spacing:.05em}
+  .fieldrow{grid-template-columns:minmax(0,1fr)}
+  .field .aide,.field .ferr{max-width:none}
+  .filters{gap:6px}
+  /* Le résumé d'une section (« 12/20 sites — 12 critiques, 12 élevées… ») est
+     une chip : sans autorisation de passer à la ligne, elle pousse la page
+     entière sur 320 px. C'est le seul endroit où une chip est une phrase. */
+  .sechead .chip,.sechead .pill{white-space:normal}
+  .dstats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .histgrid{grid-template-columns:minmax(0,1fr)}
+  th,td{padding:8px var(--s-8)}
+
+  /* ---- confirmations : une feuille, un bouton de validation pleine largeur ---- */
+  /* Au-dessus de la barre de notifications (z-index 1000), contrairement au
+     bureau : sur 390 px la barre occupe toute la largeur en haut et masquait le
+     titre de la feuille. Une couche qui retient le focus ne peut pas passer
+     sous une notification. */
+  .modal.open{align-items:flex-end;padding:0;z-index:1001}
+  .modal .box{max-width:none;max-height:88vh;
+    border-radius:var(--r-surf) var(--r-surf) 0 0;border-bottom:0;
+    padding:var(--s-16) var(--s-12) max(var(--s-16),env(safe-area-inset-bottom))}
+  /* `column-reverse` : le bouton d'action est le dernier du DOM, il arrive donc
+     en haut de la pile — sous le pouce, et lu en premier. */
+  .modal .actions{flex-direction:column-reverse;gap:6px}
+  .modal .actions .btn{width:100%;justify-content:center}
+  .modal .box .filters .btn{width:auto}
+}
+
+/* Très étroit (≤ 380 px) : les deux dernières largeurs fixes tombent. */
+@media(max-width:380px){
+  .iband,.dstats{grid-template-columns:minmax(0,1fr)}
+  .w-xs,.w-sm,.w-md,.w-lg,.w-num,input[type=search]{width:100%}
+  .filters>select,.filters>input{flex:1 1 100%}
 }

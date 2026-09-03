@@ -7,9 +7,6 @@
 export const esc = x => String(x ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/** Nom historique de `esc`, gardé pour les gabarits repris tels quels. */
-export const H = esc;
-
 /**
  * h(tag, attrs, ...children) → Element
  *   attrs : { class, id, text, html, dataset:{…}, aria-*, on* (fonction), … }
@@ -18,6 +15,11 @@ export const H = esc;
  */
 export function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
+  // Tout `<th>` du front est un en-tête de COLONNE, sans exception : la règle
+  // est posée ici plutôt que répétée dans la vingtaine de tableaux des écrans,
+  // où elle finirait oubliée dans l'un d'eux. Un appelant qui aurait besoin
+  // d'autre chose passe `scope` explicitement.
+  if (tag === 'th' && !(attrs && 'scope' in attrs)) el.setAttribute('scope', 'col');
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === null || v === undefined || v === false) continue;
     if (k === 'class' || k === 'className') el.className = v;
@@ -51,22 +53,24 @@ export function mount(target, ...children) {
 }
 
 /**
- * Délégation d'évènement : le gestionnaire survit aux re-rendus du contenu,
- * contrairement à un `onclick` posé sur chaque nœud après chaque innerHTML.
+ * Zone de message d'un formulaire : « enregistré », « échec »…
+ *
+ * Elle est déclarée VIDE et en `role="status"` dès le rendu du formulaire : un
+ * lecteur d'écran n'annonce le contenu d'une région vivante que si celle-ci
+ * existait déjà avant que le texte n'y arrive. Créée au moment du verdict,
+ * elle resterait muette — le résultat de l'action serait invisible pour qui
+ * n'a pas les yeux sur le bouton.
  */
-export function delegate(root, type, selector, fn) {
-  const el = typeof root === 'string' ? document.getElementById(root) : root;
-  if (!el) return () => {};
-  const handler = ev => {
-    const hit = ev.target.closest && ev.target.closest(selector);
-    if (hit && el.contains(hit)) fn(ev, hit);
-  };
-  el.addEventListener(type, handler);
-  return () => el.removeEventListener(type, handler);
+export function zoneMessage(id, cls = 'small', tag = 'span') {
+  return h(tag, { class: cls, id, role: 'status', 'aria-live': 'polite' });
 }
 
-/** Raccourci de lecture, pour ne pas répéter `document.getElementById`. */
-export const byId = id => document.getElementById(id);
+/** Marque (ou démarque) une zone en cours de chargement, pour les technologies d'assistance. */
+export function occupe(cible, on) {
+  const el = typeof cible === 'string' ? document.getElementById(cible) : cible;
+  if (!el) return;
+  if (on) el.setAttribute('aria-busy', 'true'); else el.removeAttribute('aria-busy');
+}
 
 /* Entrée/Espace sur un élément rendu cliquable : un <div>/<tr>/<th> ne le fait
    pas tout seul, contrairement à un <button>. */

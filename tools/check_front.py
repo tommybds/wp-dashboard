@@ -145,6 +145,9 @@ def check_ids(pbs, verbose):
         ids |= set(re.findall(r'id="([A-Za-z0-9_\-]+)"', src))
         ids |= set(re.findall(r"""\.id\s*=\s*['"]([A-Za-z0-9_\-]+)['"]""", src))
         ids |= set(re.findall(r"""id:\s*['"]([A-Za-z0-9_\-]+)['"]""", src))
+        # `zoneMessage('x')` (lib/dom.js) construit un <span id="x"> : c'est une
+        # déclaration d'identifiant comme une autre.
+        ids |= set(re.findall(r"""zoneMessage\(\s*['"]([A-Za-z0-9_\-]+)['"]""", src))
     manquants = set()
     for f in FICHIERS_JS:
         src = f.read_text(encoding="utf-8")

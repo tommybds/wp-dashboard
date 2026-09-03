@@ -9,7 +9,7 @@
    partir d'une donnée distante. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h, mount, activeAuClavier } from '../lib/dom.js';
+import { esc as H, h, mount, activeAuClavier, occupe } from '../lib/dom.js';
 import { debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import {
@@ -22,6 +22,7 @@ import { demarrerJob } from '../components/job.js';
 import { NOTIF } from '../components/toast.js';
 import { bindSortable, setDensity, colonnesMasquees, enregistrerColonnes } from '../components/table.js';
 import { setIncidentCount } from '../components/shell.js';
+import { ouvrirFeuille, boutonFeuille } from '../components/sheet.js';
 import { openVizConnect, vizCellEl, vizInfo, vizOf, vizVal } from '../components/viz.js';
 import { incidentLigne, cleDeSite } from './site.js';
 
@@ -92,6 +93,9 @@ function monterParc() {
     barreFiltres(),
     h('div', { class: 'wrap', id: 'parc-wrap' },
       h('table', { id: 'tbl' }, h('thead', { id: 'thd' }), h('tbody', { id: 'tb' }))),
+    // La même liste, en cartes : le CSS n'en montre qu'une des deux selon la
+    // largeur. Les deux sont alimentées par `objetLigne()`.
+    h('ul', { class: 'scards', id: 'parc-cards', 'aria-label': 'Sites du parc' }),
     barreGroupee());
   setDensity(store.filt.compact);
   // Les vues vivent dans localStorage : elles sont remplies dès que le
@@ -135,13 +139,21 @@ function barreFiltres() {
   const csvbtn = h('button', { type: 'button', class: 'btn sm', id: 'csvbtn' }, iconEl('download'), 'CSV');
   csvbtn.onclick = exportCsv;
 
+  /* Mode sélection : il n'a de sens qu'en cartes, où la case à cocher ne peut
+     pas rester affichée en permanence. Le CSS ne le montre que sous 720 px. */
+  const selmode = h('button', {
+    type: 'button', class: 'btn sm selmode-btn', id: 'selmode', 'aria-pressed': 'false',
+    title: 'Cocher plusieurs sites pour une action groupée (ou appui long sur une carte)',
+  }, iconEl('list'), 'Sélection');
+  selmode.onclick = () => setSelMode(!SELMODE);
+
   return h('div', { class: 'filters', id: 'parc-filters' },
     q, fsrv, fgrp, fst,
     coche('ftodo', 'todo', 'à traiter'),
     coche('fgroupby', 'groupby', 'grouper par client'),
     coche('fcompact', 'compact', 'compact'),
     h('span', { class: 'spacer' }),
-    menuColonnes(), views, saveview, csvbtn);
+    selmode, menuColonnes(), views, saveview, csvbtn);
 }
 
 /* Menu « Colonnes » : un `<details>` natif, donc ouverture au clavier et
@@ -149,7 +161,7 @@ function barreFiltres() {
 function menuColonnes() {
   const panneau = h('div', { class: 'menu-p start' });
   COLS.filter(c => !c.fixe).forEach(c => {
-    const cb = h('input', { type: 'checkbox' });
+    const cb = h('input', { type: 'checkbox', 'aria-label': 'Afficher la colonne ' + c.lbl });
     cb.checked = !MASQUEES.has(c.k);
     cb.onchange = () => {
       if (cb.checked) MASQUEES.delete(c.k); else MASQUEES.add(c.k);
@@ -188,24 +200,50 @@ const BULK = [
   { action: 'dash_disconnect', label: 'Agent Dash : dissocier', ic: 'x' },
 ];
 
+/* Les actions groupées, décrites une fois : la barre du bureau en fait une
+   rangée de boutons, le mobile une feuille de boutons pleine largeur. */
+function actionsGroupees() {
+  const out = BULK.map(b => ({
+    label: b.label, ic: b.ic, kind: b.safe ? 'primary' : '', title: b.title || '',
+    onSelect: () => lancerGroupe(b),
+  }));
+  out.push({
+    label: 'Connecter VizProof…', ic: 'link', kind: '',
+    title: 'Relier les sites sélectionnés à VizProof : un identifiant par site, un seul jeton de compte',
+    onSelect: () => openVizConnect(selection()),
+  });
+  return out;
+}
+
 function barreGroupee() {
   const bar = h('div', { class: 'bulkbar', id: 'bulkbar' },
     h('b', { id: 'bulk-n', text: '0 sélectionné' }));
-  BULK.forEach(b => {
-    const el = h('button', { type: 'button', class: 'btn sm' + (b.safe ? ' primary' : ''), title: b.title || '' },
-      b.ic ? iconEl(b.ic) : null, b.label);
-    el.onclick = () => lancerGroupe(b);
-    bar.append(el);
+
+  const desk = h('span', { class: 'bulkbar-desk actions' });
+  actionsGroupees().forEach(a => {
+    const el = h('button', {
+      type: 'button', class: 'btn sm' + (a.kind ? ' ' + a.kind : ''), title: a.title,
+    }, a.ic ? iconEl(a.ic) : null, a.label);
+    el.onclick = () => a.onSelect();
+    desk.append(el);
   });
-  const vz = h('button', {
-    type: 'button', class: 'btn sm', id: 'bulk-vizconnect',
-    title: 'Relier les sites sélectionnés à VizProof : un identifiant par site, un seul jeton de compte',
-    text: 'Connecter VizProof…',
-  });
-  vz.onclick = () => openVizConnect(selection());
+
+  // Mobile : un seul bouton, qui ouvre la feuille. Douze boutons n'entrent pas
+  // sur 360 px, et une barre qui déborde n'est pas une barre.
+  const mob = h('button', {
+    type: 'button', class: 'btn sm primary bulkbar-mob', id: 'bulk-actions',
+  }, iconEl('list'), 'Actions…');
+  mob.onclick = () => {
+    const n = store.sel.size;
+    ouvrirFeuille({
+      titre: n + ' site' + (n > 1 ? 's' : '') + ' sélectionné' + (n > 1 ? 's' : ''),
+      contenu: () => actionsGroupees().map(a => boutonFeuille(a)),
+    });
+  };
+
   const clr = h('button', { type: 'button', class: 'btn sm', id: 'bulk-clear', text: 'Tout désélectionner' });
-  clr.onclick = () => { store.sel.clear(); render(); };
-  bar.append(vz, clr);
+  clr.onclick = () => { if (SELMODE) setSelMode(false); else { store.sel.clear(); render(); } };
+  bar.append(desk, mob, clr);
   return bar;
 }
 
@@ -265,6 +303,7 @@ async function lancerGroupe(def) {
 
 /* ---- file « à traiter » ------------------------------------------------------ */
 export async function chargerIncidents() {
+  occupe('todo-list', true);
   let j = null;
   try { j = await api('/api/incidents'); } catch (e) { j = null; }
   INCIDENTS = (j && Array.isArray(j.incidents)) ? j.incidents : [];
@@ -275,6 +314,7 @@ export async function chargerIncidents() {
   const crit = INCIDENTS.filter(i => i.severity === 'critical').length;
   setIncidentCount(INCIDENTS.length, crit ? 'err' : 'warn');
   renderTodo();
+  occupe('todo-list', false);
 }
 
 function renderTodo() {
@@ -380,6 +420,35 @@ function filtered() {
     return (typeof va === 'string' ? va.localeCompare(vb) : va - vb) * store.sort.dir;
   });
   return S;
+}
+
+/* ---- l'objet de ligne -----------------------------------------------------------
+   Le tableau du bureau et la carte du mobile lisent le MÊME objet : ils ne
+   peuvent donc pas dire deux choses différentes du même site. Il ne porte que
+   ce qui s'affiche — libellés et niveaux déjà décidés —, pas de logique. */
+function objetLigne(s) {
+  const cle = kName(s) || s.domain;
+  const age = bkAge(s), seuil = seuilBackup();
+  const v = st(s);
+  const nMaj = (s.plugins_updates || 0) + (s.core_update ? 1 : 0) + (s.themes_updates || 0);
+  const bk = !s.updraft ? ['aucune', 'warn']
+    : age === null ? ['jamais', 'warn']
+      : age >= seuil ? ['il y a ' + (age / 24).toFixed(1) + ' j', 'warn']
+        : ['il y a ' + Math.round(age) + ' h', 'ok'];
+  const sous = [
+    s.kuma_group || '',
+    cle !== s.domain ? s.domain : '',
+    (s.blogname && s.blogname !== cle) ? s.blogname : '',
+  ].filter(Boolean).join(' · ');
+  return {
+    site: s, cle, label: cle, sous,
+    etat: { txt: libelleKuma(v), niv: niveauKuma(v) },
+    stale: !!s._stale,
+    maj: { n: nMaj, txt: nMaj ? String(nMaj) : 'à jour', niv: nMaj ? 'warn' : '' },
+    backup: { txt: bk[0], niv: bk[1] === 'ok' ? '' : 'warn' },
+    selKey: key(s),
+    coche: store.sel.has(key(s)),
+  };
 }
 
 /* ---- cellules ------------------------------------------------------------------ */
@@ -492,6 +561,73 @@ function rowEl(s) {
   return tr;
 }
 
+/* ---- carte (mobile) --------------------------------------------------------------
+   Même objet de ligne que le tableau, réduit à ce qui tient sur 320 px : nom et
+   client, chip d'état, deux chiffres clés, VizProof en chip.
+
+   La case à cocher ne s'affiche qu'en MODE SÉLECTION — sinon elle vole la
+   moitié des touches destinées à ouvrir le site. On y entre par le bouton
+   « Sélection » de la barre de filtres, ou par un APPUI LONG sur une carte. */
+const APPUI_LONG = 500;
+
+function carteEl(o) {
+  const li = h('li', { class: 'scard' + (o.coche ? ' sel' : '') });
+  const cb = h('input', { type: 'checkbox', 'aria-label': 'Sélectionner ' + o.label });
+  cb.checked = o.coche;
+  cb.onclick = e => e.stopPropagation();
+  cb.onchange = e => {
+    if (e.target.checked) store.sel.add(o.selKey); else store.sel.delete(o.selKey);
+    li.classList.toggle('sel', e.target.checked);
+    bulkBar();
+  };
+
+  const chiffre = (lbl, val, niv) => h('span', {},
+    h('span', { class: 'scard-kl', text: lbl }),
+    h('span', { class: 'scard-kv' + (niv ? ' ' + niv : ''), text: val }));
+
+  const main = h('button', { type: 'button', class: 'scard-main' },
+    h('span', { class: 'scard-h' },
+      h('span', { class: 'scard-n', text: o.label }),
+      chipEl(o.etat.txt, o.etat.niv),
+      o.stale ? chipEl('ancien', 'warn') : null),
+    o.sous ? h('span', { class: 'scard-sub', text: o.sous }) : null,
+    h('span', { class: 'scard-k' },
+      chiffre('MAJ', o.maj.txt, o.maj.niv),
+      chiffre('Sauvegarde', o.backup.txt, o.backup.niv)),
+    h('span', { class: 'scard-viz' }, vizCellEl(o.site)));
+
+  main.onclick = () => {
+    if (SELMODE) { cb.checked = !cb.checked; cb.onchange({ target: cb }); return; }
+    location.hash = '#site/' + encodeURIComponent(o.cle);
+  };
+  // Appui long : on entre en mode sélection et la carte touchée est cochée.
+  let t = null;
+  const armer = () => { t = setTimeout(() => { t = null; setSelMode(true, o.selKey); }, APPUI_LONG); };
+  const desarmer = () => { if (t) { clearTimeout(t); t = null; } };
+  main.addEventListener('touchstart', armer, { passive: true });
+  ['touchend', 'touchmove', 'touchcancel'].forEach(x => main.addEventListener(x, desarmer, { passive: true }));
+
+  li.append(h('span', { class: 'scard-chk' }, cb), main);
+  return li;
+}
+
+/* Mode sélection : explicite (bouton) ou déclenché par un appui long. */
+let SELMODE = false;
+
+function setSelMode(on, cleAcocher) {
+  SELMODE = !!on;
+  if (!SELMODE) store.sel.clear();
+  else if (cleAcocher) store.sel.add(cleAcocher);
+  const b = document.getElementById('selmode');
+  if (b) {
+    b.setAttribute('aria-pressed', SELMODE ? 'true' : 'false');
+    b.classList.toggle('primary', SELMODE);
+  }
+  const l = document.getElementById('parc-cards');
+  if (l) l.classList.toggle('selmode', SELMODE);
+  render();
+}
+
 function renderHead() {
   const cols = visibles();
   const selall = h('input', { type: 'checkbox', id: 'selall', title: 'tout sélectionner', 'aria-label': 'Tout sélectionner' });
@@ -510,7 +646,7 @@ function renderHead() {
   return cols.length + 1;
 }
 
-export function render() {
+function render() {
   if (!store.fleet) return;
   monterParc();
   compteurs();
@@ -529,6 +665,14 @@ export function render() {
     });
   } else S.forEach(s => corps.push(rowEl(s)));
   mount('tb', corps);
+  // La liste de cartes suit exactement le même filtrage et le même tri.
+  const cartes = document.getElementById('parc-cards');
+  if (cartes) {
+    cartes.classList.toggle('selmode', SELMODE);
+    mount(cartes, S.length
+      ? S.map(s => carteEl(objetLigne(s)))
+      : h('li', { class: 'scard-vide', text: allSites().length ? 'Aucun site ne correspond aux filtres.' : 'Aucun site dans le parc.' }));
+  }
   bulkBar();
   if (!MASQUEES.has('vuln') && !VMAP) chargerVulns();
 }

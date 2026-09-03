@@ -42,6 +42,17 @@ PAIRS = [
     ("ok", "surface", 4.5, "texte d'état ok sur surface"),
     ("warn", "surface", 4.5, "texte d'état attention sur surface"),
     ("err", "surface", 4.5, "texte d'état critique sur surface"),
+    # Ajouts de la phase 5 : les couples réellement peints par la refonte et
+    # qui manquaient à la liste — texte sur une chip, texte secondaire sur une
+    # surface secondaire, et le survol du bouton principal.
+    ("ink", "surface-2", 7.0, "texte courant sur surface secondaire"),
+    ("ink-2", "neutral-bg", 4.5, "texte d'une étiquette (.tag)"),
+    ("ink-2", "surface-2", 4.5, "texte appuyé sur surface secondaire"),
+    ("on-accent", "accent-ink", 4.5, "texte du bouton principal au survol"),
+    ("ok", "surface-2", 4.5, "chiffre d'état ok sur une tuile"),
+    ("warn", "surface-2", 4.5, "chiffre d'état attention sur une tuile"),
+    ("err", "surface-2", 4.5, "chiffre d'état critique sur une tuile"),
+    ("accent-ink", "surface", 4.5, "texte d'accent sur une surface"),
 ]
 
 HEX = re.compile(r"^#([0-9A-Fa-f]{6})$")

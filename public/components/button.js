@@ -4,19 +4,6 @@
 import { esc } from '../lib/dom.js';
 import { icon } from '../lib/icons.js';
 
-/**
- * bouton({label, kind, size, icon, iconLabel, title, attrs}) → chaîne HTML
- *   kind : '' (secondaire) | 'primary' | 'danger' | 'icon'
- * Une icône seule EXIGE `iconLabel` : rien d'illisible dans une barre.
- */
-export function bouton({ label = '', kind = '', size = '', ic = '', iconLabel = '', title = '', attrs = '' } = {}) {
-  const cls = ['btn', kind, size === 'sm' ? 'sm' : ''].filter(Boolean).join(' ');
-  const pic = ic ? icon(ic, label ? {} : { label: iconLabel || title || label }) : '';
-  return `<button type="button" class="${cls}"${title ? ` title="${esc(title)}"` : ''}`
-    + `${!label && (iconLabel || title) ? ` aria-label="${esc(iconLabel || title)}"` : ''}`
-    + `${attrs ? ' ' + attrs : ''}>${pic}${label ? esc(label) : ''}</button>`;
-}
-
 /* ---- état de chargement ---------------------------------------------------
    Écraser `textContent` détruisait l'icône du bouton et perdait son libellé
    d'origine. `setBusy` mémorise le contenu, `setIdle` le rend — ou le remplace

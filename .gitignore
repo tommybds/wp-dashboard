@@ -35,6 +35,11 @@ public/aliases.json
 INFOMANIAK.md
 
 # ── Clés, identifiants, configuration locale ─────────────────────────────────
+# Playwright, installé au besoin pour régénérer docs/captures/ : c'est le seul
+# usage de npm du projet, et il reste hors du dépôt (voir tools/captures.mjs).
+node_modules/
+package-lock.json
+
 *.pem
 *.key
 *.ppk

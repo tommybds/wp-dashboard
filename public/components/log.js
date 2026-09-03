@@ -17,7 +17,7 @@ import { relTime, absTime } from '../lib/format.js';
 import { chipEl } from './chip.js';
 
 /** Verdict d'une ligne du journal : [libellé, niveau]. */
-export function verdictAction(rc, action) {
+function verdictAction(rc, action) {
   const n = Number(rc);
   if (n === 0) return ['OK', 'ok'];
   if (n === 2 && /^viz_/.test(String(action || ''))) return ['anomalies', 'warn'];
@@ -40,7 +40,7 @@ function ligne(e) {
     sortie ? h('code', { text: sortie }) : null);
 }
 
-export async function ouvrirJournal() {
+async function ouvrirJournal() {
   document.getElementById('logmodal').classList.add('open');
   mount('loglist', h('span', { class: 'muted small', text: 'chargement…' }));
   let j;

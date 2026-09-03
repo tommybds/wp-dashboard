@@ -34,7 +34,7 @@ export const store = {
    chose, sinon un site paraît « ok » ici et en incident là. Tant que
    `/api/mgmt/settings` n'a pas répondu, on retombe sur les valeurs par défaut
    du backend. */
-export function incidentRules() {
+function incidentRules() {
   const r = store.settings && store.settings.incident_rules;
   return (r && typeof r === 'object') ? r : {};
 }
@@ -66,13 +66,7 @@ export function subscribe(fn) {
 }
 
 /** Prévient les abonnés que le store a changé. */
-export function emit() { bus.dispatchEvent(new Event('change')); }
-
-/** set({fleet, status, …}) : écrit puis prévient. */
-export function set(patch) { Object.assign(store, patch); emit(); }
-
-/** get() → tout le store ; get('fleet') → une clé. */
-export function get(k) { return k === undefined ? store : store[k]; }
+function emit() { bus.dispatchEvent(new Event('change')); }
 
 /* ---- cache court par chargeur --------------------------------------------
    Changer d'écran relançait tout son volet à CHAQUE clic — pour Sécurité,

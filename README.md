@@ -97,70 +97,68 @@ Le front est un ensemble de fichiers servis tels quels : **le code déployé est
 le code écrit**. Pas de bundler, pas de transpilation, aucune dépendance npm —
 les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
 
-> **Phase 2 de la refonte (septembre 2026).** La fiche d'un site est une
-> **page site** à part entière, `#site/<clé>[/<onglet>]`, avec cinq onglets
-> (Aperçu, Extensions, Sécurité, Sauvegardes, Historique) : la console
-> d'exécution y vit en bas, et les boutons de la colonne y ont les mêmes
-> effets. Partout où ce document parle de la **page site**, c'est d'elle qu'il
-> s'agit. L'écran Parc s'ouvre en plus sur une file **« À traiter »** alimentée
-> par `GET /api/incidents`, et la recherche globale se déclenche par
-> ⌘K / Ctrl+K.
+La refonte de septembre 2026 s'est faite en cinq phases (plan complet :
+[`docs/refonte-plan.html`](docs/refonte-plan.html)). Ce qui suit décrit
+l'**état d'arrivée**, pas le chemin : il n'y a plus ni tiroir, ni sous-onglet,
+ni modale de réglages.
 
-> **Phase 3 de la refonte (septembre 2026).** Les **sous-onglets** de Sécurité
-> (huit) et de Changements (deux) ont disparu : chaque destination est une page
-> unique, ouverte par un sommaire d'ancres collant sous l'en-tête. L'écran
-> **Incidents** existe pour de bon (file complète, groupée par gravité, avec
-> action en ligne). Les pastilles de la barre latérale viennent toutes de
-> `GET /api/mgmt/counts`, c'est-à-dire du **même agrégat** que `/api/incidents`.
+### Les six écrans
 
-> **Phase 4 de la refonte (septembre 2026).** **Gestion** perd ses six
-> sous-onglets et **Réglages** cesse d'être une modale : les deux sont des
-> pages à ancres. Il n'existe donc plus un seul sous-onglet dans
-> l'application — tout sous-slug d'URL (`#gestion/serveurs`,
-> `#reglages/cles-ssh`) désigne une **ancre**. Les serveurs s'ajoutent et se
-> modifient dans un **formulaire** (un champ par attribut, validation miroir de
-> `validate_server()`, refus 400 affiché sur le champ concerné) ; l'éditeur JSON
-> reste en repli. L'écran Changements fusionne enfin les **évènements des
-> agents** (`GET /api/mgmt/events`) avec les changements et les actions.
+| Écran | Fragment | Ce qu'il porte |
+|---|---|---|
+| **Parc** | `#parc` | File « à traiter », compteurs cliquables, liste des sites (tableau au bureau, cartes au mobile), actions groupées. |
+| **Incidents** | `#incidents` | La file complète de `GET /api/incidents`, groupée par gravité, avec action en ligne. |
+| **Sécurité** | `#securite[/<ancre>]` | Une page, huit sections repérées par un sommaire d'ancres. |
+| **Changements** | `#changements[/<ancre>]` | Chronologie unifiée, puis la tendance du parc. |
+| **Gestion** | `#gestion[/<ancre>]` | Serveurs, installs, sites sans SSH, moniteurs, docroots, non gérés. |
+| **Réglages** | `#reglages[/<ancre>]` | Huit sections, chacune avec son bouton d'enregistrement. |
+| **Page site** | `#site/<clé>[/<onglet>]` | Tout sur un site, en cinq onglets, et les actions dessus. |
+
+Une **destination** est une page entière ; un **onglet** n'existe que sur la
+page site (un seul volet à la fois sur un même objet) ; partout ailleurs, un
+sous-slug d'URL désigne une **ancre** dans la page. Les anciens fragments
+(`#dash`, `#sec/…`, `#hist/…`, `#mgmt/…`) redirigent.
 
 ### Arborescence
 
 ```
 public/
-  index.html            coque : barre latérale, en-tête d'écran, modales partagées,
-                        table d'imports, un seul <script type="module" src="app.js?v=…">
-                        (Parc et page site n'y ont plus de gabarit : ils sont
-                        construits par leur module avec h())
+  index.html            coque : barre latérale, barre d'onglets basse (mobile),
+                        en-tête d'écran, modales partagées, table d'imports,
+                        un seul <script type="module" src="app.js?v=…">.
+                        Aucun écran n'y a de gabarit : tous sont construits
+                        par leur module avec h()
   login.html            page de connexion, autonome (ni module, ni sprite, ni API)
   app.js                démarrage, routeur par fragment, abonnement au store
   version.js            export const V = "AAAA-MM-JJ-hhmm" — posé par tools/deploy.sh
-  icons.svg             sprite Lucide (34 icônes), injecté une fois par lib/icons.js
+  icons.svg             sprite Lucide (35 icônes), injecté une fois par lib/icons.js
   css/
     tokens.css          couleur (2 thèmes), typo, espace, rayons, @font-face
-    base.css            remise à zéro, typographie, focus, utilitaires
-    components.css      bouton, chip, tableau, menu, modale, notification, bulle,
-                        palette de recherche
-    screens.css         coque et mises en page propres aux écrans
+    base.css            remise à zéro, typographie, focus, reduced-motion, utilitaires
+    components.css      bouton, chip, tableau, menu, modale, feuille basse,
+                        notification, bulle, palette de recherche
+    screens.css         coque, barre d'onglets basse, mises en page des écrans,
+                        et TOUTE l'adaptation mobile (un seul bloc, sous 720 px)
   lib/
     api.js              fetch, session, X-Dash, redirection sur 401
+    dom.js              h(), esc(), mount(), zoneMessage(), occupe()
+    format.js           dates relatives, durées, URL, cadences UpdraftPlus,
+                        détail d'un évènement d'agent, bruit PHP
+    icons.js            icon() / iconEl() + injection du sprite
+    poll.js             sondage borné : s'arrête sur erreurs, sur `until`, à la demande
     state.js            store (flotte, statut Kuma, sélection, filtres, réglages)
                         + abonnements + cache court par chargeur
-    poll.js             sondage borné : s'arrête sur erreurs, sur `until`, à la demande
-    dom.js              h(), esc(), mount(), delegate()
-    format.js           dates relatives, durées, URL, cadences UpdraftPlus, bruit PHP
-    icons.js            icon() / iconEl() + injection du sprite
   components/
     actions-menu.js  add-site.js  button.js  chip.js  confirm.js  job.js
-    log.js  rollback.js  search.js  shell.js  table.js  tip.js  toast.js
-    viz.js  wpauth.js
-      add-site.js  assistant « Ajouter un WordPress » (URL → méthode → appairage)
-      log.js       modale « Journal des actions » (transversale, hors écran)
-      wpauth.js    autorisation WordPress (mot de passe d'application) + bandeau
+    log.js  rollback.js  search.js  sheet.js  shell.js  table.js  tip.js
+    toast.js  viz.js  wpauth.js
+      confirm.js   modales génériques, ordre des couches, Échap, piège de focus
+      sheet.js     feuille basse : la couche de choix du mobile
+      shell.js     barres de navigation, compteurs, thème, collecte
+      table.js     tri, densité, colonnes masquables, ombres de débordement
   screens/
-    parc.js  site.js  incidents.js  securite.js  changements → historique.js
-    gestion.js  reglages.js
-    (toutes les destinations sauf Parc et la page site sont des pages à
-     ancres : plus un seul sous-onglet, tout est construit avec h())
+    parc.js  site.js  incidents.js  securite.js  historique.js
+    gestion.js  reglages.js          (historique.js = écran « Changements »)
   fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2, latin + latin-ext)
 ```
 
@@ -202,18 +200,76 @@ typographie, l'espace et les rayons. Une valeur brute ailleurs est un bug :
 - **Thème** — motif à trois états : `:root` porte le thème clair complet,
   `@media (prefers-color-scheme: dark)` guardé par
   `:root:not([data-theme="light"])` porte le sombre suivi du système, et
-  `:root[data-theme="dark"]` porte le sombre forcé. Le bouton de la barre
-  latérale écrit `localStorage.dashTheme` et pose (ou retire) `data-theme`.
+  `:root[data-theme="dark"]` porte le sombre forcé. Le bouton de thème écrit
+  `localStorage.dashTheme` et pose (ou retire) `data-theme`.
 - **Typographie** — 12 / 13 / 14 / 16 / 20 / 26 px. Interface à 14, textes
   explicatifs à 16, chiffres en `tabular-nums`.
 - **Espace** — 4 / 8 / 12 / 16 / 24 / 32 / 48. **Rayons** — 4 px pour les
   contrôles, 6 px pour les surfaces, pilule pour les chips.
 - **Élévation par bordure**, pas par ombre : la seule ombre est celle des
-  couches flottantes (menu, modale, notification).
+  couches flottantes (menu, modale, feuille, notification).
 
 `tools/check_tokens.py` calcule les contrastes dans les **deux** thèmes et
 échoue si un seuil n'est pas tenu : encre ≥ 7:1, texte secondaire ≥ 4.5:1,
 chips ≥ 4.5:1 sur leur fond. À lancer après toute modification de `tokens.css`.
+
+### Composants
+
+| Composant | Ce qu'il fait |
+|---|---|
+| `chip.js` | Chip d'état : point + libellé, **quatre** niveaux (`ok`, `warn`, `err`, `mut`) et un seul vocabulaire dans toute l'application. |
+| `button.js` | États d'un bouton : chargement (`setBusy`/`setIdle`, qui préservent l'icône) et confirmation à deux clics. |
+| `table.js` | Tri par colonne avec `aria-sort`, densité, colonnes masquables mémorisées, et les **ombres de débordement** horizontal. |
+| `actions-menu.js` | Menu groupé par intention. Au bureau c'est un panneau `role="menu"` ; sous 720 px, **la même liste s'ouvre en feuille basse**. |
+| `sheet.js` | La feuille basse : `role="dialog"`, glisser pour fermer, boutons pleine largeur. |
+| `confirm.js` | Les modales génériques, l'**ordre des couches** (Échap ferme la plus haute) et le **piège de focus**, valable pour toutes. |
+| `search.js` | Palette ⌘K / Ctrl+K : sites, extensions, administrateurs, actions. |
+| `toast.js` | Barre de notifications : elle survit au changement d'écran et résume ce qui tourne. |
+| `job.js` | Suivi d'une exécution groupée (modale + progression + notification). |
+| `shell.js` | Barre latérale, barre d'onglets basse, compteurs, thème, collecte. |
+| `viz.js` · `rollback.js` · `add-site.js` · `wpauth.js` · `log.js` · `tip.js` | VizProof, rétablissement de version, assistant d'ajout, autorisation WordPress, journal des actions, infobulles. |
+
+### Mobile
+
+« Bureau d'abord, mobile correct » : sous 720 px on doit pouvoir consulter
+l'état, ouvrir un incident, lancer un re-scan ou une MAJ sûre — **sans zoom ni
+défilement horizontal**. Toute l'adaptation vit dans un seul bloc
+`@media(max-width:720px)` de `screens.css`, plus un appoint sous 380 px.
+
+- La barre latérale disparaît au profit d'une **barre d'onglets basse** (Parc,
+  Incidents, Sécurité, Plus), avec ses pastilles et `aria-current`.
+  `safe-area-inset-bottom` est respecté. « Plus » ouvre une feuille :
+  Changements, Gestion, Réglages, Journal, Thème, Déconnexion.
+- La liste des sites devient une **liste de cartes** — même objet de ligne que
+  le tableau (`objetLigne()` dans `screens/parc.js`), donc les deux ne peuvent
+  pas diverger. La case à cocher n'apparaît qu'en **mode sélection** (bouton
+  « Sélection », ou appui long sur une carte).
+- Les menus flottants et la barre d'actions groupées deviennent des
+  **feuilles** qui montent du bas ; les confirmations aussi, avec un bouton de
+  validation pleine largeur.
+- Sommaires d'ancres et onglets défilent horizontalement, avec un **fondu de
+  débordement** posé par `initDebordement()` uniquement quand il y a de quoi
+  défiler.
+- Les tableaux larges restent dans leur `overflow-x:auto` (même fondu) ; le
+  tableau des extensions de la page site, lui, s'empile en label/valeur.
+- Toute cible tactile fait au moins 44 px.
+
+### Accessibilité
+
+- **Clavier** : ordre logique, `Tab` n'atteint rien de caché, `Échap` ferme la
+  couche la plus haute (bulle → menu → modale ou feuille), le focus est piégé
+  dans les modales, la feuille et la palette, et revient toujours à l'élément
+  qui a ouvert la couche.
+- **Rôles et noms** : boutons-icônes avec `aria-label`, `<th scope="col">`
+  (posé par `h()`, une fois pour tous les tableaux), `aria-sort` sur les
+  colonnes triables, `role="tablist"/"tab"/"tabpanel"` sur la page site,
+  `role="menu"` pour le menu d'actions, `role="status"` sur les messages de
+  résultat (`zoneMessage()`), `aria-live` sur la barre de notifications et
+  `aria-busy` pendant les chargements (`occupe()`).
+- **Contrastes** : vérifiés par script dans les deux thèmes, couples
+  texte-sur-chip et texte secondaire sur surface compris.
+- **Mouvement** : `prefers-reduced-motion` coupe toutes les animations —
+  aucune n'est porteuse d'information.
 
 ### Polices
 
@@ -249,18 +305,40 @@ l'interface — `tools/check_front.py` le vérifie.
 
 1. Créer `public/screens/<nom>.js` — il exporte au moins une fonction de
    chargement/rendu, et importe ce dont il a besoin de `lib/` et `components/`.
-2. Ajouter son gabarit dans `index.html` : `<div class="page" id="page-<nom>">`.
+2. Ajouter son volet dans `index.html` : `<div class="page" id="page-<nom>">`
+   (vide : l'écran le remplit avec `h()`).
 3. Dans `app.js`, ajouter une entrée à `DESTINATIONS`
    (`{route, page, titre, legacy?}`), l'importer, et l'appeler dans `showDest`.
 4. Ajouter le lien dans la barre latérale d'`index.html`
-   (`<a class="nav-i" href="#<route>" data-dest="<route>">`) avec son icône —
-   et l'icône au sprite si elle manque (voir l'entête de `tools/preview.py`
-   pour régénérer).
-5. Lancer `python3 tools/check_front.py` : il vérifie que les routes d'API
-   existent, que les identifiants visés existent, et que les imports résolvent.
+   (`<a class="nav-i" href="#<route>" data-dest="<route>">`) — et, si la
+   destination doit rester atteignable au mobile, soit un `.tab-i` de la barre
+   d'onglets basse, soit une entrée de la feuille « Plus »
+   (`ouvrirPlus()` dans `components/shell.js`).
+5. Lancer les contrôles ci-dessous.
 
 Rien à déclarer ailleurs : `tools/deploy.sh` découvre le nouveau module et
 l'ajoute à la table d'imports.
+
+### Ajouter un composant
+
+Un fichier dans `public/components/`, qui **ne connaît aucun écran**. Quand un
+composant a besoin d'un écran (rafraîchir Sécurité après un job, ouvrir la page
+d'un site depuis une notification), l'écran s'**enregistre** auprès de lui
+(`setSecRefresh`, `setOuvreurs`, `registerModalCloser`) plutôt que d'être
+importé : c'est ce qui évite les cycles d'import, et ils arrivent vite.
+
+Son CSS va dans `components.css` s'il ne dépend d'aucun écran, dans
+`screens.css` sinon. Un export jamais importé est refusé par
+`tools/check_dead.py` : une fonction utilisée seulement chez elle n'est pas
+exportée.
+
+### Ajouter une icône
+
+Le sprite est un fichier statique. Pour en ajouter une, copier le `<symbol
+id="i-<nom>" viewBox="0 0 24 24">…</symbol>` de l'icône Lucide dans
+`public/icons.svg` (en retirant `width`/`height`/`stroke` : `.ic` les porte),
+puis l'utiliser par `icon('<nom>')`. `tools/check_front.py` vérifie qu'aucune
+icône référencée ne manque du sprite.
 
 ### Vérifier sans toucher à la production
 
@@ -269,7 +347,7 @@ python3 tools/preview.py                  # page bouchonnée, 20 sites, port 878
 python3 tools/preview.py --scenario gros  # 200 sites
 python3 tools/preview.py --scenario vide  # aucun site
 python3 tools/preview.py --scenario stale # un serveur injoignable
-python3 tools/preview.py --scenario joblent   # collecte en cours
+python3 tools/preview.py --scenario joblent   # collecte et MAJ en cours
 python3 tools/preview.py --scenario anomalie  # anomalie visuelle VizProof
 ```
 
@@ -283,11 +361,13 @@ overrides, moniteurs, sites REST, clés, réglages, alertes) et **rejoue la
 validation du backend**, refus HTTP 400 compris — c'est ce qui permet de vérifier
 que l'erreur d'un serveur s'affiche bien sur le bon champ du formulaire.
 
-Contrôles automatiques, à passer avant chaque déploiement :
+Contrôles automatiques, tous lancés par `tools/deploy.sh` avant chaque copie :
 
 ```bash
 python3 tools/check_tokens.py                     # contrastes, deux thèmes
 python3 tools/check_front.py -v                   # routes, actions, ids, icônes, styles, imports
+python3 tools/check_a11y.py -v                    # noms accessibles, étiquettes, tabindex, clavier
+python3 tools/check_dead.py -v                    # exports et classes CSS orphelins
 for f in $(find public -name '*.js'); do node --input-type=module --check < "$f" || echo "$f"; done
 ```
 
@@ -295,18 +375,29 @@ for f in $(find public -name '*.js'); do node --input-type=module --check < "$f"
 comme tel et rend la main sans erreur. Il faut le lui passer sur l'entrée
 standard avec `--input-type=module`.
 
+Les captures de référence (six écrans + page site, deux thèmes, 1440 et 390 px)
+vivent dans [`docs/captures/`](docs/captures/) et se régénèrent depuis la page
+bouchonnée — c'est le seul usage de npm du projet, et il est hors production :
+
+```bash
+npm i --no-save playwright                       # une fois — hors dépôt (.gitignore)
+npx playwright install chromium-headless-shell   # une fois
+python3 tools/preview.py &                       # page bouchonnée sur le port 8787
+node tools/captures.mjs                          # → docs/captures/*.png
+```
+
 ### Déployer
 
 ```bash
-tools/deploy.sh --dry-run     # estampille la version, ne copie rien
-tools/deploy.sh               # estampille + rsync de public/ vers le VPS
+tools/deploy.sh --dry-run     # contrôles + estampille la version, ne copie rien
+tools/deploy.sh               # + rsync de public/ vers le VPS
 tools/deploy.sh --nginx       # + reload nginx (seulement si le vhost a changé)
 ```
 
-Le script lance d'abord les trois contrôles ci-dessus, écrit `version.js`,
-régénère la table d'imports et les `?v=`, puis copie. La règle de cache nginx
-est dans `deploy/nginx-static-cache.conf`, à inclure une fois dans le bloc
-`server{}` du vhost.
+Le script lance d'abord les contrôles ci-dessus, écrit `version.js`, régénère
+la table d'imports et les `?v=`, puis copie. La règle de cache nginx est dans
+`deploy/nginx-static-cache.conf`, à inclure une fois dans le bloc `server{}` du
+vhost.
 
 ---
 
@@ -496,15 +587,16 @@ l'URL du dashboard est saisie à l'appairage.
 
 ### Les destinations
 
-La barre latérale porte cinq destinations, plus **Réglages** en pied de barre.
+La barre latérale porte cinq destinations, plus **Réglages** en pied de barre
+(au mobile, la barre d'onglets basse et sa feuille « Plus » les portent toutes).
 L'adresse est partageable : `#parc`, `#incidents`, `#securite/<section>`,
 `#changements/<section>`, `#gestion/<section>`, `#reglages/<section>`. Les
 anciens fragments (`#dash`, `#sec/…`, `#hist/…`, `#mgmt/…`) redirigent
 automatiquement — les liens déjà partagés continuent de tomber au bon endroit.
 
-Depuis la phase 4, **plus aucune destination n'a de sous-onglet** : `<section>`
-désigne toujours une **ancre**, `#securite/vulnerabilites` ouvre la page et
-défile jusqu'à la section. Les deux familles de noms tombent juste — les anciens
+**Aucune destination n'a de sous-onglet** : `<section>` désigne toujours une
+**ancre**, `#securite/vulnerabilites` ouvre la page et défile jusqu'à la
+section. Les deux familles de noms tombent juste — les anciens
 slugs (`vulnerabilites`, `erreurs-php`, `administrateurs`, `recherche-plugin`,
 `php-obsolete`, `certificats`, `plugins-a-risque`, `integrite-core`, `tendance`,
 `changements`, et pour Gestion `serveurs`, `installs`, `mode-rest`, `moniteurs`,
@@ -513,8 +605,8 @@ des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`, `checksums`).
 
 | Destination | Contenu |
 |---|---|
-| **Parc** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées, fiche site. |
-| **Incidents** | La file « à traiter » complète (`GET /api/incidents`), groupée par gravité : sites down, erreurs PHP fatales, vulnérabilités critiques corrigeables, checksums en anomalie, administrateurs inconnus, serveurs injoignables, sauvegardes en retard, certificats, PHP en fin de support. Filtres gravité / type / recherche, action en ligne (même confirmation que la fiche site) ou lien vers la section concernée ; une source en échec s'affiche en « source incomplète ». |
+| **Parc** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées ; au mobile, une liste de cartes et une feuille d’actions. Une ligne mène à la **page site**. |
+| **Incidents** | La file « à traiter » complète (`GET /api/incidents`), groupée par gravité : sites down, erreurs PHP fatales, vulnérabilités critiques corrigeables, checksums en anomalie, administrateurs inconnus, serveurs injoignables, sauvegardes en retard, certificats, PHP en fin de support. Filtres gravité / type / recherche, action en ligne (même confirmation que la page site) ou lien vers la section concernée ; une source en échec s'affiche en « source incomplète ». |
 | **Sécurité** | **Une seule page à ancres**, ouverte par un sommaire chiffré : vulnérabilités (vue par site ou par extension, action groupée), comptes administrateurs et référence, erreurs PHP, extensions à risque, PHP obsolète regroupé par version, certificats, intégrité du cœur, recherche transversale d'extension. |
 | **Changements** | Une **chronologie** groupée par jour qui fusionne les changements d'état détectés par la collecte (`/api/mgmt/changes`) et les actions lancées depuis le dashboard (`/api/actions/log`), filtrable par site, type, gravité et texte — puis la **tendance du parc** (quatre courbes) en bas de page. |
 | **Gestion** | **Une seule page à ancres** : serveurs (en formulaires), installs découverts, sites sans SSH et assistant d'ajout par URL, moniteurs Kuma, docroots supplémentaires, sites supervisés non gérés. |
@@ -522,8 +614,12 @@ des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`, `checksums`).
 
 En bas de la barre : **Réglages** (`#reglages`), **Journal** des actions (une
 modale, volontairement : on la consulte en passant depuis n'importe quel écran),
-bascule de **thème** (auto / clair / sombre) et déconnexion. Sous 1000 px la
-barre se replie en icônes, sous 720 px elle s'ouvre par le bouton menu.
+bascule de **thème** (auto / clair / sombre) et déconnexion.
+
+Sous 1000 px la barre se replie en icônes. Sous **720 px** elle disparaît au
+profit d'une **barre d'onglets basse** — Parc, Incidents, Sécurité, et un bouton
+« Plus » qui ouvre une feuille avec Changements, Gestion, Réglages, Journal,
+Thème et la déconnexion. Voir [Mobile](#mobile).
 
 ### Gestion
 
@@ -541,7 +637,7 @@ branchement.
 
 ### Mettre à jour un site
 
-Le bouton **MAJ sûre** de la fiche site enchaîne : contrôle avant → sauvegarde
+Le bouton **MAJ sûre** de la page site enchaîne : contrôle avant → sauvegarde
 UpdraftPlus → **archivage des fichiers et dump de la base** → mise à jour →
 contrôles (page servie, poids non effondré, WordPress fonctionnel, et scan
 visuel VizProof si la commande est disponible) → **retour arrière automatique**
@@ -1087,7 +1183,7 @@ Ressources tierces embarquées dans `public/` :
 | **Archivo** (titres) | `public/fonts/archivo-*.woff2` | SIL Open Font License 1.1 |
 | **IBM Plex Sans** (interface) | `public/fonts/plex-sans-*.woff2` | SIL Open Font License 1.1 |
 | **IBM Plex Mono** (données, code) | `public/fonts/plex-mono-*.woff2` | SIL Open Font License 1.1 |
-| **Lucide** (34 icônes, sprite) | `public/icons.svg` | ISC |
+| **Lucide** (35 icônes, sprite) | `public/icons.svg` | ISC |
 
 L'OFL et l'ISC autorisent toutes deux la redistribution avec le logiciel, y
 compris commerciale ; l'OFL interdit seulement la vente des polices seules.

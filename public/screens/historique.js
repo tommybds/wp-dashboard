@@ -394,4 +394,4 @@ async function loadHist(force) {
   }
 }
 
-export { loadHist, renderChrono };
+export { loadHist };

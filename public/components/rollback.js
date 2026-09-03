@@ -24,7 +24,7 @@ export function setRollbackPoints(points, srv, dom) {
 }
 export function rollbackPoints() { return RBPOINTS; }
 
-export function closeRb() {
+function closeRb() {
   document.getElementById('rbmodal').classList.remove('open');
   // Remise à zéro du pied : sans elle, une seconde ouverture hériterait de
   // l'état « Fermer » laissé par l'opération précédente.
@@ -60,7 +60,7 @@ export function pointsListeEl(cible, apres) {
   return box;
 }
 
-export async function doRollback(slug, src, cible, apres) {
+async function doRollback(slug, src, cible, apres) {
   // Garde-fou : si la page a changé de site entre l'affichage de la liste et le
   // clic, on refuse plutôt que de restaurer les fichiers d'un site sur un autre.
   if (src.dir && (RBSITE.srv !== cible.srv || RBSITE.dom !== cible.dom)) {

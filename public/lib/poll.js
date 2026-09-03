@@ -10,9 +10,6 @@ const POLLS = {};
 /** Arrête le sondage portant ce nom, s'il tourne. */
 export function stopPoll(nom) { const c = POLLS[nom]; if (c) c.stop(); }
 
-/** Sondages en cours, pour diagnostic. */
-export function activePolls() { return Object.keys(POLLS); }
-
 /**
  * poll(nom, fn, {every, maxErrors, until, onStop}) → contrôleur {stopped, stop()}
  * Un seul sondage par nom : relancer remplace le précédent.

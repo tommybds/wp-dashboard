@@ -9,7 +9,11 @@
    La gestion d'Échap vit aussi ici : elle ferme UNE chose, la plus haute —
    la bulle, sinon le menu déployé, sinon la modale du dessus. Les fermetures
    propres à chaque modale sont ENREGISTRÉES par leur écran (pas importées),
-   pour que ce composant ne dépende d'aucun d'eux. */
+   pour que ce composant ne dépende d'aucun d'eux.
+
+   Le PIÈGE DE FOCUS y vit pour la même raison : c'est le seul endroit qui
+   connaisse l'ordre des couches, donc le seul qui sache laquelle doit retenir
+   la tabulation. Il vaut pour toutes : modales, palette ⌘K et feuille basse. */
 
 import { esc } from '../lib/dom.js';
 import { tipOuverte, fermerTips } from './tip.js';
@@ -17,11 +21,48 @@ import { menuOuvert, fermerMenus } from './actions-menu.js';
 
 /* Ordre de fermeture : l'ordre du DOM ne dit pas laquelle est au-dessus (toutes
    les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
-   viennent en tête. */
-const MODALES = ['searchmodal', 'askmodal', 'vizmodal', 'rbmodal', 'addmodal',
+   viennent en tête. La feuille basse (components/sheet.js) s'ouvre par-dessus
+   tout le reste sur mobile : elle est en tête de liste. */
+const MODALES = ['sheetmodal', 'searchmodal', 'askmodal', 'vizmodal', 'rbmodal', 'addmodal',
   'bulkmodal', 'srvmodal', 'jsonmodal', 'logmodal'];
 
 const CLOSERS = {};
+
+/* Ce qui peut prendre le focus dans une couche. `[aria-disabled]` n'est PAS
+   exclu : une entrée de menu indisponible reste atteignable, c'est là qu'on lit
+   la raison de son indisponibilité. */
+const FOCUSABLES = 'a[href],button:not([disabled]),input:not([disabled]),'
+  + 'select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/** La couche ouverte la plus haute, ou null. */
+function coucheHaute() {
+  for (const id of MODALES) {
+    const m = document.getElementById(id);
+    if (m && m.classList.contains('open')) return m;
+  }
+  return null;
+}
+
+/* Piège de focus : tant qu'une couche est ouverte, la tabulation y tourne en
+   boucle. Sans lui, Tab sortait de la modale pour parcourir la page en dessous
+   — invisible à qui navigue au clavier, qui ne savait plus où il en était. */
+function piegerFocus(e) {
+  if (e.key !== 'Tab') return;
+  const m = coucheHaute();
+  if (!m) return;
+  const L = [...m.querySelectorAll(FOCUSABLES)]
+    .filter(el => !el.hasAttribute('hidden') && el.offsetParent !== null);
+  if (!L.length) return;
+  const premier = L[0], dernier = L[L.length - 1];
+  const dedans = m.contains(document.activeElement);
+  if (e.shiftKey && (!dedans || document.activeElement === premier)) {
+    e.preventDefault();
+    dernier.focus();
+  } else if (!e.shiftKey && (!dedans || document.activeElement === dernier)) {
+    e.preventDefault();
+    premier.focus();
+  }
+}
 
 /** registerModalCloser('vizmodal', closeViz) — appelé par l'écran propriétaire. */
 export function registerModalCloser(id, fn) { CLOSERS[id] = fn; }
@@ -42,6 +83,7 @@ export function initModals() {
     const id = MODALES.find(x => { const m = document.getElementById(x); return m && m.classList.contains('open'); });
     if (id) fermerModale(document.getElementById(id));
   });
+  document.addEventListener('keydown', piegerFocus);
   document.getElementById('ask-cancel').onclick = askClose;
   document.getElementById('askmodal').onclick = e => {
     if (e.target.id === 'askmodal') document.getElementById('ask-cancel').click();
@@ -51,7 +93,7 @@ export function initModals() {
 
 let ASKOPENER = null;
 
-export function askClose() {
+function askClose() {
   document.getElementById('askmodal').classList.remove('open');
   // Le focus revient au bouton qui a ouvert la modale.
   const o = ASKOPENER;

@@ -42,12 +42,14 @@ V="$(date +%Y-%m-%d-%H%M)"
 echo "== contrôles"
 python3 "$RACINE/tools/check_tokens.py" > /dev/null
 python3 "$RACINE/tools/check_front.py"  > /dev/null
+python3 "$RACINE/tools/check_a11y.py"   > /dev/null
+python3 "$RACINE/tools/check_dead.py"   > /dev/null
 for f in $(find "$PUBLIC" -name '*.js' | sort); do
   # `node --check <fichier>` ne vérifie PAS un module ES (il le détecte et rend
   # la main) : il faut le lui passer sur l'entrée standard en mode module.
   node --input-type=module --check < "$f" || { echo "syntaxe : $f" >&2; exit 1; }
 done
-echo "   jetons, front et syntaxe : OK"
+echo "   jetons, accessibilité, code mort, front et syntaxe : OK"
 
 echo "== estampillage v=$V"
 python3 - "$PUBLIC" "$V" <<'PY'

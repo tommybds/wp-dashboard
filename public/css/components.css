@@ -45,14 +45,12 @@
 .btn.sm{padding:2px 8px;font-size:var(--t-12)}
 .btn.icon{padding:5px 8px}
 .btn.is-busy{cursor:progress}
+/* Libellé d'un bouton qui devient une icône en étroit : il passe en `sr-only`
+   sous 720 px (voir screens.css), le nom accessible reste porté par
+   `aria-label`. */
+.btn-l{display:inline}
 a.btn{text-decoration:none;color:var(--ink)}
 a.btn:hover{text-decoration:none}
-
-/* Un groupe de boutons d'icônes se lit comme un seul bloc : sans lui, le
-   flex-wrap les renvoyait à la ligne un par un. */
-.btngroup{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden;background:var(--surface)}
-.btngroup .btn{border:none;border-radius:0;border-right:1px solid var(--line)}
-.btngroup .btn:last-child{border-right:none}
 
 /* ---- chips d'état ---------------------------------------------------------
    Quatre niveaux, une seule forme. `.pill` est le nom historique porté par les
@@ -88,6 +86,26 @@ a.btn:hover{text-decoration:none}
    `.wrap{overflow-x:auto}` est le référentiel du collage : `top:0` place donc
    l'en-tête à sa position naturelle dans ce conteneur, pas sous la fenêtre. */
 .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-surf);background:var(--surface)}
+
+/* ---- débordement horizontal : le dire ------------------------------------
+   Un tableau plus large que l'écran ne se signale pas tout seul : rien ne
+   distingue « la colonne s'arrête là » de « il y en a d'autres à droite ».
+   Les classes sont posées par `initDebordement()` (components/table.js) quand
+   il y a réellement de quoi défiler, et de ce côté-là seulement — un fondu
+   permanent mentirait une fois arrivé au bout.
+
+   Le fondu est un MASQUE : posé sur la boîte, il ne défile pas avec le
+   contenu, contrairement à un dégradé de fond qu'un tableau opaque cacherait
+   de toute façon. */
+.wrap.deb-d,.anchors.deb-d,.tabs.deb-d{
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%);
+  mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%)}
+.wrap.deb-g,.anchors.deb-g,.tabs.deb-g{
+  -webkit-mask-image:linear-gradient(to right,transparent 0,#000 26px);
+  mask-image:linear-gradient(to right,transparent 0,#000 26px)}
+.wrap.deb-g.deb-d,.anchors.deb-g.deb-d,.tabs.deb-g.deb-d{
+  -webkit-mask-image:linear-gradient(to right,transparent 0,#000 26px,#000 calc(100% - 26px),transparent 100%);
+  mask-image:linear-gradient(to right,transparent 0,#000 26px,#000 calc(100% - 26px),transparent 100%)}
 table{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface)}
 th,td{text-align:left;padding:calc(8px * var(--rowh)) var(--s-12);
   border-bottom:1px solid var(--line-2);white-space:nowrap}
@@ -147,7 +165,6 @@ label{cursor:default}
 /* Voir la règle générale `[hidden]` en fin de fichier : c'est elle qui masque
    les champs de ce bloc (`#vz-codewrap`, `#vz-tokwrap`). */
 .filters-baseline{align-items:flex-end}
-.filters-flat{margin:0}
 
 /* ---- champ de formulaire ---------------------------------------------------
    Un champ = un libellé, un contrôle, une aide, et une place pour son erreur.
@@ -416,3 +433,37 @@ textarea.code.short{min-height:70px}
 .sr-vide{padding:var(--s-16);color:var(--muted);font-size:var(--t-13)}
 .sr-help{margin:0;padding:var(--s-8) var(--s-16);border-top:1px solid var(--line-2)}
 @media(max-width:560px){ .sr-d{display:none} }
+
+/* ---- feuille basse (components/sheet.js) ---------------------------------
+   La couche de choix du mobile : elle monte du bas, prend la largeur, et ses
+   actions font toute la ligne. Elle réutilise `.modal` pour le fond et la
+   pile de fermeture (Échap, clic dehors, piège de focus), mais s'aligne en
+   bas au lieu du haut. Elle reste utilisable sur un grand écran — un menu qui
+   s'ouvre pendant qu'on redimensionne ne doit pas devenir illisible. */
+.modal.sheet.open{align-items:flex-end;justify-content:center;padding:0}
+/* `calc(100vh - 104px)` : la feuille laisse toujours l'en-tête d'écran ET la
+   première ligne de la barre de notifications visibles au-dessus d'elle — cette
+   barre vit à z-index 1000, elle passerait sinon par-dessus son titre. */
+.sheet-box{
+  max-width:560px;width:100%;max-height:min(86vh,calc(100vh - 104px));
+  display:flex;flex-direction:column;
+  padding:0 0 max(var(--s-8),env(safe-area-inset-bottom));
+  border-radius:var(--r-surf) var(--r-surf) 0 0;border-bottom:0;
+  animation:sheetup .18s ease}
+@keyframes sheetup{from{transform:translateY(18px)}to{transform:none}}
+.sheet-box.drag{transition:none;animation:none}
+.sheet-grip{flex:0 0 auto;height:22px;display:flex;align-items:center;justify-content:center;cursor:grab;touch-action:none}
+.sheet-grip::before{content:"";width:38px;height:4px;border-radius:var(--r-pill);background:var(--line)}
+.sheet-h{flex:0 0 auto;display:flex;align-items:center;gap:var(--s-8);
+  padding:0 var(--s-12) var(--s-8) var(--s-16);border-bottom:1px solid var(--line-2)}
+.sheet-t{flex:1;min-width:0;font-size:var(--t-16)}
+.sheet-b{flex:1;min-height:0;overflow:auto;padding:var(--s-8) var(--s-12) 0;
+  display:flex;flex-direction:column;gap:var(--s-4)}
+.sheet-menu{display:flex;flex-direction:column;gap:2px}
+/* Une action de feuille : pleine largeur, hauteur tactile, libellé à gauche. */
+.sheet-a{width:100%;justify-content:flex-start;padding:10px var(--s-12);
+  font-size:var(--t-14);min-height:44px;flex-wrap:wrap}
+.sheet-al{flex:1;min-width:0;text-align:left}
+.sheet-ar{flex-basis:100%}
+.sheet-b .menu-i{min-height:44px;padding:10px var(--s-8);font-size:var(--t-14)}
+.sheet-b .menu-g{padding:var(--s-8) var(--s-8) 3px}

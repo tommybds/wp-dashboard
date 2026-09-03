@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1157">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-1157">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-1157">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1157">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1250">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1250">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1250">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1250">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,35 +21,36 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-1157",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-1157",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1157",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-1157",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1157",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1157",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-1157",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1157",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1157",
-    "./components/button.js": "./components/button.js?v=2026-09-03-1157",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-1157",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1157",
-    "./components/job.js": "./components/job.js?v=2026-09-03-1157",
-    "./components/log.js": "./components/log.js?v=2026-09-03-1157",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1157",
-    "./components/search.js": "./components/search.js?v=2026-09-03-1157",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-1157",
-    "./components/table.js": "./components/table.js?v=2026-09-03-1157",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-1157",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-1157",
-    "./components/viz.js": "./components/viz.js?v=2026-09-03-1157",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1157",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1157",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1157",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1157",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1157",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1157",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1157",
-    "./screens/site.js": "./screens/site.js?v=2026-09-03-1157"
+    "./version.js": "./version.js?v=2026-09-03-1250",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1250",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1250",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1250",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1250",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1250",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1250",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1250",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1250",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1250",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1250",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1250",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1250",
+    "./components/log.js": "./components/log.js?v=2026-09-03-1250",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1250",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1250",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-03-1250",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1250",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1250",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1250",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1250",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1250",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1250",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1250",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1250",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1250",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1250",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1250",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1250",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1250"
   }
 }
 </script>
@@ -72,11 +73,11 @@
     <li><a class="nav-i" href="#incidents" data-dest="incidents">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-triangle-alert"></use></svg>
       <span class="nav-l">Incidents</span>
-      <span class="nav-c" id="cnt-incidents" data-label="sites injoignables" hidden>0</span></a></li>
+      <span class="nav-c" data-count="incidents" data-label="sites injoignables" hidden>0</span></a></li>
     <li><a class="nav-i" href="#securite" data-dest="securite">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-shield"></use></svg>
       <span class="nav-l">Sécurité</span>
-      <span class="nav-c" id="cnt-securite" data-label="vulnérabilités corrigeables et administrateurs inconnus" hidden>0</span></a></li>
+      <span class="nav-c" data-count="securite" data-label="vulnérabilités corrigeables et administrateurs inconnus" hidden>0</span></a></li>
     <li><a class="nav-i" href="#changements" data-dest="changements">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-history"></use></svg>
       <span class="nav-l">Changements</span></a></li>
@@ -103,14 +104,33 @@
     </div>
   </div>
 </nav>
-<div class="nav-back" id="navback"></div>
+
+<!-- ===================== BARRE D'ONGLETS BASSE (≤ 720 px) =====================
+     Le pouce arrive en bas de l'écran, pas en haut à gauche : sous 720 px la
+     barre latérale disparaît au profit de ces quatre destinations. « Plus »
+     ouvre une feuille avec le reste (Changements, Gestion, Réglages, Journal,
+     Thème, Déconnexion) — components/shell.js la remplit. -->
+<nav class="tabbar" id="tabbar" aria-label="Destinations">
+  <a class="tab-i" href="#parc" data-dest="parc">
+    <span class="tab-ic"><svg class="ic ic-20" aria-hidden="true"><use href="#i-layout-grid"></use></svg></span>
+    <span class="tab-l">Parc</span></a>
+  <a class="tab-i" href="#incidents" data-dest="incidents">
+    <span class="tab-ic"><svg class="ic ic-20" aria-hidden="true"><use href="#i-triangle-alert"></use></svg>
+      <span class="tab-c" data-count="incidents" data-label="incidents à traiter" hidden>0</span></span>
+    <span class="tab-l">Incidents</span></a>
+  <a class="tab-i" href="#securite" data-dest="securite">
+    <span class="tab-ic"><svg class="ic ic-20" aria-hidden="true"><use href="#i-shield"></use></svg>
+      <span class="tab-c" data-count="securite" data-label="vulnérabilités corrigeables et administrateurs inconnus" hidden>0</span></span>
+    <span class="tab-l">Sécurité</span></a>
+  <button class="tab-i" type="button" id="plusbtn" aria-haspopup="dialog" aria-expanded="false">
+    <span class="tab-ic"><svg class="ic ic-20" aria-hidden="true"><use href="#i-menu"></use></svg></span>
+    <span class="tab-l">Plus</span></button>
+</nav>
 
 <!-- ===================== COLONNE PRINCIPALE ===================== -->
 <main class="main" id="main">
 
 <header class="shead">
-  <button class="btn icon menubtn" type="button" id="menubtn" aria-label="Ouvrir la navigation">
-    <svg class="ic ic-20" aria-hidden="true"><use href="#i-menu"></use></svg></button>
   <div class="shead-t">
     <h1 id="screen-title">Parc</h1>
     <span class="meta" id="meta">chargement…</span>
@@ -119,8 +139,12 @@
   <button class="btn" type="button" id="searchbtn" title="Recherche globale" aria-label="Recherche globale">
     <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
     <span class="kbd" id="searchkbd"></span></button>
-  <button class="btn primary" type="button" id="collectbtn" title="Relancer une collecte complète du parc">
-    <svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"></use></svg> Collecter</button>
+  <!-- Le libellé passe en `sr-only` sous 720 px : le bouton devient une icône,
+       son nom accessible reste « Collecter » (aria-label + titre). -->
+  <button class="btn primary" type="button" id="collectbtn"
+          title="Relancer une collecte complète du parc" aria-label="Collecter le parc">
+    <svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"></use></svg>
+    <span class="btn-l">Collecter</span></button>
 </header>
 
 <div class="collectbox section" id="collectbox" hidden>
@@ -303,6 +327,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-1157"></script>
+<script type="module" src="app.js?v=2026-09-03-1250"></script>
 </body>
 </html>

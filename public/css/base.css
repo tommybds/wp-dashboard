@@ -29,13 +29,13 @@ a:hover{text-decoration:underline}
 
 button,select,input,textarea{font:inherit;color:inherit}
 
-code,kbd,samp,pre,.mono{font-family:var(--f-mono)}
+code,kbd,samp,pre{font-family:var(--f-mono)}
 code{background:var(--code-bg);border-radius:var(--r-ctl);padding:.1em .35em;font-size:.9em}
 pre{margin:0}
 
 /* Chiffres alignés en colonne : sans cela, une colonne de versions ou de
    compteurs « danse » d'une ligne à l'autre. */
-table,.tabular,.num{font-variant-numeric:tabular-nums}
+table,.num{font-variant-numeric:tabular-nums}
 
 /* Indicateur de focus clavier : `:focus-visible` ne se déclenche pas au clic
    souris, il ne change donc rien pour la navigation au pointeur. */
@@ -55,7 +55,6 @@ table,.tabular,.num{font-variant-numeric:tabular-nums}
    Ils remplacent les `style="…"` en ligne : toute valeur vient de l'échelle. */
 .muted{color:var(--muted)}
 .small{font-size:var(--t-12)}
-.mono{font-family:var(--f-mono)}
 .spacer{flex:1}
 .fr{float:right}
 .w100{width:100%}
@@ -69,11 +68,7 @@ table,.tabular,.num{font-variant-numeric:tabular-nums}
 .mt2{margin-top:var(--s-8)}
 .mt3{margin-top:var(--s-12)}
 .mt4{margin-top:var(--s-16)}
-.mb0{margin-bottom:0}
-.mb1{margin-bottom:var(--s-4)}
-.mb2{margin-bottom:var(--s-8)}
 
-.scroll-md{max-height:440px;overflow:auto}
 .scroll-lg{max-height:520px;overflow:auto}
 
 /* Largeurs de champ, sur trois crans : un `style="width:280px"` de moins. */
@@ -90,9 +85,7 @@ table,.tabular,.num{font-variant-numeric:tabular-nums}
    des gabarits repris en phase 1. */
 .mb-6{margin-bottom:6px}
 .ml-8{margin-left:var(--s-8)}
-.mhead{margin:var(--s-8) 0 6px}
 .codebox{margin:var(--s-12) 0 var(--s-4)}
 .w-num{width:90px}
-/* Largeurs de colonne du tableau du parc (case à cocher, pastille d'état). */
+/* Largeur de la colonne des cases à cocher, dans le tableau du Parc. */
 .col-chk{width:30px}
-.col-dot{width:32px}

@@ -1,6 +1,12 @@
-/* Coque : barre latérale (destinations, compteurs, pied), en-tête d'écran
-   (titre, méta, bouton Collecter), thème et collecte. Le journal des actions
-   est une modale à part (components/log.js), branchée d'ici.
+/* Coque : barre latérale (destinations, compteurs, pied), barre d'onglets basse
+   du mobile, en-tête d'écran (titre, méta, bouton Collecter), thème et
+   collecte. Le journal des actions est une modale à part (components/log.js),
+   branchée d'ici.
+
+   Sous 720 px, la barre latérale cède la place à la barre d'onglets basse
+   (`#tabbar`) : trois destinations et un bouton « Plus » qui ouvre une feuille
+   avec le reste. Les pastilles de compteur sont les MÊMES des deux côtés —
+   d'où `data-count` plutôt qu'un identifiant.
 
    Rien ici ne connaît le contenu d'un écran : la coque n'affiche que ce que
    `store` et le backend lui donnent. */
@@ -14,6 +20,7 @@ import { store, allSites, st, loadFleet, loadStatus } from '../lib/state.js';
 import { NOTIF } from './toast.js';
 import { chip } from './chip.js';
 import { initJournal } from './log.js';
+import { ouvrirFeuille, boutonFeuille } from './sheet.js';
 
 /* ---- thème : auto / clair / sombre ---------------------------------------
    `auto` retire l'attribut et laisse `prefers-color-scheme` décider ; les deux
@@ -46,7 +53,7 @@ export function themeCourant() {
    Lue une fois ; Réglages la modifie et rappelle loadSched(). */
 let SCHED = null;
 
-export function schedLabel() {
+function schedLabel() {
   const m = SCHED == null ? null : +SCHED;
   if (m == null) return 'actualisation automatique';
   if (!m) return 'actualisation manuelle';
@@ -98,14 +105,18 @@ export function setIncidentCount(n, level) {
   setCounter('incidents', n, level);
 }
 
-export function setCounter(name, value, level) {
-  const el = document.getElementById('cnt-' + name);
-  if (!el) return;
+/* Une pastille est portée par DEUX barres — la latérale du bureau et celle du
+   bas au mobile. Elle est donc visée par `data-count` et non par un
+   identifiant : sinon l'une des deux mentirait. */
+function setCounter(name, value, level) {
   const n = Number(value) || 0;
-  el.textContent = String(n);
-  el.className = 'nav-c' + (n && level ? ' ' + level : '');
-  el.hidden = !n;
-  el.title = n ? el.dataset.label || '' : '';
+  document.querySelectorAll('[data-count="' + name + '"]').forEach(el => {
+    const base = el.classList.contains('tab-c') ? 'tab-c' : 'nav-c';
+    el.textContent = String(n);
+    el.className = base + (n && level ? ' ' + level : '');
+    el.hidden = !n;
+    el.title = n ? el.dataset.label || '' : '';
+  });
 }
 
 /** Compteurs déduits de la flotte + du statut Kuma (sites injoignables). */
@@ -143,7 +154,7 @@ export function majCompteursServeur(force) {
    Publiée dans `--shead-h` : les sommaires collants des pages à ancres se
    placent JUSTE dessous, y compris quand l'en-tête passe à la ligne en étroit.
    Une valeur en dur les ferait chevaucher ou flotter. */
-export function suivreHauteurEntete() {
+function suivreHauteurEntete() {
   const el = document.querySelector('.shead');
   if (!el) return;
   const maj = () => document.documentElement.style.setProperty('--shead-h', el.offsetHeight + 'px');
@@ -209,13 +220,32 @@ export function initShell({ onCollect } = {}) {
     if (r && r.error && onCollect) onCollect(r.error);
     pollCollect();
   };
-  // Menu latéral en étroit : le fond se referme au clic, Échap aussi.
-  const nav = document.getElementById('nav'), back = document.getElementById('navback');
-  const fermer = () => { nav.classList.remove('open'); back.classList.remove('open'); };
-  document.getElementById('menubtn').onclick = () => {
-    const ouvert = nav.classList.toggle('open');
-    back.classList.toggle('open', ouvert);
-  };
-  back.onclick = fermer;
-  nav.addEventListener('click', e => { if (e.target.closest('.nav-i')) fermer(); });
+  document.getElementById('plusbtn').onclick = ouvrirPlus;
+}
+
+/* ---- « Plus » : le pied de la barre latérale, au mobile -------------------
+   La barre d'onglets basse ne porte que trois destinations : le reste (deux
+   destinations, le journal, le thème, la déconnexion) vit dans cette feuille.
+   Elle ne duplique aucune logique — chaque entrée actionne le contrôle déjà
+   présent dans la barre latérale, ou navigue. */
+function ouvrirPlus() {
+  const btn = document.getElementById('plusbtn');
+  const aller = f => () => { location.hash = f; };
+  const cliquer = id => () => { const b = document.getElementById(id); if (b) b.click(); };
+  ouvrirFeuille({
+    titre: 'Plus',
+    onClose: () => btn.setAttribute('aria-expanded', 'false'),
+    contenu: () => [
+      boutonFeuille({ label: 'Changements', ic: 'history', onSelect: aller('#changements') }),
+      boutonFeuille({ label: 'Gestion', ic: 'server', onSelect: aller('#gestion') }),
+      boutonFeuille({ label: 'Réglages', ic: 'settings', onSelect: aller('#reglages') }),
+      boutonFeuille({ label: 'Journal des actions', ic: 'scroll-text', onSelect: cliquer('logbtn') }),
+      boutonFeuille({
+        label: 'Thème : ' + (THEMES.find(x => x[0] === themeCourant()) || THEMES[0])[1].toLowerCase(),
+        ic: 'sun-moon', onSelect: cliquer('themebtn'),
+      }),
+      boutonFeuille({ label: 'Se déconnecter', ic: 'log-out', kind: 'danger', onSelect: logout }),
+    ],
+  });
+  btn.setAttribute('aria-expanded', 'true');
 }

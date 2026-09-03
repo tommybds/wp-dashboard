@@ -22,7 +22,8 @@ import { stopPoll } from './lib/poll.js';
 import { store, subscribe, loadFleet, loadStatus } from './lib/state.js';
 import { V } from './version.js';
 
-import { initModals, askInfo } from './components/confirm.js';
+import { initModals, askInfo, registerModalCloser } from './components/confirm.js';
+import { fermerFeuille } from './components/sheet.js';
 import { initTips } from './components/tip.js';
 import { initJob, setSecRefresh, reouvrirBulk } from './components/job.js';
 import { setOuvreurs } from './components/toast.js';
@@ -31,6 +32,7 @@ import {
 } from './components/shell.js';
 import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
 import { setVizSettings } from './components/viz.js';
+import { initDebordement } from './components/table.js';
 import { fermerMenus } from './components/actions-menu.js';
 import { wpauthBanner } from './components/wpauth.js';
 
@@ -150,6 +152,7 @@ function writeHash(route, push) {
    serveur — c'est tout l'intérêt de la barre de notifications. */
 function quitterEcran(suivant) {
   fermerMenus();
+  fermerFeuille();          // une feuille ouverte n'a plus d'objet sur l'écran suivant
   if (ROUTE === 'site' && suivant !== 'site') quitterSite();
   if (suivant !== 'securite') { stopPoll('vulns'); stopPoll('phe'); }
 }
@@ -158,8 +161,10 @@ function masquerPages() {
   document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
 }
 
+/* La barre latérale ET la barre d'onglets basse portent `data-dest` : les deux
+   suivent la même destination courante, avec le même `aria-current`. */
 function marquerNav(route) {
-  document.querySelectorAll('.nav-i[data-dest]').forEach(x => {
+  document.querySelectorAll('[data-dest]').forEach(x => {
     const on = x.dataset.dest === route;
     x.classList.toggle('active', on);
     if (on) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
@@ -242,6 +247,9 @@ async function boot() {
 
   initTips();
   initModals();
+  // La feuille basse est une couche comme les autres pour Échap ; c'est ici
+  // qu'on le déclare, pour ne pas créer de cycle sheet ↔ confirm ↔ menu.
+  registerModalCloser('sheetmodal', fermerFeuille);
   initJob();
   setSecRefresh(loadSec);
   setOuvreurs({ bulk: reouvrirBulk, site: ouvrirSiteParDomaine });
@@ -249,6 +257,9 @@ async function boot() {
   // connexion le demande sans dépendre de cet écran.
   setVizSettings(ensureSettings);
   initShell({ onCollect: err => askInfo('Collecte impossible', H(err)) });
+  // Ombres de débordement des tableaux, sommaires et onglets : posées une fois
+  // pour tout le document, elles suivent ensuite les rendus des écrans.
+  initDebordement();
 
   initSearch({
     ouvrirSite,
@@ -258,7 +269,7 @@ async function boot() {
   document.getElementById('searchbtn').onclick = ouvrirRecherche;
   document.getElementById('searchkbd').textContent = raccourciLabel();
 
-  document.querySelectorAll('.nav-i[data-dest]').forEach(b => {
+  document.querySelectorAll('[data-dest]').forEach(b => {
     b.onclick = e => { e.preventDefault(); showDest(b.dataset.dest, { push: true }); };
   });
   window.addEventListener('hashchange', applyHash);
@@ -291,4 +302,3 @@ async function boot() {
 
 boot();
 
-export { showDest, writeHash, ouvrirSite };

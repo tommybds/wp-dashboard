@@ -50,9 +50,9 @@ function construire() {
   return MODALE;
 }
 
-export function rechercheOuverte() { return !!(MODALE && MODALE.classList.contains('open')); }
+function rechercheOuverte() { return !!(MODALE && MODALE.classList.contains('open')); }
 
-export function fermerRecherche() {
+function fermerRecherche() {
   if (!MODALE) return;
   MODALE.classList.remove('open');
   const o = OUVREUR;

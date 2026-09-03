@@ -58,7 +58,7 @@ export function udIntervalFr(v) {
   const m = { everyhour: 'toutes les heures', every2hours: 'toutes les 2 h', every4hours: 'toutes les 4 h', every8hours: 'toutes les 8 h', every12hours: 'toutes les 12 h', daily: 'quotidienne', weekly: 'hebdomadaire', fortnightly: 'tous les 15 jours', monthly: 'mensuelle' };
   return m[v] || v || '?';
 }
-export function udIntervalDays(v) {
+function udIntervalDays(v) {
   const m = { everyhour: 1 / 24, every2hours: 2 / 24, every4hours: 4 / 24, every8hours: 8 / 24, every12hours: 12 / 24, daily: 1, weekly: 7, fortnightly: 14, monthly: 30 };
   return m[v] || null;
 }
@@ -71,7 +71,7 @@ export function udHorizon(retain, interval) {
   if (days >= 14) return '≈ ' + Math.round(days / 7) + ' semaines';
   return '≈ ' + Math.round(days) + ' jour(s)';
 }
-export function udPeriod(n, s) {
+function udPeriod(n, s) {
   if (s === 604800) return n + ' sem';
   if (s === 86400) return n + ' j';
   const d = n * s / 86400;
@@ -93,9 +93,8 @@ export function udRulesFr(rules) {
    d'évènement, avec un repli « clé : valeur » pour les types inconnus — un
    agent plus récent que l'interface reste lisible.
 
-   NOTE : screens/site.js porte encore sa propre copie (`tlDetail`) pour son
-   onglet Historique. Elle disparaîtra quand cet écran sera réécrit ; en
-   attendant, l'écran Changements se sert de celle-ci. */
+   Une seule copie depuis la phase 5 : l'écran Changements ET l'onglet
+   Historique de la page site (`tlDetail`) passent par ici. */
 export function detailEvenement(label, brut) {
   if (brut === null || brut === undefined || brut === '') return '';
   let d;

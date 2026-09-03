@@ -15,7 +15,7 @@
    la même route, ils ne peuvent pas diverger. */
 
 import { api } from '../lib/api.js';
-import { h, mount } from '../lib/dom.js';
+import { h, mount, occupe } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
 import { relTime, absTime, debounce } from '../lib/format.js';
 import { chipEl } from '../components/chip.js';
@@ -214,6 +214,7 @@ async function charger(force) {
   AT = Date.now();
   const bt = document.getElementById('inc-refresh');
   if (bt) bt.disabled = true;
+  occupe('inc-body', true);
   let j = null;
   try { j = await api('/api/incidents'); } catch (e) { j = null; }
   INCIDENTS = (j && Array.isArray(j.incidents)) ? j.incidents : [];
@@ -221,6 +222,7 @@ async function charger(force) {
     : (j ? [] : [{ source: 'réseau', error: 'file indisponible' }]);
   CHARGE = true;
   if (bt) bt.disabled = false;
+  occupe('inc-body', false);
   // Même règle que la file « à traiter » du Parc : une seule source, un seul
   // chiffre. Sans cela, deux pastilles finiraient par se contredire.
   const crit = INCIDENTS.filter(i => i.severity === 'critical').length;

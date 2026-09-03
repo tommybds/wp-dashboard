@@ -9,10 +9,16 @@
    Accessibilité : `aria-haspopup="menu"` + `aria-expanded` sur le bouton,
    flèches haut/bas + Début/Fin dans le panneau, Échap ferme et rend le focus
    au bouton, un clic dehors ou une tabulation ferme aussi. Un seul menu
-   ouvert à la fois dans le document. */
+   ouvert à la fois dans le document.
+
+   Sous 720 px, le même menu s'ouvre en FEUILLE BASSE : un panneau ancré à son
+   bouton finit hors de l'écran, et ses entrées n'y ont pas la hauteur tactile
+   qu'il faut. Les entrées sont décrites une seule fois — seule leur enveloppe
+   change. */
 
 import { h } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
+import { estMobile, ouvrirFeuille, fermerFeuille, feuilleOuverte } from './sheet.js';
 
 /* Menu ouvert : sa fermeture est appelée par le suivant qui s'ouvre, par le
    clic hors du panneau et par Échap. */
@@ -82,13 +88,21 @@ export function menuActions({ label = 'Actions', ic = '', kind = '', groups = []
   };
   const fermerEtRendre = () => { const etait = !panneau.hidden; fermer(); if (etait) btn.focus(); };
 
-  groups.filter(g => g && (g.items || []).length).forEach((g, i) => {
-    if (g.titre) panneau.append(h('div', { class: 'menu-g' + (i ? ' sep' : ''), role: 'presentation', text: g.titre }));
-    g.items.forEach(it => panneau.append(itemEl(it, fermerEtRendre)));
-  });
-  if (!panneau.children.length) {
-    panneau.append(h('div', { class: 'menu-vide', role: 'presentation', text: 'aucune action disponible' }));
-  }
+  /* Les entrées sont décrites une fois et fabriquées à la demande : le panneau
+     de bureau et la feuille du mobile en reçoivent chacun un jeu de nœuds, avec
+     leur propre fonction de fermeture. */
+  const entrees = quitter => {
+    const out = [];
+    groups.filter(g => g && (g.items || []).length).forEach((g, i) => {
+      if (g.titre) out.push(h('div', { class: 'menu-g' + (i ? ' sep' : ''), role: 'presentation', text: g.titre }));
+      g.items.forEach(it => out.push(itemEl(it, quitter)));
+    });
+    if (!out.length) {
+      out.push(h('div', { class: 'menu-vide', role: 'presentation', text: 'aucune action disponible' }));
+    }
+    return out;
+  };
+  panneau.append(...entrees(fermerEtRendre));
 
   const items = () => [...panneau.querySelectorAll('.menu-i')];
   const bouger = (depuis, pas) => {
@@ -99,7 +113,33 @@ export function menuActions({ label = 'Actions', ic = '', kind = '', groups = []
     L[j].focus();
   };
 
+  /* Mobile : la même liste, dans une feuille qui monte du bas. `OUVERT` est
+     renseigné comme pour le panneau, pour qu'Échap et le clic dehors ferment
+     la bonne chose, dans le bon ordre. */
+  const fermerMobile = () => {
+    if (OUVERT === fermerMobile) OUVERT = null;
+    if (feuilleOuverte()) fermerFeuille();
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  const ouvrirMobile = () => {
+    if (OUVERT && OUVERT !== fermerMobile) fermerMenus();
+    OUVERT = fermerMobile;
+    btn.setAttribute('aria-expanded', 'true');
+    ouvrirFeuille({
+      titre: label,
+      contenu: () => {
+        const noeuds = entrees(fermerMobile);
+        // Dans la feuille, les entrées sont atteignables par tabulation : il n'y
+        // a pas de bouton parent qui leur passe le focus à la flèche.
+        noeuds.forEach(n => { if (n.classList.contains('menu-i')) n.tabIndex = 0; });
+        return h('div', { class: 'sheet-menu', role: 'menu', 'aria-label': label }, noeuds);
+      },
+      onClose: () => { if (OUVERT === fermerMobile) OUVERT = null; btn.setAttribute('aria-expanded', 'false'); },
+    });
+  };
+
   const ouvrir = () => {
+    if (estMobile()) { ouvrirMobile(); return; }
     if (OUVERT && OUVERT !== fermer) fermerMenus();
     panneau.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
@@ -107,8 +147,12 @@ export function menuActions({ label = 'Actions', ic = '', kind = '', groups = []
     const L = items();
     if (L.length) L[0].focus();
   };
+  const basculer = () => {
+    if (estMobile()) { if (feuilleOuverte()) fermerMobile(); else ouvrirMobile(); return; }
+    if (panneau.hidden) ouvrir(); else fermerEtRendre();
+  };
 
-  btn.onclick = e => { e.stopPropagation(); if (panneau.hidden) ouvrir(); else fermerEtRendre(); };
+  btn.onclick = e => { e.stopPropagation(); basculer(); };
   btn.onkeydown = e => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (panneau.hidden) ouvrir(); }
   };

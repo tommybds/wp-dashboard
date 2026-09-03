@@ -10,10 +10,10 @@
 
 import { esc } from '../lib/dom.js';
 
-export const NIVEAUX = ['ok', 'warn', 'err', 'mut'];
+const NIVEAUX = ['ok', 'warn', 'err', 'mut'];
 
 /** Normalise un niveau reçu d'ailleurs (jamais de classe CSS inventée). */
-export function niveau(n) { return NIVEAUX.includes(n) ? n : 'mut'; }
+function niveau(n) { return NIVEAUX.includes(n) ? n : 'mut'; }
 
 /**
  * chip(libellé, niveau, {point, title, tip}) → chaîne HTML
