@@ -5101,6 +5101,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, res)
         elif p == "/api/sec/baseline":
             self._send(200, {"baseline": load_json(os.path.join(DATA, "admins_baseline.json"), {})})
+        elif p == "/api/mgmt/events":
+            # Événements poussés par les agents, à l'échelle du parc (la page
+            # Changements les fusionne avec les changements détectés et les
+            # actions). `domain` optionnel pour filtrer un site.
+            try:
+                lim = max(1, min(int(q.get("limit", "400")), 2000))
+            except ValueError:
+                lim = 400
+            dom = q.get("domain") or None
+            self._send(200, {"events": read_events(lim, dom)})
         elif p == "/api/mgmt/changes":
             try:
                 limit = min(int(q.get("limit", "400")), 2000)
