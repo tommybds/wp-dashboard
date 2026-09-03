@@ -2634,10 +2634,10 @@ def kuma_state():
 # dernier battement directement dans la base, comme les autres lectures Kuma.
 KUMA_HEARTBEAT_SQL = (
     "SELECT m.name||char(9)||h.status||char(9)||COALESCE(h.time,'')||char(9)||"
-    "REPLACE(REPLACE(COALESCE(h.msg,''),char(9),' '),char(10),' ') "
+    "REPLACE(REPLACE(COALESCE(h.msg,''),char(9),' '),char(10),' ')||char(9)||COALESCE(m.active,1) "
     "FROM heartbeat h JOIN monitor m ON m.id=h.monitor_id "
     "WHERE h.id IN (SELECT MAX(id) FROM heartbeat GROUP BY monitor_id) "
-    "AND m.active=1 AND m.type!='group';")
+    "AND m.type!='group';")   # les moniteurs en pause sont gardés : leur dernier état reste une information
 
 
 def kuma_heartbeat_epoch(value):
@@ -2679,8 +2679,11 @@ def kuma_heartbeats():
             statut = int(p[1])
         except (TypeError, ValueError):
             continue
+        actif = True
+        if len(p) >= 5:
+            actif = p[4].strip() not in ("0", "false", "")
         battements[p[0]] = {"status": statut, "time": p[2], "msg": p[3].strip(),
-                            "ts": kuma_heartbeat_epoch(p[2])}
+                            "ts": kuma_heartbeat_epoch(p[2]), "active": actif}
     return battements
 
 
@@ -3141,9 +3144,14 @@ def inc_down(sites, now):
         hb = battements.get(nom)
         if not hb or hb.get("status") != 0:
             continue
+        # Un moniteur mis en pause alors qu'il était down reste à voir (le
+        # tableau de bord le compte « down ») mais n'est plus une urgence.
+        actif = hb.get("active", True)
         out.append(make_incident(
-            "down", "critical", nom, f"{nom} injoignable",
-            hb.get("msg") or "moniteur Kuma en échec, sans détail",
+            "down", "critical" if actif else "warning", nom,
+            f"{nom} injoignable" if actif else f"{nom} : moniteur en pause, dernier état injoignable",
+            (hb.get("msg") or "moniteur Kuma en échec, sans détail")
+            + ("" if actif else " — réactiver le moniteur dans Gestion une fois le site réparé"),
             site=nom, server=server, since=hb.get("ts"), now=now,
             action={"label": "Re-scan", "act": "rescan", "arg": ""},
             link={"tab": "incidents", "sub": ""}))
