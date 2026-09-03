@@ -42,6 +42,7 @@ FLEET_PATH = os.path.join(DATA, "fleet.json")
 RAW_LINES = 400000   # borne de LECTURE par journal (avant filtrage)
 CAP_LINES = 20000    # plafond de lignes REMONTÉES par journal (après filtrage)
 MAX_PER_SITE = 60    # groupes d'erreurs conservés par site
+MAX_TRACE = 12       # cadres de pile d'appels conservés par occurrence
 DEFAULT_HOURS = 24
 # Le filtrage par date se fait sur le serveur distant (fuseau du serveur). Le
 # filtre local n'est qu'un garde-fou : on lui laisse 3 h de tolérance pour ne
@@ -66,6 +67,18 @@ RE_NGINX = re.compile(
     r"^(?P<ts>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}).*?"
     r"PHP message:\s*PHP\s+(?P<sev>Fatal error|Parse error|Warning|Notice|Deprecated|Strict Standards):\s*"
     r"(?P<msg>.*?)(?:\s+in\s+(?P<file>/[^\s]+?)\s+on line\s+(?P<line>\d+))?(?:\"|\s+while\s|$)")
+
+# Une exception non capturée écrit sa PILE D'APPELS après le message. Sur
+# Plesk/FPM, chaque cadre arrive sur sa propre ligne de journal, sans
+# « PHP message » mais avec le même bruit d'en-tête : c'est ce que reconnaît
+# RE_PLESK_STDERR, quand RE_PLESK a échoué.
+RE_PLESK_STDERR = re.compile(
+    r"^\[(?P<ts>[^\]]+)\]\s+\w+:\s+\[pool (?P<dom>[^\]]+)\].*?said into stderr:\s*(?P<txt>.*)$")
+
+# Un cadre de pile : « #0 /chemin(12): Classe->methode() », l'en-tête
+# « Stack trace: », ou la ligne « thrown in … » qui la clôt.
+RE_CADRE = re.compile(r"^(?:Stack trace:|#\d+\b.*|thrown in\b.*)$")
+RE_UNCAUGHT = re.compile(r"\s*Uncaught\b")
 
 
 def save_json_atomic(path, obj, mode=0o600):
@@ -107,14 +120,67 @@ def normalise(msg):
     return m[:300]
 
 
+def nettoie_cadre(txt):
+    """Une ligne de pile débarrassée du bruit FPM → (texte, tronqué).
+
+    FPM entoure le contenu de guillemets et coupe la ligne autour de 200
+    caractères, en terminant alors par « ..." ». Le drapeau rendu ici permet de
+    DIRE que la pile est incomplète, plutôt que de la donner à lire comme si
+    elle était entière.
+    """
+    s = str(txt or "").strip()
+    if s.startswith('"'):
+        s = s[1:]
+    tronq = False
+    if s.endswith('..."'):
+        s, tronq = s[:-4], True
+    elif s.endswith('"'):
+        s = s[:-1]
+    if s.endswith("..."):
+        s, tronq = s[:-3], True
+    return re.sub(r"^PHP message:\s*", "", s).strip(), tronq
+
+
+def cadres_en_ligne(msg):
+    """Pile écrite sur UNE seule ligne (nginx) → liste de cadres.
+
+    nginx recopie le message d'erreur d'un bloc : « Uncaught … Stack trace: #0
+    … #1 … ». Le découpage se fait donc sur les « #N », pas sur les retours à
+    la ligne, qui n'y sont plus.
+    """
+    i = str(msg or "").find("Stack trace:")
+    if i < 0:
+        return []
+    reste = msg[i + len("Stack trace:"):]
+    out = []
+    for part in re.split(r"(?=#\d+\s)", reste):
+        cadre, _ = nettoie_cadre(part)
+        if cadre:
+            out.append(cadre)
+    return out[:MAX_TRACE]
+
+
+def ajoute_cadre(entree, texte, tronque):
+    """Rattache un cadre à l'occurrence en cours, dans la limite de MAX_TRACE."""
+    cadres = entree.setdefault("trace", [])
+    if len(cadres) < MAX_TRACE:
+        cadres.append(texte)
+    if tronque:
+        entree["trace_truncated"] = True
+
+
 def build_script(domains, hours):
     """Script bash de collecte des journaux, filtré CÔTÉ SERVEUR.
 
-    Trois filtres, dans cet ordre de sélectivité : « PHP message », les
+    Trois filtres, dans cet ordre de sélectivité : les lignes utiles, les
     domaines demandés (motif « [pool <dom>] » sur Plesk, nom de fichier sur
     nginx), puis la fenêtre de temps. Celle-ci est construite par `date` SUR LE
     SERVEUR : ses journaux sont horodatés dans SON fuseau, calculer la borne
     depuis le fuseau du dashboard décalait la fenêtre d'autant.
+
+    « Lignes utiles » = « PHP message », PLUS les cadres de pile d'appels que
+    FPM écrit juste après une exception non capturée : ceux-là ne portent pas
+    « PHP message », et sans eux la trace se perdait sur le serveur.
 
     La sortie est plafonnée à CAP_LINES lignes par journal APRÈS filtrage ; le
     dépassement est signalé par « @@TRONQUE@@<fichier>|<raison> » pour que
@@ -150,10 +216,15 @@ echo "@@FENETRE@@$TSOK"
 
 fenetre() {{ if [ "$TSOK" = "1" ]; then grep -f "$TMP/ts"; else cat; fi; }}
 
+# Les lignes qui nous intéressent : les messages PHP, et les cadres de pile
+# d'appels qu'FPM écrit ensuite (« Stack trace: », « #0 … », « thrown in … »),
+# lesquels ne portent pas « PHP message ».
+pertinent() {{ grep -E 'PHP message|said into stderr: "(Stack trace:|#[0-9]+ |thrown in )'; }}
+
 # $1 = fichier, $2 = commande de filtrage supplémentaire, $3 = préfixe de sortie
 extraire() {{
   local f="$1" pfx="$3"
-  tail -n "$RAW" "$f" 2>/dev/null | grep -F "PHP message" | eval "$2" | fenetre > "$TMP/cur"
+  tail -n "$RAW" "$f" 2>/dev/null | pertinent | eval "$2" | fenetre > "$TMP/cur"
   local n
   n=$(wc -l < "$TMP/cur" 2>/dev/null || echo 0)
   if [ "$n" -gt "$CAP" ]; then
@@ -226,6 +297,10 @@ def remote_scan(server, domains, hours):
     connus = set(domains)
     tronques = []
     lignes = []
+    # Occurrence en attente de sa pile d'appels, PAR DOMAINE : sur un Plesk
+    # mutualisé, un seul journal porte les lignes de tous les sites, et deux
+    # exceptions simultanées s'y entrelacent.
+    attente = {}
     for brut in out.splitlines():
         if brut.startswith("@@TRONQUE@@"):
             fichier, _, raison = brut[11:].partition("|")
@@ -234,6 +309,16 @@ def remote_scan(server, domains, hours):
         if brut.startswith("@@PLESK@@"):
             m = RE_PLESK.match(brut[9:])
             if not m:
+                # Pas un message PHP : peut-être un cadre de la pile qui suit
+                # l'exception précédente, du même site.
+                p = RE_PLESK_STDERR.match(brut[9:])
+                if p and p.group("dom") in connus:
+                    cadre, coupe = nettoie_cadre(p.group("txt"))
+                    en_cours = attente.get(p.group("dom"))
+                    if not (en_cours and RE_CADRE.match(cadre)):
+                        attente.pop(p.group("dom"), None)   # la pile est finie
+                    elif cadre != "Stack trace:":           # en-tête, pas un cadre
+                        ajoute_cadre(en_cours, cadre, coupe)
                 continue
             dom, mode = m.group("dom"), "plesk"
         elif brut.startswith("@@NGINX@@"):
@@ -269,22 +354,40 @@ def remote_scan(server, domains, hours):
         if fichier:
             msg = re.sub(r"\s+in\s+" + re.escape(fichier) + r"\s+on line\s+\d+.*$", "", msg)
             msg = re.sub(r"\s+Stack trace:.*$", "", msg, flags=re.S)
-        lignes.append({
+        entree = {
             "domain": dom, "ts": ts.strftime("%Y-%m-%d %H:%M:%S"),
             "severity": m.group("sev"), "message": normalise(msg),
             "file": fichier, "line": ligne_no,
-        })
+        }
+        lignes.append(entree)
+        # Exception non capturée : sa pile arrive soit sur la MÊME ligne (nginx
+        # recopie le message d'un bloc), soit sur les lignes suivantes du
+        # journal (Plesk/FPM, un cadre par ligne).
+        brut_msg = m.group("msg") or ""
+        if RE_UNCAUGHT.match(brut_msg):
+            for cadre in cadres_en_ligne(brut_msg):
+                ajoute_cadre(entree, cadre, False)
+            if brut_msg.rstrip().endswith("..."):
+                entree["trace_truncated"] = True
+            attente[dom] = entree
+        else:
+            attente.pop(dom, None)
     return lignes, None, tronques
 
 
 def agrege(lignes):
-    """Regroupe par (site, fichier, ligne, message) avec compteur et bornes."""
+    """Regroupe par (site, fichier, ligne, message) avec compteur et bornes.
+
+    Un groupe porte la pile d'appels d'UNE occurrence — la plus récente qui en
+    ait une —, avec son horodatage (`sample_ts`) : les 17 occurrences d'un même
+    défaut ont la même pile, la recopier 17 fois n'apprendrait rien.
+    """
     par_site = collections.defaultdict(dict)
     for e in lignes:
         cle = (e["file"], e["line"], e["message"], e["severity"])
         g = par_site[e["domain"]].get(cle)
         if g is None:
-            par_site[e["domain"]][cle] = {
+            g = par_site[e["domain"]][cle] = {
                 "severity": e["severity"], "message": e["message"],
                 "file": e["file"], "line": e["line"],
                 "count": 1, "first": e["ts"], "last": e["ts"],
@@ -293,6 +396,10 @@ def agrege(lignes):
             g["count"] += 1
             g["first"] = min(g["first"], e["ts"])
             g["last"] = max(g["last"], e["ts"])
+        if e.get("trace") and e["ts"] >= g.get("sample_ts", ""):
+            g["trace"] = list(e["trace"])
+            g["trace_truncated"] = bool(e.get("trace_truncated"))
+            g["sample_ts"] = e["ts"]
     sites = []
     for dom, groupes in par_site.items():
         lst = sorted(groupes.values(),

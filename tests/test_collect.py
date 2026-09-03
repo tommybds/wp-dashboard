@@ -598,6 +598,115 @@ class TestPhpErrors(unittest.TestCase):
         self.assertEqual(par_sev["Fatal error"]["line"], 12)
         self.assertTrue(par_sev["Fatal error"]["file"].endswith("/z/z.php"))
 
+    # ---- pile d'appels des exceptions non capturées ---------------------- #
+    @staticmethod
+    def pile_plesk(tp, dom="a.fr", tronque=True):
+        """Le journal d'une exception non capturée, tel que FPM l'écrit :
+        le message, puis un cadre par ligne, chacun dans le même bruit."""
+        pfx = f'@@PLESK@@[{tp}] WARNING: [pool {dom}] child 7 said into stderr: '
+        coupe = ' Object(WP_REST_Request), Object(WP_REST_Request), Object(WP_..."' \
+            if tronque else '"'
+        return [
+            pfx + '"PHP message: PHP Fatal error:  Uncaught Error: Call to undefined '
+                  'method WP_Error::get_method() in /var/www/a.fr/wp-includes/'
+                  'rest-api/class-wp-rest-server.php:1120',
+            pfx + '"Stack trace:"',
+            pfx + '"#0 /var/www/a.fr/wp-includes/rest-api/class-wp-rest-server.php(1120): '
+                  'WP_REST_Server->serve_batch_request_v1()"',
+            pfx + '"#1 /var/www/a.fr/wp-includes/rest-api/class-wp-rest-server.php(431):'
+                + coupe,
+            pfx + '"#4 /var/www/a.fr/wp-includes/rest-api.php(420): '
+                  'WP_REST_Server->serve_request(\'/batch/v1\')"',
+            pfx + '"thrown in /var/www/a.fr/wp-includes/rest-api/class-wp-rest-server.php '
+                  'on line 1120"',
+        ]
+
+    def test_pile_d_appels_rattachee_a_l_exception(self):
+        tp = horodate("plesk")
+        lignes, err, _ = self.scan("\n".join(self.pile_plesk(tp) + ["@@FIN@@"]))
+        self.assertIsNone(err)
+        self.assertEqual(len(lignes), 1)          # les cadres ne sont pas des erreurs
+        e = lignes[0]
+        # « Stack trace: » est un en-tête, pas un cadre : il ne compte pas.
+        self.assertEqual(len(e["trace"]), 4)
+        self.assertTrue(e["trace"][0].startswith("#0 "))
+        self.assertIn("serve_request('/batch/v1')", e["trace"][2])
+        self.assertTrue(e["trace"][3].startswith("thrown in "))
+        # Le bruit FPM et les guillemets sont retirés de chaque cadre.
+        for cadre in e["trace"]:
+            self.assertNotIn("said into stderr", cadre)
+            self.assertFalse(cadre.endswith('"'))
+        self.assertTrue(e["trace_truncated"])     # FPM a coupé le cadre #1
+
+    def test_pile_complete_n_est_pas_dite_tronquee(self):
+        tp = horodate("plesk")
+        lignes, _, _ = self.scan("\n".join(self.pile_plesk(tp, tronque=False) + ["@@FIN@@"]))
+        self.assertFalse(lignes[0].get("trace_truncated"))
+
+    def test_pile_plafonnee_a_douze_cadres(self):
+        tp = horodate("plesk")
+        pfx = f'@@PLESK@@[{tp}] WARNING: [pool a.fr] child 7 said into stderr: '
+        corps = [pfx + '"PHP message: PHP Fatal error:  Uncaught Error: boom '
+                       'in /var/www/a.fr/x.php:1', pfx + '"Stack trace:"']
+        corps += [pfx + f'"#{i} /var/www/a.fr/f{i}.php(2): fn()"' for i in range(30)]
+        lignes, _, _ = self.scan("\n".join(corps + ["@@FIN@@"]))
+        self.assertEqual(len(lignes[0]["trace"]), phperrors.MAX_TRACE)
+
+    def test_pile_rattachee_au_bon_site_quand_deux_s_entrelacent(self):
+        """Un journal Plesk porte tous les sites : les cadres de b.fr ne
+        doivent pas atterrir sur l'exception de a.fr."""
+        tp = horodate("plesk")
+        corps = self.pile_plesk(tp, dom="a.fr", tronque=False)[:3]
+        corps += self.pile_plesk(tp, dom="b.fr", tronque=False)[:3]
+        lignes, _, _ = self.scan("\n".join(corps + ["@@FIN@@"]))
+        self.assertEqual(len(lignes), 2)
+        for e in lignes:
+            self.assertEqual(len(e["trace"]), 1)
+
+    def test_une_erreur_ordinaire_ne_recolte_aucune_pile(self):
+        tp = horodate("plesk")
+        pfx = f'@@PLESK@@[{tp}] WARNING: [pool a.fr] child 7 said into stderr: '
+        corps = [pfx + '"PHP message: PHP Warning:  x in /a/b.php on line 1"',
+                 pfx + '"#0 /a/b.php(1): fn()"']
+        lignes, _, _ = self.scan("\n".join(corps + ["@@FIN@@"]))
+        self.assertEqual(len(lignes), 1)
+        self.assertNotIn("trace", lignes[0])
+
+    def test_pile_sur_une_seule_ligne_nginx(self):
+        tn = horodate("nginx")
+        corps = (f'@@NGINX@@b.fr\t{tn} [error] 1#1: *2 FastCGI sent in stderr: '
+                 f'"PHP message: PHP Fatal error:  Uncaught Error: boom '
+                 f'in /var/www/b.fr/wp-content/plugins/z/z.php:12 Stack trace: '
+                 f'#0 /var/www/b.fr/index.php(17): fn() #1 {{main}}'
+                 f' thrown in /var/www/b.fr/z.php on line 12"\n@@FIN@@')
+        lignes, _, _ = self.scan(corps)
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(len(lignes[0]["trace"]), 2)
+        self.assertTrue(lignes[0]["trace"][0].startswith("#0 "))
+        # le message reste court : la pile ne le pollue pas
+        self.assertNotIn("Stack trace", lignes[0]["message"])
+
+    def test_le_groupe_porte_la_pile_de_l_occurrence_la_plus_recente(self):
+        base = {"domain": "a.fr", "severity": "Fatal error", "message": "boom",
+                "file": "/a.php", "line": 1}
+        sites = phperrors.agrege([
+            dict(base, ts="2026-09-02 10:00:00", trace=["#0 vieux"]),
+            dict(base, ts="2026-09-03 06:31:00", trace=["#0 recent"],
+                 trace_truncated=True),
+            dict(base, ts="2026-09-03 05:00:00", trace=["#0 entre-deux"]),
+        ])
+        g = sites[0]["groups"][0]
+        self.assertEqual(g["count"], 3)
+        self.assertEqual(g["trace"], ["#0 recent"])
+        self.assertTrue(g["trace_truncated"])
+        self.assertEqual(g["sample_ts"], "2026-09-03 06:31:00")
+
+    def test_le_script_remonte_aussi_les_lignes_de_pile(self):
+        s = phperrors.build_script(["a.fr"], 24)
+        self.assertIn("Stack trace:", s)
+        self.assertIn("#[0-9]+ ", s)
+        self.assertIn("thrown in ", s)
+
     def test_domaine_inconnu_ignore(self):
         tp = horodate("plesk")
         corps = (f'@@PLESK@@[{tp}] WARNING: [pool inconnu.fr] child 7 said into stderr: '

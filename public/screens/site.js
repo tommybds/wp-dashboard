@@ -27,6 +27,7 @@ import { store, allSites, st, bkAge, kName, loadFleet, phpEol, seuilBackup } fro
 
 import { setBusy, setIdle } from '../components/button.js';
 import { chipEl, libelleKuma, niveauKuma } from '../components/chip.js';
+import { erreurPhpEl, incidentEl } from '../components/incident.js';
 import { askConfirm, askInfo, askOpen } from '../components/confirm.js';
 import { menuActions, fermerMenus } from '../components/actions-menu.js';
 import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '../components/rollback.js';
@@ -701,19 +702,14 @@ function incidentsEl() {
 }
 
 /* Une ligne d'incident, partagée avec l'écran Parc : trait de gravité, site,
-   titre, détail court, ancienneté, action en ligne. */
+   titre, détail court, ancienneté, action en ligne — et le pli qui donne le
+   message entier, la pile d'appels et le « que faire » (components/incident.js,
+   le même objet que sur l'écran Incidents). */
 export function incidentLigne(inc, avecSite) {
-  const age = Number(inc.age_h) || 0;
-  const quand = inc.since ? relTime(inc.since) : (age ? (age < 48 ? 'depuis ' + Math.round(age) + ' h' : 'depuis ' + Math.round(age / 24) + ' j') : '');
-  const ligne = h('div', { class: 'inc ' + (inc.severity === 'critical' ? 'err' : 'warn') },
-    h('div', { class: 'inc-m' },
-      h('div', { class: 'inc-t' },
-        avecSite && inc.site ? h('b', { class: 'inc-s', text: inc.site }) : null,
-        h('span', { class: 'inc-h', text: inc.title || '' })),
-      inc.detail ? h('div', { class: 'muted small inc-d', text: inc.detail }) : null),
-    quand ? h('span', { class: 'muted small inc-a', title: inc.since ? absTime(inc.since) : '', text: quand }) : null,
-    incidentAction(inc, avecSite));
-  return ligne;
+  return incidentEl(inc, {
+    siteEl: avecSite && inc.site ? h('b', { class: 'inc-s', text: inc.site }) : null,
+    actions: incidentAction(inc, avecSite),
+  });
 }
 
 /* `avecSite` vaut faux sur la page d'un site : « Ouvrir » y renverrait vers la
@@ -1016,14 +1012,13 @@ async function chargerPhpErrors() {
     mount(box, h('span', { class: 'pill ok', text: 'aucune erreur relevée sur la fenêtre analysée' }));
     return;
   }
-  mount(box, rec.groups.slice(0, 30).map(g => {
+  // Même ligne dépliable que la section Erreurs PHP de Sécurité : le message
+  // entier, la pile d'appels et le « que faire » sont à un clic, pas coupés.
+  mount(box, h('div', { class: 'inclist' }, rec.groups.slice(0, 30).map(g => {
     const fatale = /Fatal|Parse/.test(String(g.severity || ''));
-    return h('div', { class: 'logline' },
-      h('span', { class: 'pill ' + (fatale ? 'err' : 'warn'), text: g.severity || '?' }), ' ',
-      h('b', { text: String(g.message || '').slice(0, 160) }),
-      h('div', { class: 'muted small' }, (g.short || g.file || '?') + (g.line ? ':' + g.line : ''),
-        ' · ×' + (g.count || 1), g.last ? ' · ' + relTime(g.last) : ''));
-  }));
+    return erreurPhpEl(g, [chipEl(g.severity || '?', fatale ? 'err' : 'warn'),
+      chipEl('×' + (g.count ?? 1), 'mut')]);
+  })));
 }
 
 /* ---- onglet Sauvegardes et restauration ------------------------------------ */

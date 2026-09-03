@@ -3321,12 +3321,17 @@ def incident_iso(epoch):
 
 
 def make_incident(kind, severity, key, title, detail, site="", server="", arg="",
-                  since=None, action=None, link=None, now=None):
+                  since=None, action=None, link=None, now=None, extra=None):
     """Une entrée de la file. `id` = kind:cible:arg — stable d'un appel à l'autre.
 
     La « cible » est la clé du site (clé Kuma ou domaine) ou, pour les incidents
     qui portent sur un serveur (`server_stale`, `php_eol`), son nom : c'est ce
     qui rend l'identifiant unique, et c'est lui qui sert au dédoublonnage.
+
+    `title` et `detail` restent COURTS : ils tiennent sur une ligne de liste.
+    Ce qui ne tient pas sur une ligne (pile d'appels, liste de CVE, liste de
+    fichiers…) va dans `extra`, dictionnaire libre dont les clés dépendent du
+    `kind` — l'interface le déplie, la liste n'en est pas alourdie.
     """
     age = 0.0
     if since is not None:
@@ -3336,7 +3341,8 @@ def make_incident(kind, severity, key, title, detail, site="", server="", arg=""
     return {"id": f"{kind}:{key}:{arg}", "severity": severity, "kind": kind,
             "site": site, "server": server or "", "title": title, "detail": detail,
             "since": incident_iso(since), "age_h": round(age, 2),
-            "action": action, "link": link}
+            "action": action, "link": link,
+            "extra": dict(extra) if isinstance(extra, dict) else {}}
 
 
 def incident_fleet():
@@ -3384,12 +3390,19 @@ def inc_down(sites, now):
             + ("" if actif else " — réactiver le moniteur dans Gestion une fois le site réparé"),
             site=nom, server=server, since=hb.get("ts"), now=now,
             action={"label": "Re-scan", "act": "rescan", "arg": ""},
-            link={"tab": "incidents", "sub": ""}))
+            link={"tab": "incidents", "sub": ""},
+            extra={"msg": hb.get("msg") or "", "since": incident_iso(hb.get("ts"))}))
     return out
 
 
 def inc_php_fatal(index, now):
-    """Erreurs PHP fatales de la fenêtre courante de php_errors.json."""
+    """Erreurs PHP fatales de la fenêtre courante de php_errors.json.
+
+    `extra` recopie ce que le collecteur a relevé et que la ligne ne peut pas
+    montrer : la pile d'appels de l'exception, l'occurrence qui l'a fournie, le
+    compteur et la fenêtre. Sans elle, il ne reste qu'un message tronqué dont
+    on ne sait pas quoi faire.
+    """
     res = incident_json(PHPERR_PATH, {})
     out = []
     for s in (res.get("sites") or []):
@@ -3407,13 +3420,21 @@ def inc_php_fatal(index, now):
                 n = int(g.get("count") or 1)
             except (TypeError, ValueError):
                 n = 1
+            trace = [str(c) for c in (g.get("trace") or []) if str(c or "").strip()]
             out.append(make_incident(
                 "php_fatal", "critical", dom,
                 f"{g.get('severity') or 'Fatal error'} sur {dom}",
                 f"{g.get('message') or 'erreur sans message'} — {ou} (×{n})",
                 site=dom, server=server, arg=ou,
                 since=parse_ts(g.get("first")), now=now,
-                link={"tab": "securite", "sub": "phperrors"}))
+                link={"tab": "securite", "sub": "phperrors"},
+                extra={"trace": trace,
+                       "trace_truncated": bool(g.get("trace_truncated")),
+                       "sample_ts": g.get("sample_ts") or "",
+                       "count": n, "first": g.get("first") or "",
+                       "last": g.get("last") or "",
+                       "file": str(g.get("short") or g.get("file") or ""),
+                       "line": g.get("line") or 0}))
     return out
 
 
@@ -3430,6 +3451,16 @@ def inc_vulns(index, rules, now):
             continue
         server, site = index[cle]
         rest = site.get("via") == "rest"   # aucune action wp-cli possible
+        # Une extension cumule souvent plusieurs CVE graves ; l'incident, lui,
+        # est unique par composant. On rassemble donc les identifiants ici, pour
+        # que `extra` les porte tous sans dépendre de l'ordre des findings.
+        cves = {}
+        for v in (s.get("findings") or []):
+            if (str(v.get("severity") or "").lower() in graves and v.get("cve")
+                    and str(v.get("update_to") or "").strip()):
+                lot = cves.setdefault(str(v.get("component") or "?"), [])
+                if str(v["cve"]) not in lot:
+                    lot.append(str(v["cve"]))
         for v in (s.get("findings") or []):
             if str(v.get("severity") or "").lower() not in graves:
                 continue
@@ -3455,7 +3486,9 @@ def inc_vulns(index, rules, now):
                 detail + f" — correctif en {vers}",
                 site=cle, server=server, arg=comp, now=now,
                 action=None if rest else action,
-                link={"tab": "securite", "sub": "vulns"}))
+                link={"tab": "securite", "sub": "vulns"},
+                extra={"cve": list(cves.get(comp) or []), "slug": comp,
+                       "from": str(v.get("version") or ""), "to": vers}))
     return out
 
 
@@ -3471,6 +3504,10 @@ def inc_checksums(index, now):
         server, _site = index[dom]
         queue = str(rec.get("output_tail") or "")
         touches = len(re.findall(r"doesn't verify against checksum", queue, re.I))
+        # Les chemins eux-mêmes : c'est ce qu'on veut lire pour décider (un
+        # fichier de langue n'a pas le même sens qu'un wp-includes/load.php).
+        fichiers = [f.strip() for f in re.findall(
+            r"doesn't verify against checksum:\s*(\S+)", queue, re.I)]
         detail = (f"{touches} fichier(s) ne correspondent pas au cœur officiel"
                   if touches else "vérification en échec")
         out.append(make_incident(
@@ -3478,7 +3515,8 @@ def inc_checksums(index, now):
             f"Intégrité du cœur en échec sur {dom}",
             detail + " — " + (queue[-200:].strip() or "aucune sortie conservée"),
             site=dom, server=server, since=parse_ts(rec.get("ts")), now=now,
-            link={"tab": "securite", "sub": "checksums"}))
+            link={"tab": "securite", "sub": "checksums"},
+            extra={"files": fichiers[:20]}))
     return out
 
 
@@ -3512,7 +3550,9 @@ def inc_admins(sites, now):
                 f"Administrateur inconnu sur {cle}", detail,
                 site=cle, server=server, arg=str(login),
                 since=parse_ts(a.get("registered")), now=now,
-                link={"tab": "securite", "sub": "admins"}))
+                link={"tab": "securite", "sub": "admins"},
+                extra={"login": str(login), "email": str(a.get("email") or ""),
+                       "registered": str(a.get("registered") or "")}))
     return out
 
 
@@ -3532,7 +3572,8 @@ def inc_server_stale(servers, now):
         out.append(make_incident(
             "server_stale", "warning", nom, f"Serveur {nom} injoignable", detail,
             server=nom, since=parse_ts(essai), now=now,
-            link={"tab": "gestion", "sub": "serveurs"}))
+            link={"tab": "gestion", "sub": "serveurs"},
+            extra={"error": str(srv.get("error") or ""), "last_attempt": essai}))
     return out
 
 
@@ -3563,7 +3604,10 @@ def inc_backup(sites, rules, now):
             site=cle, server=server, since=ts if ts else None, now=now,
             action=None if rest else {"label": "Sauvegarder",
                                       "act": "updraft_backup", "arg": ""},
-            link={"tab": "parc", "sub": ""}))
+            link={"tab": "parc", "sub": ""},
+            extra={"last_backup": incident_iso(ts) if ts else "",
+                   "age_h": round(age_h, 1) if age_h is not None else None,
+                   "service": str(up.get("service") or "")}))
     return out
 
 
@@ -3593,7 +3637,8 @@ def inc_certs(index, rules, now):
             "cert_expiring", "critical" if jours < crit else "warning", nom,
             f"Certificat de {nom} à renouveler", detail + f" — seuil {warn:g} j",
             site=nom, server=server, now=now,
-            link={"tab": "securite", "sub": "certs"}))
+            link={"tab": "securite", "sub": "certs"},
+            extra={"days_left": jours, "expires": str(c.get("valid_to") or "")}))
     return out
 
 
@@ -3619,7 +3664,8 @@ def inc_php_eol(sites, rules, now):
             f"PHP {court} en fin de support sur {server or '?'}",
             f"{len(doms)} site(s) : " + ", ".join(doms[:12]) + ("…" if len(doms) > 12 else ""),
             server=server, arg=court, now=now,
-            link={"tab": "securite", "sub": "php"}))
+            link={"tab": "securite", "sub": "php"},
+            extra={"version": court, "sites": doms}))
     return out
 
 

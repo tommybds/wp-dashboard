@@ -124,18 +124,53 @@
 .todo-chev.open{transform:rotate(90deg)}
 .inclist{display:flex;flex-direction:column}
 .inclist[hidden]{display:none}
-.inc{display:flex;align-items:center;gap:var(--s-8);padding:7px var(--s-8) 7px 10px;
+/* `flex-wrap` : le panneau déplié (`.incp`) est un enfant de la ligne, en
+   pleine largeur — il passe donc à la ligne suivante, sous le résumé. */
+.inc{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s-8);
+  padding:7px var(--s-8) 7px 6px;
   border-top:1px solid var(--line-2);border-left:3px solid var(--line)}
 .inc:first-child{border-top:0}
 .inc.err{border-left-color:var(--err)}
 .inc.warn{border-left-color:var(--warn)}
-.inc-m{flex:1;min-width:0}
+.inc-m{flex:1;min-width:0;cursor:pointer}
 .inc-t{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .inc-s{font-weight:600}
 .inc-h{font-size:var(--t-13)}
 .inc-d{margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:78ch}
 .inc-a{flex:0 0 auto;white-space:nowrap}
 .inc-b{flex:0 0 auto;display:flex;gap:6px}
+
+/* ---- le pli d'un incident --------------------------------------------------
+   Le bouton ne porte QUE le chevron : le résumé, lui, contient des liens, qui
+   n'ont rien à faire dans un <button>. Le clavier passe donc par ce bouton, la
+   souris par toute la ligne. */
+.inc-x{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;padding:0;background:none;border:0;color:var(--muted);cursor:pointer}
+.inc-x:hover{color:var(--ink)}
+.inc-x[aria-expanded="true"] .tlchev{transform:rotate(90deg)}
+/* `order` : le panneau passe après tout le reste, y compris sous 720 px où les
+   boutons prennent eux-mêmes une ligne entière. */
+.incp{order:9;flex:0 0 100%;min-width:0;max-width:100%;margin-top:6px;
+  padding:var(--s-8) 10px;background:var(--surface-2);border-radius:var(--r-ctl)}
+.incp[hidden]{display:none}
+/* Le message entier, sélectionnable, sans troncature : c'est le premier motif
+   de ce panneau. */
+.incp-msg{margin:0;font-size:var(--t-13);word-break:break-word;user-select:text}
+.incp-loc{word-break:break-all}
+.incp-loc b{color:var(--accent-ink)}
+.incp-xs{margin-top:6px;display:flex;flex-direction:column;gap:2px}
+.incp-x{display:flex;gap:6px;font-size:var(--t-12);flex-wrap:wrap}
+.incp-k{color:var(--muted);min-width:11ch}
+.incp-t{margin-bottom:3px}
+.incp-cut{color:var(--warn)}
+/* La pile défile DANS son cadre : sur 390 px, la laisser s'étaler pousserait
+   la page entière vers la droite. */
+.incp-tr{font-family:var(--f-mono);font-size:var(--t-12);line-height:1.5;
+  background:var(--code-bg);border-radius:var(--r-ctl);padding:6px var(--s-8);
+  max-height:220px;max-width:100%;overflow:auto;white-space:pre;user-select:text}
+.incp-do{margin-top:var(--s-8);border-top:1px solid var(--line-2);padding-top:6px}
+.incp-do p{margin:2px 0 0;color:var(--ink-2);max-width:78ch}
+.incp-b{margin-top:var(--s-8);display:flex;align-items:center;gap:var(--s-8)}
 
 /* Compteurs cliquables : une ligne, pas six cartes. */
 .counters{display:flex;gap:var(--s-4);flex-wrap:wrap;margin-bottom:var(--s-12)}
@@ -297,7 +332,7 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 .vcves{flex-basis:100%;margin-left:2px}
 .vcves a{margin-right:7px;white-space:nowrap}
 .phe-group{margin-bottom:10px}
-.phe-loc{margin-left:6px}
+.phe-h{margin-bottom:2px}
 
 /* La chronologie (`.tlrow`…) a rejoint components.css : elle sert désormais à
    l'onglet Historique de la page site ET à l'écran Changements. */

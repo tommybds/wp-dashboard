@@ -17,25 +17,14 @@
 import { api } from '../lib/api.js';
 import { h, mount, occupe } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
-import { relTime, absTime, debounce } from '../lib/format.js';
+import { debounce } from '../lib/format.js';
 import { chipEl } from '../components/chip.js';
+import { incidentEl, kindLabel } from '../components/incident.js';
 import { setIncidentCount } from '../components/shell.js';
 import { siteParCle, cleDeSite, lancerSur } from './site.js';
 
-/* `kind` → ce que la ligne dit à un humain. Un type inconnu garde sa clé :
-   mieux vaut un mot technique qu'une ligne muette. */
-const KINDS = {
-  down: 'site injoignable',
-  php_fatal: 'erreur PHP fatale',
-  vuln_critical_fixable: 'vulnérabilité critique corrigeable',
-  checksums_modified: 'checksums modifiés',
-  admin_unknown: 'administrateur inconnu',
-  server_stale: 'serveur injoignable',
-  backup_late: 'sauvegarde en retard',
-  cert_expiring: 'certificat',
-  php_eol: 'PHP en fin de support',
-};
-const kindLabel = k => KINDS[k] || String(k || 'incident');
+/* Le libellé des types, la ligne dépliable et son panneau vivent dans
+   components/incident.js : la page site montre exactement le même objet. */
 
 const GRAVITES = [
   ['critical', 'Critique', 'err'],
@@ -80,14 +69,6 @@ function monter() {
     h('div', { id: 'inc-body' }, h('p', { class: 'hint hint-tight', text: 'chargement…' })));
 }
 
-/* ---- une ligne ------------------------------------------------------------- */
-function anciennete(inc) {
-  if (inc.since) return relTime(inc.since).replace(/^il y a /, 'depuis ');
-  const age = Number(inc.age_h) || 0;
-  if (!age) return '';
-  return age < 48 ? 'depuis ' + Math.round(age) + ' h' : 'depuis ' + Math.round(age / 24) + ' j';
-}
-
 /* Un lien de section : `link` vient du backend, on ne garde que des fragments
    internes de forme connue. */
 function lienSection(link) {
@@ -120,22 +101,12 @@ function ligne(inc) {
     if (l) boutons.append(l);
   }
 
-  const quand = anciennete(inc);
-  return h('div', { class: 'inc ' + (inc.severity === 'critical' ? 'err' : 'warn') },
-    h('div', { class: 'inc-m' },
-      h('div', { class: 'inc-t' },
-        chipEl(kindLabel(inc.kind), 'mut'),
-        inc.site
-          ? h('a', {
-            class: 'inc-s', href: '#site/' + encodeURIComponent(s ? cleDeSite(s) : inc.site), text: inc.site,
-          })
-          : (inc.server ? h('b', { class: 'inc-s', text: inc.server }) : null),
-        h('span', { class: 'inc-h', text: inc.title || '' })),
-      inc.detail ? h('div', { class: 'muted small inc-d', text: inc.detail }) : null),
-    quand ? h('span', {
-      class: 'muted small inc-a', title: inc.since ? absTime(inc.since) : '', text: quand,
-    }) : null,
-    boutons);
+  const siteEl = inc.site
+    ? h('a', {
+      class: 'inc-s', href: '#site/' + encodeURIComponent(s ? cleDeSite(s) : inc.site), text: inc.site,
+    })
+    : (inc.server ? h('b', { class: 'inc-s', text: inc.server }) : null);
+  return incidentEl(inc, { siteEl, chipKind: true, actions: boutons });
 }
 
 /* ---- rendu ------------------------------------------------------------------ */

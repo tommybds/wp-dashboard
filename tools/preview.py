@@ -148,13 +148,36 @@ def vulns():
             "generated_at": now(0), "running": False}
 
 
+# Pile d'appels d'une exception non capturée, telle que le collecteur la rend :
+# six cadres, dont un coupé par FPM autour de 200 caractères (d'où
+# `trace_truncated`). C'est le cas réel d'instantdhier.fr, transposé.
+TRACE = [
+    "#0 wp-includes/rest-api/class-wp-rest-server.php(1120): "
+    "WP_REST_Server->serve_batch_request_v1(Object(WP_REST_Request))",
+    "#1 wp-includes/rest-api/class-wp-rest-server.php(431): WP_REST_Server->dispatch("
+    "Object(WP_REST_Request), Object(WP_REST_Request), Object(WP_REST_Request), Object(WP_",
+    "#2 wp-includes/rest-api/class-wp-rest-server.php(377): WP_REST_Server->respond_to_request()",
+    "#3 wp-includes/rest-api.php(420): WP_REST_Server->serve_request('/batch/v1')",
+    "#4 wp-includes/class-wp-hook.php(324): rest_api_loaded(Object(WP))",
+    "#5 {main}",
+]
+
+
 def phperrors():
     return {"sites": [{"domain": "site-01.exemple.fr", "total": 42, "groups": [
-        {"severity": "Fatal error", "count": 12, "message": "Uncaught Error: Call to undefined function",
-         "short": "wp-content/plugins/x/x.php", "line": 42, "last": now(1)},
+        {"severity": "Fatal error", "count": 12,
+         "message": "Uncaught Error: Call to undefined method WP_Error::get_method()",
+         "short": "wp-includes/rest-api/class-wp-rest-server.php", "line": 1120,
+         "first": now(8), "last": now(1), "sample_ts": now(1),
+         "trace": TRACE, "trace_truncated": True},
+        {"severity": "Fatal error", "count": 3,
+         "message": "Uncaught Error: Call to undefined function acf_get_field()",
+         "short": "wp-content/plugins/x/x.php", "line": 42,
+         "first": now(5), "last": now(2)},
         {"severity": "Warning", "count": 30, "message": "Undefined array key \"id\"",
-         "short": "wp-content/themes/y/functions.php", "line": 7, "last": now(3)},
-    ]}], "sites_with_errors": 1, "total": 42, "fatals": 12,
+         "short": "wp-content/themes/y/functions.php", "line": 7,
+         "first": now(9), "last": now(3)},
+    ]}], "sites_with_errors": 1, "total": 45, "fatals": 15,
         "generated_at": now(0), "running": False,
         "truncated": {}, "servers_failed": {}}
 
@@ -166,6 +189,10 @@ def incidents():
     Volontairement bâtie « à la main » plutôt que dérivée de fleet() : c'est le
     rendu de la file qu'on veut éprouver (gravités, ancienneté, action en ligne,
     lien seul, incident sans site, type inattendu), pas la logique du backend.
+
+    Chaque incident porte son `extra` — le hors-ligne que le pli affiche : pile
+    d'appels et fenêtre pour `php_fatal`, CVE et versions pour une vulnérabilité,
+    fichiers pour les checksums…
     """
     def iso(h):
         return (datetime.now() - timedelta(hours=h)).replace(microsecond=0).isoformat()
@@ -177,40 +204,67 @@ def incidents():
          "detail": "moniteur Kuma en échec — 503 Service Unavailable",
          "since": iso(216), "age_h": 216.0,
          "action": {"label": "Re-scan", "act": "rescan", "arg": ""},
-         "link": {"tab": "incidents", "sub": ""}},
+         "link": {"tab": "incidents", "sub": ""},
+         "extra": {"msg": "503 Service Unavailable", "since": iso(216)}},
         {"id": "vuln_critical_fixable:site-01.exemple.fr:plugin-2", "severity": "critical",
          "kind": "vuln_critical_fixable", "site": "site-01.exemple.fr", "server": "vps-1",
          "title": "plugin-2 1.2.0 · critical corrigeable",
          "detail": "RCE (CVE-2025-0002) — correctif en 1.2.1",
          "since": iso(30), "age_h": 30.0,
          "action": {"label": "MAJ plugin-2 → 1.2.1", "act": "plugin_update", "arg": "plugin-2"},
-         "link": {"tab": "securite", "sub": "vulns"}},
+         "link": {"tab": "securite", "sub": "vulns"},
+         "extra": {"cve": ["CVE-2025-0002", "CVE-2025-0011"], "slug": "plugin-2",
+                   "from": "1.2.0", "to": "1.2.1"}},
         {"id": "admin_unknown:site-02.exemple.fr:wpsvc", "severity": "critical",
          "kind": "admin_unknown", "site": "site-02.exemple.fr", "server": "vps-2",
          "title": "Administrateur inconnu sur site-02.exemple.fr",
          "detail": "compte « wpsvc_fkmdmu » absent de la référence (inscrit le 2026-08-11)",
          "since": iso(72), "age_h": 72.0, "action": None,
-         "link": {"tab": "securite", "sub": "admins"}},
+         "link": {"tab": "securite", "sub": "admins"},
+         "extra": {"login": "wpsvc_fkmdmu", "email": "wpsvc@mail.ru",
+                   "registered": "2026-08-11 04:12:00"}},
         {"id": "backup_late:site-03.exemple.fr:", "severity": "warning", "kind": "backup_late",
          "site": "site-03.exemple.fr", "server": "plesk-mutu",
          "title": "Sauvegarde en retard sur site-03.exemple.fr",
          "detail": "dernière sauvegarde il y a 56 h — seuil 48 h",
          "since": iso(56), "age_h": 56.0,
          "action": {"label": "Sauvegarder", "act": "updraft_backup", "arg": ""},
-         "link": {"tab": "parc", "sub": ""}},
+         "link": {"tab": "parc", "sub": ""},
+         "extra": {"last_backup": iso(56), "age_h": 56.0, "service": "sftp"}},
         {"id": "php_eol:vps-1:7.4", "severity": "warning", "kind": "php_eol",
          "site": "", "server": "vps-1",
          "title": "PHP 7.4 en fin de support sur vps-1",
          "detail": "3 site(s) : site-04.exemple.fr, site-07.exemple.fr, site-10.exemple.fr",
          "since": None, "age_h": 0.0, "action": None,
-         "link": {"tab": "securite", "sub": "php"}},
-        {"id": "php_fatal:site-01.exemple.fr:x.php:42", "severity": "critical", "kind": "php_fatal",
+         "link": {"tab": "securite", "sub": "php"},
+         "extra": {"version": "7.4", "sites": ["site-04.exemple.fr", "site-07.exemple.fr",
+                                               "site-10.exemple.fr"]}},
+        # Le cas qui a motivé le pli : message long, fichier du CŒUR (le « que
+        # faire » doit alors renvoyer à la trace), pile de 6 cadres dont un coupé.
+        {"id": "php_fatal:site-01.exemple.fr:class-wp-rest-server.php:1120",
+         "severity": "critical", "kind": "php_fatal",
          "site": "site-01.exemple.fr", "server": "vps-1",
          "title": "Fatal error sur site-01.exemple.fr",
-         "detail": "Uncaught Error: Call to undefined function — "
-                   "wp-content/plugins/x/x.php:42 (×12)",
-         "since": iso(11), "age_h": 11.0, "action": None,
-         "link": {"tab": "securite", "sub": "phperrors"}},
+         "detail": "Uncaught Error: Call to undefined method WP_Error::get_method() — "
+                   "wp-includes/rest-api/class-wp-rest-server.php:1120 (×5)",
+         "since": iso(8), "age_h": 8.0, "action": None,
+         "link": {"tab": "securite", "sub": "phperrors"},
+         "extra": {"trace": TRACE, "trace_truncated": True, "sample_ts": now(1),
+                   "count": 5, "first": now(8), "last": now(1),
+                   "file": "wp-includes/rest-api/class-wp-rest-server.php",
+                   "line": 1120}},
+        # Le même type, mais parti d'une EXTENSION et sans pile : le « que faire »
+        # doit changer, et le panneau ne doit pas montrer de cadre de trace vide.
+        {"id": "php_fatal:site-02.exemple.fr:x.php:42", "severity": "critical",
+         "kind": "php_fatal", "site": "site-02.exemple.fr", "server": "vps-2",
+         "title": "Fatal error sur site-02.exemple.fr",
+         "detail": "Uncaught Error: Call to undefined function acf_get_field() — "
+                   "wp-content/plugins/x/x.php:42 (×3)",
+         "since": iso(4), "age_h": 4.0, "action": None,
+         "link": {"tab": "securite", "sub": "phperrors"},
+         "extra": {"trace": [], "trace_truncated": False, "sample_ts": "",
+                   "count": 3, "first": now(4), "last": now(2),
+                   "file": "wp-content/plugins/x/x.php", "line": 42}},
         {"id": "checksums_modified:site-05.exemple.fr:", "severity": "critical",
          "kind": "checksums_modified", "site": "site-05.exemple.fr", "server": "vps-2",
          "title": "Intégrité du cœur en échec sur site-05.exemple.fr",
@@ -218,13 +272,16 @@ def incidents():
                    "wp-includes/load.php doesn't verify against checksum",
          "since": iso(5), "age_h": 5.0,
          "action": {"label": "Vérifier", "act": "verify_checksums", "arg": ""},
-         "link": {"tab": "securite", "sub": "checksums"}},
+         "link": {"tab": "securite", "sub": "checksums"},
+         "extra": {"files": ["wp-includes/load.php", "wp-admin/includes/file.php",
+                             "wp-includes/version.php"]}},
         {"id": "cert_expiring:site-01.exemple.fr:", "severity": "warning", "kind": "cert_expiring",
          "site": "site-01.exemple.fr", "server": "vps-1",
          "title": "Certificat de site-01.exemple.fr à renouveler",
          "detail": "expire dans 6 jour(s) (le 2026-09-09) — seuil 21 j",
          "since": None, "age_h": 0.0, "action": None,
-         "link": {"tab": "securite", "sub": "certs"}},
+         "link": {"tab": "securite", "sub": "certs"},
+         "extra": {"days_left": 6, "expires": "2026-09-09T00:00:00Z"}},
         # Gravité inconnue du front : elle doit rester visible, pas disparaître.
         {"id": "inattendu:site-06.exemple.fr:", "severity": "info", "kind": "type_inconnu",
          "site": "site-06.exemple.fr", "server": "vps-2",
@@ -237,7 +294,9 @@ def incidents():
                     "site": "", "server": "vps-1", "title": "Serveur vps-1 injoignable",
                     "detail": "ssh: connect timeout — dernière tentative il y a 3 h",
                     "since": iso(3), "age_h": 3.0, "action": None,
-                    "link": {"tab": "gestion", "sub": "serveurs"}})
+                    "link": {"tab": "gestion", "sub": "serveurs"},
+                    "extra": {"error": "ssh: connect timeout",
+                              "last_attempt": iso(3)}})
     if SCENARIO == "vide":
         inc = []
     # Une source en échec : la file doit le DIRE, sinon « rien à traiter » se

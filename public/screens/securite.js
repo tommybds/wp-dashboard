@@ -32,6 +32,7 @@ import { setBusy, setIdle } from '../components/button.js';
 import { demarrerJob } from '../components/job.js';
 import { majCompteursServeur } from '../components/shell.js';
 import { chip, chipEl } from '../components/chip.js';
+import { erreurPhpEl } from '../components/incident.js';
 
 /* Extensions régulièrement exploitées en incident. */
 const RISKY = ['wp-file-manager', 'file-manager-advanced', 'filester', 'duplicator',
@@ -676,20 +677,20 @@ function renderPhe() {
     if (q) g = g.filter(x => (s.domain + ' ' + x.message + ' ' + (x.short || x.file || '')).toLowerCase().includes(q));
     if (!g.length) return;
     n += g.length;
-    const bloc = h('div', { class: 'phe-group' },
-      lienSite(s.domain),
-      h('span', { class: 'muted small', text: ' ' + pluriel(Number(s.total) || 0, 'occurrence') }));
+    // Un groupe = une ligne DÉPLIABLE (components/incident.js) : la liste reste
+    // courte, mais le message entier, la pile d'appels et le « que faire » sont
+    // à un clic — le rendu tronqué d'avant ne permettait ni de lire, ni d'agir.
+    const liste = h('div', { class: 'inclist' });
     g.forEach(x => {
       const r = PHRANK[x.severity] || 0;
-      bloc.append(h('div', { class: 'logline' },
-        chipEl(x.severity || '?', r >= 4 ? 'err' : r >= 3 ? 'warn' : 'mut'), ' ',
-        chipEl('×' + (x.count ?? 1), 'mut'), ' ',
-        h('span', { text: x.message || '' }),
-        x.short ? h('div', { class: 'muted small phe-loc' },
-          h('code', { text: x.short + ':' + (x.line ?? '?') }),
-          ' · dernière ' + relTime(x.last)) : null));
+      liste.append(erreurPhpEl(x, [
+        chipEl(x.severity || '?', r >= 4 ? 'err' : r >= 3 ? 'warn' : 'mut'),
+        chipEl('×' + (x.count ?? 1), 'mut')]));
     });
-    blocs.push(bloc);
+    blocs.push(h('div', { class: 'phe-group' },
+      h('div', { class: 'phe-h' }, lienSite(s.domain),
+        h('span', { class: 'muted small', text: ' ' + pluriel(Number(s.total) || 0, 'occurrence') })),
+      liste));
   });
   cnt.textContent = n ? pluriel(n, 'groupe') : '';
   mount(body, partielle,

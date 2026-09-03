@@ -149,16 +149,19 @@ public/
   lib/
     api.js              fetch, session, X-Dash, redirection sur 401
     dom.js              h(), esc(), mount(), zoneMessage(), occupe()
-    format.js           dates relatives, durées, URL, cadences UpdraftPlus,
-                        détail d'un évènement d'agent, bruit PHP
+    format.js           dates relatives et courtes, durées, URL, cadences
+                        UpdraftPlus, détail d'un évènement d'agent, bruit PHP
     icons.js            icon() / iconEl() + injection du sprite
     poll.js             sondage borné : s'arrête sur erreurs, sur `until`, à la demande
     state.js            store (flotte, statut Kuma, sélection, filtres, réglages)
                         + abonnements + cache court par chargeur
   components/
-    actions-menu.js  add-site.js  button.js  chip.js  confirm.js  job.js
-    log.js  rollback.js  search.js  sheet.js  shell.js  table.js  tip.js
-    toast.js  viz.js  wpauth.js
+    actions-menu.js  add-site.js  button.js  chip.js  confirm.js  incident.js
+    job.js  log.js  rollback.js  search.js  sheet.js  shell.js  table.js
+    tip.js  toast.js  viz.js  wpauth.js
+      incident.js  la ligne d'incident dépliable : message entier, pile
+                   d'appels, « que faire », copier — un seul objet pour les
+                   trois écrans qui montrent des incidents
       confirm.js   modales génériques, ordre des couches, Échap, piège de focus
       sheet.js     feuille basse : la couche de choix du mobile
       shell.js     barres de navigation, compteurs, thème, collecte
@@ -225,6 +228,7 @@ chips ≥ 4.5:1 sur leur fond. À lancer après toute modification de `tokens.cs
 | Composant | Ce qu'il fait |
 |---|---|
 | `chip.js` | Chip d'état : point + libellé, **quatre** niveaux (`ok`, `warn`, `err`, `mut`) et un seul vocabulaire dans toute l'application. |
+| `incident.js` | La ligne d'incident **dépliable**, partagée par la file « à traiter » (Parc et page site), l'écran Incidents et les groupes d'erreurs PHP de Sécurité. Repliée elle tient sur une ligne ; ouverte elle donne le message **entier**, le fichier fautif (`wp-content/plugins/<slug>` mis en évidence), la fenêtre d'apparition, la **pile d'appels** défilante, un bouton **Copier** et une phrase « Que faire » par type. Le pli est un vrai `<button>` (`aria-expanded` + `aria-controls`) : Entrée et Espace marchent sans être simulés, et le résumé garde ses liens, qui n'auraient rien à faire dans un bouton. |
 | `button.js` | États d'un bouton : chargement (`setBusy`/`setIdle`, qui préservent l'icône) et confirmation à deux clics. |
 | `table.js` | Tri par colonne avec `aria-sort`, densité, colonnes masquables mémorisées, et les **ombres de débordement** horizontal. |
 | `actions-menu.js` | Menu groupé par intention. Un groupe peut s'ouvrir sur des **lignes d'état** non cliquables (`{etat:true}`) et ne montrer ensuite que les entrées qui ont un sens dans cet état. Au bureau c'est un panneau `role="menu"` ; sous 720 px, **la même liste s'ouvre en feuille basse**. |
@@ -707,7 +711,8 @@ Chaque incident a la même forme :
  "detail": "Stored XSS (CVE-2026-1) — correctif en 3.100.2",
  "since": "2026-09-02T18:05:00", "age_h": 14.6,
  "action": {"label": "MAJ ml-slider → 3.100.2", "act": "plugin_update", "arg": "ml-slider"},
- "link": {"tab": "securite", "sub": "vulns"}}
+ "link": {"tab": "securite", "sub": "vulns"},
+ "extra": {"cve": ["CVE-2026-1"], "slug": "ml-slider", "from": "3.100.1", "to": "3.100.2"}}
 ```
 
 `id` vaut `kind:cible:arg` — la cible est la clé du site (clé Kuma ou domaine),
@@ -729,6 +734,26 @@ disponible : l'incident reste, le bouton disparaît. `since` vaut `null` (et
 | `backup_late` | avertissement | Sauvegarde UpdraftPlus plus vieille que le seuil, ou jamais faite. Un site **sans UpdraftPlus** est ignoré | `updraft_backup` |
 | `cert_expiring` | avert. / critique | Jours restants sous le seuil (critique sous le second seuil, ou déjà expiré) | — |
 | `php_eol` | avertissement | Version PHP hors support : **une entrée par serveur et par version**, sites regroupés dans le détail | — |
+
+#### `extra` : ce que la ligne ne peut pas dire
+
+`title` et `detail` tiennent sur **une ligne de liste** ; tout ce qui ne tient
+pas là va dans `extra`, que l'interface affiche quand on **déplie** l'incident
+(chevron sur la ligne, écran Incidents comme page site). C'est un **dictionnaire
+libre**, sans schéma commun : ses clés dépendent du `kind`, et un front qui n'en
+connaît pas une l'ignore. Il est toujours présent, éventuellement vide.
+
+| `kind` | Clés de `extra` |
+|---|---|
+| `php_fatal` | `trace` (liste de cadres, 12 au plus), `trace_truncated`, `sample_ts` (occurrence qui a fourni la pile), `count`, `first`, `last`, `file` (chemin raccourci), `line` |
+| `vuln_critical_fixable` | `cve` (liste — une extension cumule souvent plusieurs CVE graves), `slug`, `from`, `to` |
+| `backup_late` | `last_backup` (ISO, `""` si jamais), `age_h` (`null` si jamais), `service` |
+| `cert_expiring` | `days_left`, `expires` |
+| `down` | `msg` (message du moniteur Kuma), `since` |
+| `server_stale` | `error`, `last_attempt` |
+| `php_eol` | `version`, `sites` (**tous** les sites, là où `detail` s'arrête à 12) |
+| `checksums_modified` | `files` (chemins relevés dans la sortie wp-cli, 20 au plus) |
+| `admin_unknown` | `login`, `email`, `registered` |
 
 Tri : **critique avant avertissement**, puis `age_h` décroissant — le plus ancien
 d'abord. Chaque source est lue isolément : celle qui échoue laisse une ligne dans
@@ -1212,6 +1237,28 @@ De même, `data/php_errors.json` porte un champ `truncated` — `{serveur:
 [{file, reason}]}` — quand un journal a dépassé le plafond de 20 000 lignes
 retenues : l'analyse de ce fichier est alors partielle et l'interface peut le
 signaler.
+
+#### La pile d'appels des exceptions non capturées
+
+Un `Uncaught Error: …` seul ne dit pas d'où il vient : le fichier fautif est
+souvent un fichier du **cœur**, appelé par une extension qu'il faut retrouver
+dans la pile. `phperrors.py` la capture donc, et le groupe porte trois champs de
+plus :
+
+| Champ du groupe | Contenu |
+|---|---|
+| `trace` | Les cadres, nettoyés, **12 au plus** — `#0 …`, `#1 …`, et la ligne `thrown in …`. L'en-tête `Stack trace:` n'en fait pas partie |
+| `trace_truncated` | Vrai dès qu'un cadre a été **coupé par le journal** : FPM tronque chaque ligne autour de 200 caractères et la termine par `..."`. L'interface le dit, plutôt que de laisser lire une pile incomplète comme si elle était entière |
+| `sample_ts` | Horodatage de l'occurrence qui a fourni la pile — la **plus récente** du groupe. Les 17 occurrences d'un même défaut ont la même pile : la recopier 17 fois n'apprendrait rien |
+
+Deux formes de journal, deux lectures : sur **Plesk/FPM**, chaque cadre arrive
+sur sa propre ligne, derrière le même bruit `[pool <domaine>] child N said into
+stderr:` — la pile est rattachée à l'occurrence en cours **du même domaine**, ce
+qui la garde correcte quand deux sites d'un mutualisé plantent en même temps. Sur
+**nginx**, le message arrive d'un bloc et la pile se découpe sur les `#N`.
+
+Ces lignes-là ne portent pas `PHP message` : le filtre côté serveur les laisse
+passer explicitement, sans quoi la trace se perdait avant d'arriver au dashboard.
 
 ### Divers
 

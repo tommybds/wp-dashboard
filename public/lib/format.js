@@ -26,6 +26,18 @@ export function absTime(v) {
   return t === null ? String(v ?? '') : new Date(t).toLocaleString('fr-FR');
 }
 
+/** « 2 sept. 22:23 » — de quoi situer une occurrence dans une fenêtre de
+    quelques heures, sans l'année ni les secondes, qui n'y apprennent rien. */
+export function dateCourte(v) {
+  const t = tsMs(v);
+  if (t === null) return '';
+  // `toLocaleString` intercale une virgule (« 2 sept., 22:23 ») : elle coupe
+  // une date qui se lit d'un trait.
+  return new Date(t).toLocaleString('fr-FR',
+    { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    .replace(/,\s*/, ' ');
+}
+
 /** Durée courte, pour la barre de notifications. */
 export function duree(ms) {
   const s = Math.max(0, Math.round(ms / 1000));

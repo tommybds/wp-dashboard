@@ -483,6 +483,133 @@ class TestPhpEol(IncidentsBase):
 
 
 # --------------------------------------------------------------------------- #
+#  extra : le hors-ligne de chaque incident                                    #
+# --------------------------------------------------------------------------- #
+class TestExtra(IncidentsBase):
+    """`extra` porte ce que `title`/`detail` ne peuvent pas dire en une ligne.
+
+    Son contenu dépend du `kind` — c'est un dictionnaire libre, pas un schéma :
+    ces tests fixent, pour chaque règle, les clés sur lesquelles l'interface
+    s'appuie pour déplier un incident.
+    """
+
+    def test_php_fatal_recopie_la_pile_et_la_fenetre(self):
+        self.poser_fleet(self.serveur(sites=[site("instantdhier.fr")]))
+        self.poser_json(A.PHPERR_PATH, {"window_hours": 24, "sites": [
+            {"domain": "instantdhier.fr", "groups": [
+                {"severity": "Fatal error",
+                 "message": "Uncaught Error: Call to undefined method WP_Error::get_method()",
+                 "file": "/var/www/wp-includes/rest-api/class-wp-rest-server.php",
+                 "short": "wp-includes/rest-api/class-wp-rest-server.php", "line": 1120,
+                 "count": 5, "first": ts_local(time.time() - 8 * HEURE),
+                 "last": ts_local(time.time()),
+                 "sample_ts": ts_local(time.time()),
+                 "trace": ["#0 /var/www/wp-includes/rest-api/class-wp-rest-server.php(1120): "
+                           "WP_REST_Server->serve_batch_request_v1()",
+                           "#4 /var/www/wp-includes/rest-api.php(420): "
+                           "WP_REST_Server->serve_request('/batch/v1')"],
+                 "trace_truncated": True}]}]})
+        e = self.par_kind("php_fatal")[0]["extra"]
+        self.assertEqual(len(e["trace"]), 2)
+        self.assertIn("serve_batch_request_v1", e["trace"][0])
+        self.assertTrue(e["trace_truncated"])
+        self.assertEqual(e["count"], 5)
+        self.assertEqual(e["line"], 1120)
+        self.assertEqual(e["file"], "wp-includes/rest-api/class-wp-rest-server.php")
+        self.assertTrue(e["first"] and e["last"] and e["sample_ts"])
+
+    def test_php_fatal_sans_pile_garde_une_liste_vide(self):
+        """Un groupe collecté avant la capture des piles ne doit pas casser."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.PHPERR_PATH, {"sites": [{"domain": "a.fr", "groups": [
+            {"severity": "Fatal error", "message": "boom", "file": "/a.php",
+             "short": "a.php", "line": 3, "count": 1,
+             "first": ts_local(time.time()), "last": ts_local(time.time())}]}]})
+        e = self.par_kind("php_fatal")[0]["extra"]
+        self.assertEqual(e["trace"], [])
+        self.assertFalse(e["trace_truncated"])
+        self.assertEqual(e["sample_ts"], "")
+
+    def test_vuln_porte_les_cve_et_les_deux_versions(self):
+        self.poser_fleet(self.serveur(sites=[site("ffhbi.fr")]))
+        commun = {"kind": "plugin", "component": "ml-slider", "version": "3.100.1",
+                  "severity": "critical", "update_to": "3.100.2"}
+        self.poser_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "ffhbi.fr", "findings": [
+            dict(commun, title="Stored XSS", cve="CVE-2026-1"),
+            dict(commun, title="RCE", cve="CVE-2026-2"),
+            {"kind": "plugin", "component": "autre", "version": "1.0",
+             "severity": "critical", "update_to": "1.1", "cve": "CVE-2026-9",
+             "title": "x"}]}]})
+        e = [i for i in self.par_kind("vuln_critical_fixable")
+             if i["extra"]["slug"] == "ml-slider"][0]["extra"]
+        self.assertEqual(e["cve"], ["CVE-2026-1", "CVE-2026-2"])
+        self.assertEqual((e["from"], e["to"]), ("3.100.1", "3.100.2"))
+
+    def test_checksums_liste_les_fichiers_plafonnee_a_vingt(self):
+        sortie = "\n".join(f"Warning: File doesn't verify against checksum: wp-admin/f{i}.php"
+                           for i in range(25))
+        self.poser_fleet(self.serveur(sites=[site("terracandido.fr")]))
+        self.poser_json(A.CHECKSUMS_PATH, {"terracandido.fr": {
+            "ts": ts_local(time.time()), "ok": False, "output_tail": sortie}})
+        e = self.par_kind("checksums_modified")[0]["extra"]
+        self.assertEqual(len(e["files"]), 20)
+        self.assertEqual(e["files"][0], "wp-admin/f0.php")
+
+    def test_admin_inconnu_porte_le_compte(self):
+        self.poser_fleet(self.serveur(sites=[site("la-kage.fr", admins=[
+            {"login": "adminlin", "email": "x@y.fr", "registered": "2026-08-11 04:12:00"}])]))
+        self.poser_json(os.path.join(A.DATA, "admins_baseline.json"),
+                        {"la-kage.fr": {"logins": ["tommy"]}})
+        e = self.par_kind("admin_unknown")[0]["extra"]
+        self.assertEqual(e, {"login": "adminlin", "email": "x@y.fr",
+                             "registered": "2026-08-11 04:12:00"})
+
+    def test_down_porte_le_message_du_moniteur(self):
+        self.poser_fleet(self.serveur(sites=[site("elwave.fr")]))
+        self.battements = {"elwave.fr": {"status": 0, "msg": "timeout of 48000ms exceeded",
+                                         "time": ts_utc(time.time() - HEURE)}}
+        e = self.par_kind("down")[0]["extra"]
+        self.assertEqual(e["msg"], "timeout of 48000ms exceeded")
+        self.assertTrue(e["since"])
+
+    def test_serveur_injoignable_porte_l_erreur_ssh(self):
+        essai = ts_local(time.time() - 3 * HEURE)
+        self.poser_fleet(self.serveur("legacy", [site("v.fr")], stale=True,
+                                      error="ssh: connect timeout", last_attempt=essai))
+        self.assertEqual(self.par_kind("server_stale")[0]["extra"],
+                         {"error": "ssh: connect timeout", "last_attempt": essai})
+
+    def test_sauvegarde_en_retard_porte_age_et_destination(self):
+        self.poser_fleet(self.serveur(sites=[site("sumotori.fr", updraft={
+            "service": "sftp", "last_backup_ts": time.time() - 70 * HEURE})]))
+        e = self.par_kind("backup_late")[0]["extra"]
+        self.assertEqual(e["service"], "sftp")
+        self.assertAlmostEqual(e["age_h"], 70, delta=0.2)
+        self.assertTrue(e["last_backup"])
+
+    def test_sauvegarde_jamais_faite_laisse_l_age_a_null(self):
+        self.poser_fleet(self.serveur(sites=[site("sumotori.fr",
+                                                  updraft={"service": "sftp"})]))
+        e = self.par_kind("backup_late")[0]["extra"]
+        self.assertIsNone(e["age_h"])
+        self.assertEqual(e["last_backup"], "")
+
+    def test_certificat_porte_les_jours_et_la_date(self):
+        self.poser_fleet(self.serveur(sites=[site("elwave.fr")]))
+        self.certs = {"certs": [{"monitor": "elwave.fr", "days": 6,
+                                 "valid_to": "2026-09-09T00:00:00Z"}]}
+        self.assertEqual(self.par_kind("cert_expiring")[0]["extra"],
+                         {"days_left": 6, "expires": "2026-09-09T00:00:00Z"})
+
+    def test_php_eol_porte_tous_les_sites_pas_seulement_les_douze_du_detail(self):
+        self.poser_fleet(self.serveur("mutu", [site(f"s{i:02d}.fr", php_version="7.4.33")
+                                               for i in range(15)]))
+        e = self.par_kind("php_eol")[0]["extra"]
+        self.assertEqual(e["version"], "7.4")
+        self.assertEqual(len(e["sites"]), 15)
+
+
+# --------------------------------------------------------------------------- #
 #  tri, dédoublonnage, robustesse des sources                                   #
 # --------------------------------------------------------------------------- #
 class TestAgregation(IncidentsBase):
@@ -719,8 +846,11 @@ class TestRoutes(IncidentsBase):
         self.assertEqual(sorted(corps["counts"]), ["critical", "warning"])
         self.assertEqual(len(corps["incidents"]), 1)
         self.assertEqual(sorted(corps["incidents"][0]),
-                         ["action", "age_h", "detail", "id", "kind", "link",
+                         ["action", "age_h", "detail", "extra", "id", "kind", "link",
                           "server", "severity", "since", "site", "title"])
+        # `extra` est un dictionnaire libre, dont les clés dépendent du kind :
+        # ici un `down`, donc le message du moniteur.
+        self.assertEqual(corps["incidents"][0]["extra"]["msg"], "502")
 
     def test_parc_vide_repond_une_liste_vide(self):
         st, corps = self.get("/api/incidents", self.cookie)
