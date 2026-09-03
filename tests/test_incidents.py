@@ -58,7 +58,8 @@ class IncidentsBase(unittest.TestCase):
         os.makedirs(self.data)
         self._sauv = {k: getattr(A, k) for k in
                       ("BASE", "DATA", "FLEET_PATH", "PHPERR_PATH", "VULNS_FOUND_PATH",
-                       "CHECKSUMS_PATH", "SETTINGS_PATH", "SESSION_SECRET_PATH", "LOG")}
+                       "CHECKSUMS_PATH", "SETTINGS_PATH", "SESSION_SECRET_PATH", "LOG",
+                       "ACKS_PATH")}
         A.BASE = self.root
         A.DATA = self.data
         A.FLEET_PATH = os.path.join(self.data, "fleet.json")
@@ -68,6 +69,7 @@ class IncidentsBase(unittest.TestCase):
         A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
         A.SESSION_SECRET_PATH = os.path.join(self.data, ".session_secret")
         A.LOG = os.path.join(self.data, "actions.log")
+        A.ACKS_PATH = os.path.join(self.data, "incident_acks.json")
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         self.addCleanup(self._restaurer)
@@ -97,8 +99,12 @@ class IncidentsBase(unittest.TestCase):
     def _kuma_sql(self, sql):
         """Rend les battements posés par le test, au format tabulé de kuma_sql."""
         self.sql.append(sql)
+        # 5e colonne = `active` du moniteur (0 = en pause), comme la requête
+        # réelle : c'est elle qui distingue « injoignable » de « surveillance
+        # coupée exprès ».
         lignes = ["\t".join((nom, str(hb.get("status", 1)), hb.get("time", ""),
-                             hb.get("msg", ""))) for nom, hb in self.battements.items()]
+                             hb.get("msg", ""), "0" if hb.get("active") is False else "1"))
+                  for nom, hb in self.battements.items()]
         return 0, "\n".join(lignes)
 
     # ---- fixtures -------------------------------------------------------- #
@@ -127,6 +133,31 @@ class IncidentsBase(unittest.TestCase):
 
     def par_kind(self, kind):
         return [i for i in self.snapshot()[0]["incidents"] if i["kind"] == kind]
+
+    def bucket(self, kind):
+        """Le `bucket` du premier incident de ce type (échoue s'il n'y en a pas)."""
+        lot = self.par_kind(kind)
+        self.assertTrue(lot, f"aucun incident « {kind} » dans les fixtures")
+        return lot[0]["bucket"]
+
+    # ---- acquittements ---------------------------------------------------- #
+    def acquitter(self, inc_id, mode="ignore", jours=None, raison="", empreinte=None,
+                  vu=None):
+        """Écrit une entrée d'acquittement, empreinte calculée si non fournie."""
+        if empreinte is None:
+            p = A.incidents_snapshot()[0]
+            inc = next((i for i in p["incidents"] + p["acked"] if i["id"] == inc_id), None)
+            empreinte = A.incident_fingerprint(inc) if inc else ""
+        e = A.incident_ack_write(
+            inc_id, mode, (time.time() + jours * 86400) if jours else None,
+            raison, "tommy", empreinte)
+        if vu is not None:                # « vu à » forcé, pour éprouver la purge
+            def _muter(cur):
+                cur[inc_id]["last_seen"] = vu
+                return cur
+            A.update_json(A.ACKS_PATH, _muter, {})
+        self.vider_cache()
+        return e
 
 
 # --------------------------------------------------------------------------- #
@@ -643,9 +674,17 @@ class TestAgregation(IncidentsBase):
     def test_compteurs_coherents_avec_la_liste(self):
         self.parc_complet()
         payload = self.snapshot()[0]
-        self.assertEqual(payload["counts"], {"critical": 2, "warning": 2})
+        # 2 critiques (down) + 2 avertissements (serveur stale, sauvegarde) ;
+        # le serveur stale est un chantier, il compte dans `plan` et PAS dans
+        # la pastille.
+        self.assertEqual(payload["counts"], {"critical": 2, "warning": 2,
+                                             "now_critical": 2, "now_warning": 1,
+                                             "plan": 1, "acked": 0})
         self.assertEqual(len(payload["incidents"]),
                          payload["counts"]["critical"] + payload["counts"]["warning"])
+        self.assertEqual(len(payload["incidents"]),
+                         payload["counts"]["now_critical"] + payload["counts"]["now_warning"]
+                         + payload["counts"]["plan"])
         self.assertIsNotNone(payload["generated_at"])
 
     def test_dedoublonnage_par_identifiant(self):
@@ -694,7 +733,9 @@ class TestAgregation(IncidentsBase):
         self.certs = {"certs": [], "error": "docker exec: no such container"}
         payload, _ = A.incidents_snapshot()
         self.assertEqual([e["source"] for e in payload["errors"]], ["certs"])
-        self.assertEqual(payload["counts"], {"critical": 2, "warning": 2})
+        self.assertEqual(payload["counts"], {"critical": 2, "warning": 2,
+                                             "now_critical": 2, "now_warning": 1,
+                                             "plan": 1, "acked": 0})
 
     def test_fleet_illisible_ne_leve_pas(self):
         with open(A.FLEET_PATH, "w") as fh:
@@ -732,7 +773,9 @@ class TestCompteurs(IncidentsBase):
     def test_compteurs_derives_du_meme_agregat(self):
         self.poser()
         compteurs = A.sidebar_counts()
-        self.assertEqual(compteurs["incidents"], {"critical": 2, "warning": 0})
+        self.assertEqual(compteurs["incidents"], {"critical": 2, "warning": 0,
+                                                  "now_critical": 2, "now_warning": 0,
+                                                  "plan": 0, "acked": 0})
         self.assertEqual(compteurs["securite"], {"vulns_fixable": 2, "admins_unknown": 1})
         self.assertEqual(compteurs["parc"], {"updates_sites": 2})
 
@@ -782,6 +825,19 @@ class TestReglages(IncidentsBase):
         self.assertEqual(rules["cert_warn_days"], 30)
         self.assertIs(rules["vuln_high_is_incident"], True)
 
+    def test_plan_kinds_par_defaut_et_ecriture_partielle(self):
+        self.assertEqual(A.INCIDENT_RULES_DEFAULTS["plan_kinds"],
+                         ["php_eol", "server_stale"])
+        A.settings_write({"incident_rules": {"backup_max_age_h": 24}})
+        self.assertEqual(A.incident_rules()["plan_kinds"], ["php_eol", "server_stale"])
+        A.settings_write({"incident_rules": {"plan_kinds": ["backup_late"]}})
+        self.assertEqual(A.incident_rules()["plan_kinds"], ["backup_late"])
+        self.assertEqual(A.incident_rules()["backup_max_age_h"], 48)
+
+    def test_plan_kinds_ramene_a_des_chaines(self):
+        A.settings_write({"incident_rules": {"plan_kinds": ["php_eol", 42]}})
+        self.assertEqual(A.incident_rules()["plan_kinds"], ["php_eol", "42"])
+
     def test_liste_de_versions_ramenee_a_des_chaines(self):
         A.settings_write({"incident_rules": {"php_eol_versions": [7.4, "8.0"]}})
         self.assertEqual(A.incident_rules()["php_eol_versions"], ["7.4", "8.0"])
@@ -802,9 +858,357 @@ class TestReglages(IncidentsBase):
 
 
 # --------------------------------------------------------------------------- #
+#  bucket : « à traiter » (now) contre « à planifier » (plan)                   #
+# --------------------------------------------------------------------------- #
+class TestBucket(IncidentsBase):
+    """Le classement d'une ligne — c'est lui qui décide de la pastille rouge.
+
+    Trois types basculent selon le CONTEXTE et non selon leur nom : un `down`
+    de moniteur en pause, une sauvegarde sans rien à cliquer, un certificat
+    encore loin de son échéance.
+    """
+
+    def test_down_actif_est_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time())}}
+        self.assertEqual(self.bucket("down"), "now")
+
+    def test_down_de_moniteur_en_pause_est_a_planifier(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time()), "active": False}}
+        inc = self.par_kind("down")[0]
+        self.assertEqual((inc["bucket"], inc["severity"]), ("plan", "warning"))
+
+    def test_php_fatal_est_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.PHPERR_PATH, {"sites": [{"domain": "a.fr", "groups": [
+            {"severity": "Fatal error", "message": "boom", "short": "a.php", "line": 3,
+             "count": 1, "first": ts_local(time.time()), "last": ts_local(time.time())}]}]})
+        self.assertEqual(self.bucket("php_fatal"), "now")
+
+    def test_vuln_critique_corrigeable_est_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "a.fr", "findings": [
+            {"kind": "plugin", "component": "x", "version": "1.0", "severity": "critical",
+             "update_to": "1.1", "cve": "CVE-1", "title": "XSS"}]}]})
+        self.assertEqual(self.bucket("vuln_critical_fixable"), "now")
+
+    def test_checksums_et_admin_inconnu_sont_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr", admins=[{"login": "pirate"}])]))
+        self.poser_json(os.path.join(self.data, "admins_baseline.json"),
+                        {"a.fr": {"logins": ["admin"]}})
+        self.poser_json(A.CHECKSUMS_PATH, {"a.fr": {
+            "ts": ts_local(time.time()), "ok": False,
+            "output_tail": "File doesn't verify against checksum: wp-includes/load.php"}})
+        self.assertEqual(self.bucket("checksums_modified"), "now")
+        self.assertEqual(self.bucket("admin_unknown"), "now")
+
+    def test_sauvegarde_datee_est_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site(
+            "a.fr", updraft={"last_backup_ts": time.time() - 100 * HEURE})]))
+        self.assertEqual(self.bucket("backup_late"), "now")
+
+    def test_sauvegarde_jamais_faite_est_a_planifier(self):
+        """Le site abandonné en retard depuis 285 jours : rien à cliquer."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr", updraft={"service": "sftp"})]))
+        self.assertEqual(self.bucket("backup_late"), "plan")
+
+    def test_sauvegarde_d_un_site_rest_est_a_planifier(self):
+        # Sans SSH, le bouton « Sauvegarder » répondrait « action indisponible ».
+        self.poser_fleet(self.serveur(sites=[site(
+            "a.fr", via="rest", updraft={"last_backup_ts": time.time() - 100 * HEURE})]))
+        self.assertEqual(self.bucket("backup_late"), "plan")
+
+    def test_certificat_sous_sept_jours_est_a_traiter(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.certs = {"certs": [{"monitor": "a.fr", "days_left": 3, "valid_to": "2026-09-06"}]}
+        self.assertEqual(self.bucket("cert_expiring"), "now")
+
+    def test_certificat_au_dela_de_sept_jours_est_a_planifier(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.certs = {"certs": [{"monitor": "a.fr", "days_left": 15, "valid_to": "2026-09-18"}]}
+        self.assertEqual(self.bucket("cert_expiring"), "plan")
+
+    def test_php_eol_et_serveur_injoignable_sont_a_planifier(self):
+        self.poser_fleet(
+            self.serveur("vps1", [site("a.fr", php_version="7.4.33")]),
+            self.serveur("legacy", [site("b.fr")], stale=True, error="injoignable",
+                         last_attempt=ts_local(time.time() - 3 * HEURE)))
+        self.assertEqual(self.bucket("php_eol"), "plan")
+        self.assertEqual(self.bucket("server_stale"), "plan")
+
+    def test_plan_kinds_deplace_un_type(self):
+        self.poser_fleet(self.serveur(sites=[site(
+            "a.fr", updraft={"last_backup_ts": time.time() - 100 * HEURE})]))
+        self.assertEqual(self.bucket("backup_late"), "now")
+        self.reglages(plan_kinds=["backup_late"])
+        self.assertEqual(self.bucket("backup_late"), "plan")
+
+    def test_plan_kinds_vide_ramene_les_chantiers_dans_la_file(self):
+        self.poser_fleet(self.serveur("vps1", [site("a.fr", php_version="7.4.33")]))
+        self.assertEqual(self.bucket("php_eol"), "plan")
+        self.reglages(plan_kinds=[])
+        self.assertEqual(self.bucket("php_eol"), "now")
+
+    def test_plan_kinds_ne_touche_pas_au_contexte(self):
+        """Retirer `server_stale` de la liste ne réhabilite pas un moniteur en pause."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time()), "active": False}}
+        self.reglages(plan_kinds=[])
+        self.assertEqual(self.bucket("down"), "plan")
+
+    def test_la_pastille_ne_compte_que_les_now(self):
+        self.poser_fleet(
+            self.serveur("vps1", [site("a.fr", php_version="7.4.33"),
+                                  site("b.fr", updraft={"service": "sftp"})]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time())}}
+        c = self.snapshot()[0]["counts"]
+        # 1 down (now, critique) · 1 php_eol + 1 backup sans sauvegarde (plan)
+        self.assertEqual((c["now_critical"], c["now_warning"], c["plan"]), (1, 0, 2))
+        self.assertEqual(c["now_critical"] + c["now_warning"], 1)
+        self.assertEqual(A.sidebar_counts()["incidents"], c)
+
+
+# --------------------------------------------------------------------------- #
+#  empreinte d'un incident                                                     #
+# --------------------------------------------------------------------------- #
+class TestEmpreinte(IncidentsBase):
+
+    def php_fatal(self, message="boom", ligne=3, count=1):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.PHPERR_PATH, {"sites": [{"domain": "a.fr", "groups": [
+            {"severity": "Fatal error", "message": message, "short": "a.php",
+             "line": ligne, "count": count, "first": ts_local(time.time()),
+             "last": ts_local(time.time())}]}]})
+        return A.incident_fingerprint(self.par_kind("php_fatal")[0])
+
+    def test_php_fatal_ignore_le_compteur(self):
+        self.assertEqual(self.php_fatal(count=1), self.php_fatal(count=48))
+
+    def test_php_fatal_suit_le_fichier_et_la_ligne(self):
+        self.assertNotEqual(self.php_fatal(ligne=3), self.php_fatal(ligne=91))
+
+    def test_php_fatal_normalise_les_nombres_du_message(self):
+        # « id 12 » et « id 4211 » : le même défaut, deux occurrences.
+        self.assertEqual(self.php_fatal(message="undefined index id 12"),
+                         self.php_fatal(message="undefined index id 4211"))
+        self.assertNotEqual(self.php_fatal(message="undefined index"),
+                            self.php_fatal(message="undefined method"))
+
+    def vuln(self, version="1.0"):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "a.fr", "findings": [
+            {"kind": "plugin", "component": "x", "version": version, "severity": "critical",
+             "update_to": "9.9", "cve": "CVE-1", "title": "XSS"}]}]})
+        return A.incident_fingerprint(self.par_kind("vuln_critical_fixable")[0])
+
+    def test_vuln_suit_la_version_installee(self):
+        self.assertEqual(self.vuln("1.0"), self.vuln("1.0"))
+        self.assertNotEqual(self.vuln("1.0"), self.vuln("1.1"))
+
+    def backup(self, ts):
+        self.poser_fleet(self.serveur(sites=[site("a.fr", updraft={"last_backup_ts": ts}
+                                                  if ts else {"service": "sftp"})]))
+        return A.incident_fingerprint(self.par_kind("backup_late")[0])
+
+    def test_backup_suit_la_derniere_sauvegarde(self):
+        vieux = time.time() - 100 * HEURE
+        self.assertEqual(self.backup(vieux), self.backup(vieux))
+        self.assertNotEqual(self.backup(vieux), self.backup(time.time() - 60 * HEURE))
+        # aucune sauvegarde connue : l'empreinte est stable, elle aussi
+        self.assertEqual(self.backup(None), self.backup(None))
+
+    def cert(self, valid_to):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.certs = {"certs": [{"monitor": "a.fr", "days_left": 3, "valid_to": valid_to}]}
+        return A.incident_fingerprint(self.par_kind("cert_expiring")[0])
+
+    def test_cert_suit_le_certificat_courant(self):
+        self.assertEqual(self.cert("2026-09-06"), self.cert("2026-09-06"))
+        self.assertNotEqual(self.cert("2026-09-06"), self.cert("2027-01-01"))
+
+    def down(self, msg):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time()), "msg": msg}}
+        return A.incident_fingerprint(self.par_kind("down")[0])
+
+    def test_down_n_a_pas_d_empreinte_variable(self):
+        """C'est l'état lui-même : le message du moniteur n'y entre pas."""
+        self.assertEqual(self.down("timeout"), self.down("503 Service Unavailable"))
+
+    def test_type_inconnu_retombe_sur_le_titre(self):
+        a = A.incident_fingerprint({"kind": "inedit", "title": "T", "detail": "D"})
+        self.assertEqual(a, A.incident_fingerprint({"kind": "inedit", "title": "T", "detail": "D"}))
+        self.assertNotEqual(a, A.incident_fingerprint({"kind": "inedit", "title": "T",
+                                                       "detail": "autre"}))
+
+    def test_valeur_courte_et_stable(self):
+        e = A.incident_fingerprint({"kind": "down"})
+        self.assertRegex(e, r"^[0-9a-f]{16}$")
+        # Ce qui n'est PAS un incident n'a pas d'empreinte : `incident_ack_state`
+        # comparerait alors deux chaînes vides et masquerait n'importe quoi.
+        self.assertEqual(A.incident_fingerprint(None), "")
+        self.assertEqual(A.incident_fingerprint("down:a.fr:"), "")
+
+
+# --------------------------------------------------------------------------- #
+#  acquittement : veille, écart, retour de l'incident                          #
+# --------------------------------------------------------------------------- #
+class TestAcquittement(IncidentsBase):
+
+    def poser_down(self, msg="503"):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time() - HEURE),
+                                    "msg": msg}}
+        return "down:a.fr:"
+
+    def poser_vuln(self, version="1.0"):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "a.fr", "findings": [
+            {"kind": "plugin", "component": "x", "version": version, "severity": "critical",
+             "update_to": "9.9", "cve": "CVE-1", "title": "XSS"}]}]})
+        return "vuln_critical_fixable:a.fr:x"
+
+    # ---- veille ---------------------------------------------------------- #
+    def test_veille_active_exclut_l_incident(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "snooze", jours=7, raison="client prévenu")
+        p = self.snapshot()[0]
+        self.assertEqual(p["incidents"], [])
+        self.assertEqual(p["counts"]["acked"], 1)
+        self.assertEqual(p["counts"]["now_critical"], 0)
+        self.assertEqual([i["id"] for i in p["acked"]], [cid])
+        vu = p["acked"][0]["acked"]
+        self.assertEqual((vu["mode"], vu["by"], vu["reason"]),
+                         ("snooze", "tommy", "client prévenu"))
+        self.assertFalse(vu["stale_fingerprint"])
+        self.assertGreater(vu["until"], time.time())
+
+    def test_veille_expiree_fait_reapparaitre_l_incident(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "snooze", jours=7)
+        # l'échéance est repoussée dans le passé
+        A.update_json(A.ACKS_PATH,
+                      lambda cur: {cid: dict(cur[cid], until=time.time() - 60)}, {})
+        self.vider_cache()
+        p = self.snapshot()[0]
+        self.assertEqual([i["id"] for i in p["incidents"]], [cid])
+        # une veille échue ne dit plus rien : la ligne redevient ordinaire
+        self.assertIsNone(p["incidents"][0]["acked"])
+        self.assertEqual(p["counts"]["acked"], 0)
+
+    def test_veille_sans_echeance_ne_masque_rien(self):
+        """Entrée abîmée (`until` absent) : on montre plutôt que de masquer."""
+        cid = self.poser_down()
+        self.acquitter(cid, "snooze", jours=None)
+        self.assertEqual([i["id"] for i in self.snapshot()[0]["incidents"]], [cid])
+
+    # ---- écarté jusqu'à changement --------------------------------------- #
+    def test_ecarte_empreinte_inchangee_exclut_l_incident(self):
+        cid = self.poser_vuln("1.0")
+        self.acquitter(cid, "ignore", raison="extension gelée")
+        p = self.snapshot()[0]
+        self.assertEqual(p["incidents"], [])
+        self.assertEqual(p["counts"]["acked"], 1)
+        self.assertFalse(p["acked"][0]["acked"]["stale_fingerprint"])
+
+    def test_ecarte_empreinte_changee_fait_revenir_l_incident(self):
+        cid = self.poser_vuln("1.0")
+        self.acquitter(cid, "ignore", raison="extension gelée")
+        self.poser_vuln("1.1")            # nouvelle version, toujours vulnérable
+        self.vider_cache()
+        p = self.snapshot()[0]
+        self.assertEqual([i["id"] for i in p["incidents"]], [cid])
+        vu = p["incidents"][0]["acked"]
+        self.assertTrue(vu["stale_fingerprint"])
+        self.assertEqual(vu["reason"], "extension gelée")
+        self.assertEqual(p["counts"]["acked"], 0)
+        self.assertEqual(p["counts"]["now_critical"], 1)
+
+    def test_sauvegarde_faite_puis_re_retardee_revient(self):
+        self.poser_fleet(self.serveur(sites=[site(
+            "a.fr", updraft={"last_backup_ts": time.time() - 300 * HEURE})]))
+        self.acquitter("backup_late:a.fr:", "ignore", raison="site abandonné")
+        self.assertEqual(self.snapshot()[0]["incidents"], [])
+        # une sauvegarde a fini par passer… puis le retard est revenu
+        self.poser_fleet(self.serveur(sites=[site(
+            "a.fr", updraft={"last_backup_ts": time.time() - 90 * HEURE})]))
+        self.vider_cache()
+        p = self.snapshot()[0]
+        self.assertEqual(len(p["incidents"]), 1)
+        self.assertTrue(p["incidents"][0]["acked"]["stale_fingerprint"])
+
+    def test_acquittement_d_un_id_disparu_n_invente_pas_d_incident(self):
+        self.poser_down()
+        self.acquitter("down:fantome.fr:", "ignore")
+        self.assertEqual(len(self.snapshot()[0]["incidents"]), 1)
+
+    def test_mode_inconnu_ignore(self):
+        cid = self.poser_down()
+        A.incident_ack_write(cid, "n'importe quoi", None, "", "tommy", "")
+        self.vider_cache()
+        self.assertEqual([i["id"] for i in self.snapshot()[0]["incidents"]], [cid])
+
+    def test_fichier_illisible_ne_masque_rien(self):
+        cid = self.poser_down()
+        with open(A.ACKS_PATH, "w") as fh:
+            fh.write("{ pas du json")
+        self.assertEqual([i["id"] for i in self.snapshot()[0]["incidents"]], [cid])
+
+    def test_retrait_de_l_acquittement(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "ignore")
+        self.assertEqual(self.snapshot()[0]["incidents"], [])
+        self.assertTrue(A.incident_ack_clear(cid))
+        self.vider_cache()
+        self.assertEqual([i["id"] for i in self.snapshot()[0]["incidents"]], [cid])
+        self.assertFalse(A.incident_ack_clear(cid))   # deux fois : pas une erreur
+
+    def test_le_fichier_est_en_0600(self):
+        self.acquitter("down:a.fr:", "ignore", empreinte="x")
+        self.assertEqual(os.stat(A.ACKS_PATH).st_mode & 0o777, 0o600)
+
+    # ---- « vu à » et purge ----------------------------------------------- #
+    def test_vu_a_est_rafraichi_quand_l_incident_existe_encore(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "ignore", vu=time.time() - 10 * 86400)
+        self.snapshot()
+        vu = A.incident_acks()[cid]["last_seen"]
+        self.assertGreater(vu, time.time() - 60)
+
+    def test_vu_a_n_est_pas_reecrit_a_chaque_appel(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "ignore")
+        avant = A.incident_acks()[cid]["last_seen"]
+        self.vider_cache()
+        self.snapshot()
+        self.assertEqual(A.incident_acks()[cid]["last_seen"], avant)
+
+    def test_purge_des_entrees_sans_incident_depuis_90_jours(self):
+        vieux, recent = time.time() - 100 * 86400, time.time() - 80 * 86400
+        self.acquitter("down:parti.fr:", "ignore", empreinte="x", vu=vieux)
+        self.acquitter("down:present.fr:", "ignore", empreinte="x", vu=recent)
+        self.assertEqual(A.incident_acks_purge(), 1)
+        self.assertEqual(sorted(A.incident_acks()), ["down:present.fr:"])
+
+    def test_purge_conserve_un_acquittement_encore_vu(self):
+        cid = self.poser_down()
+        self.acquitter(cid, "ignore", vu=time.time() - 100 * 86400)
+        self.snapshot()                   # l'incident existe : « vu à » repart à zéro
+        self.assertEqual(A.incident_acks_purge(), 0)
+        self.assertIn(cid, A.incident_acks())
+
+    def test_purge_retire_les_entrees_abimees(self):
+        A.save_json(A.ACKS_PATH, {"x": "pas un dictionnaire"})
+        self.assertEqual(A.incident_acks_purge(), 1)
+        self.assertEqual(A.incident_acks(), {})
+
+
+# --------------------------------------------------------------------------- #
 #  routes HTTP                                                                 #
 # --------------------------------------------------------------------------- #
-class TestRoutes(IncidentsBase):
+class RoutesBase(IncidentsBase):
+    """Un vrai serveur sur 127.0.0.1, une session valide, deux raccourcis."""
 
     def setUp(self):
         super().setUp()
@@ -825,6 +1229,9 @@ class TestRoutes(IncidentsBase):
         finally:
             c.close()
 
+
+class TestRoutes(RoutesBase):
+
     def test_incidents_sans_cookie_401(self):
         st, corps = self.get("/api/incidents")
         self.assertEqual(st, 401)
@@ -843,11 +1250,12 @@ class TestRoutes(IncidentsBase):
         st, corps = self.get("/api/incidents", self.cookie)
         self.assertEqual(st, 200)
         self.assertEqual(sorted(corps), ["counts", "errors", "generated_at", "incidents"])
-        self.assertEqual(sorted(corps["counts"]), ["critical", "warning"])
+        self.assertEqual(sorted(corps["counts"]),
+                         ["acked", "critical", "now_critical", "now_warning", "plan", "warning"])
         self.assertEqual(len(corps["incidents"]), 1)
         self.assertEqual(sorted(corps["incidents"][0]),
-                         ["action", "age_h", "detail", "extra", "id", "kind", "link",
-                          "server", "severity", "since", "site", "title"])
+                         ["acked", "action", "age_h", "bucket", "detail", "extra", "id",
+                          "kind", "link", "server", "severity", "since", "site", "title"])
         # `extra` est un dictionnaire libre, dont les clés dépendent du kind :
         # ici un `down`, donc le message du moniteur.
         self.assertEqual(corps["incidents"][0]["extra"]["msg"], "502")
@@ -856,7 +1264,8 @@ class TestRoutes(IncidentsBase):
         st, corps = self.get("/api/incidents", self.cookie)
         self.assertEqual(st, 200)
         self.assertEqual(corps["incidents"], [])
-        self.assertEqual(corps["counts"], {"critical": 0, "warning": 0})
+        self.assertEqual(corps["counts"], {"critical": 0, "warning": 0, "now_critical": 0,
+                                           "now_warning": 0, "plan": 0, "acked": 0})
 
     def test_incidents_recalcule_a_chaque_appel(self):
         self.poser_fleet(self.serveur(sites=[site("a.fr")]))
@@ -883,6 +1292,175 @@ class TestRoutes(IncidentsBase):
         t0 = time.time()
         self.assertEqual(self.get("/api/incidents", self.cookie)[0], 200)
         self.assertLess(time.time() - t0, 0.5)
+
+
+# --------------------------------------------------------------------------- #
+#  routes d'acquittement                                                       #
+# --------------------------------------------------------------------------- #
+class TestRoutesAck(RoutesBase):
+    """POST /api/incidents/ack et /unack : garde de session, validation, journal."""
+
+    def post(self, chemin, corps, cookie=None, dash=True):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            entetes = {"Content-Type": "application/json"}
+            if dash:
+                entetes["X-Dash"] = "1"
+            if cookie:
+                entetes["Cookie"] = cookie
+            c.request("POST", chemin, body=json.dumps(corps).encode(), headers=entetes)
+            r = c.getresponse()
+            brut = r.read()
+            return r.status, (json.loads(brut) if brut else None)
+        finally:
+            c.close()
+
+    def poser_down(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time()), "msg": "503"}}
+        return "down:a.fr:"
+
+    def journal(self):
+        with open(A.LOG) as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    # ---- gardes ---------------------------------------------------------- #
+    def test_ack_sans_session_401(self):
+        st, corps = self.post("/api/incidents/ack", {"id": "x", "mode": "ignore"})
+        self.assertEqual(st, 401)
+        self.assertEqual(corps, {"error": "non authentifié"})
+
+    def test_ack_sans_entete_dash_403(self):
+        st, _ = self.post("/api/incidents/ack", {"id": "x", "mode": "ignore"},
+                          cookie=self.cookie, dash=False)
+        self.assertEqual(st, 403)
+
+    def test_unack_sans_session_401(self):
+        self.assertEqual(self.post("/api/incidents/unack", {"id": "x"})[0], 401)
+
+    # ---- validation ------------------------------------------------------ #
+    def test_mode_invalide_refuse(self):
+        cid = self.poser_down()
+        st, corps = self.post("/api/incidents/ack", {"id": cid, "mode": "oubli"},
+                              cookie=self.cookie)
+        self.assertEqual(st, 400)
+        self.assertIn("mode", corps["error"])
+
+    def test_identifiant_vide_refuse(self):
+        self.assertEqual(self.post("/api/incidents/ack", {"id": "", "mode": "ignore"},
+                                   cookie=self.cookie)[0], 400)
+
+    def test_jours_hors_bornes_refuses(self):
+        cid = self.poser_down()
+        for jours in (0, 366, -3, "sept"):
+            st, corps = self.post("/api/incidents/ack",
+                                  {"id": cid, "mode": "snooze", "days": jours},
+                                  cookie=self.cookie)
+            self.assertEqual(st, 400, jours)
+            self.assertIn("days", corps["error"])
+
+    def test_snooze_sans_jours_refuse(self):
+        cid = self.poser_down()
+        self.assertEqual(self.post("/api/incidents/ack", {"id": cid, "mode": "snooze"},
+                                   cookie=self.cookie)[0], 400)
+
+    def test_raison_trop_longue_refusee(self):
+        cid = self.poser_down()
+        st, corps = self.post("/api/incidents/ack",
+                              {"id": cid, "mode": "ignore", "reason": "x" * 301},
+                              cookie=self.cookie)
+        self.assertEqual(st, 400)
+        self.assertIn("300", corps["error"])
+        self.assertEqual(A.incident_acks(), {})
+
+    def test_incident_inconnu_404(self):
+        self.poser_down()
+        st, corps = self.post("/api/incidents/ack",
+                              {"id": "down:fantome.fr:", "mode": "ignore"},
+                              cookie=self.cookie)
+        self.assertEqual(st, 404)
+        self.assertIn("inconnu", corps["error"])
+        self.assertEqual(A.incident_acks(), {})
+
+    # ---- effet ----------------------------------------------------------- #
+    def test_veille_de_sept_jours_retire_la_ligne_de_la_file(self):
+        cid = self.poser_down()
+        st, corps = self.post("/api/incidents/ack",
+                              {"id": cid, "mode": "snooze", "days": 7,
+                               "reason": "  intervention   programmée "},
+                              cookie=self.cookie)
+        self.assertEqual(st, 200)
+        self.assertEqual(corps["acked"]["mode"], "snooze")
+        self.assertEqual(corps["acked"]["reason"], "intervention programmée")
+        self.assertEqual(corps["acked"]["by"], "tommy")
+        p = self.get("/api/incidents", self.cookie)[1]
+        self.assertEqual(p["incidents"], [])
+        self.assertEqual(p["counts"]["acked"], 1)
+        self.assertNotIn("acked", p)      # la liste ne sort que sur demande
+
+    def test_include_acked_rend_la_liste_des_acquittes(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore", "reason": "connu"},
+                  cookie=self.cookie)
+        p = self.get("/api/incidents?include=acked", self.cookie)[1]
+        self.assertEqual(p["incidents"], [])
+        self.assertEqual([i["id"] for i in p["acked"]], [cid])
+        self.assertEqual(p["acked"][0]["acked"]["reason"], "connu")
+
+    def test_unack_ramene_l_incident(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore"}, cookie=self.cookie)
+        self.assertEqual(self.get("/api/incidents", self.cookie)[1]["incidents"], [])
+        st, corps = self.post("/api/incidents/unack", {"id": cid}, cookie=self.cookie)
+        self.assertEqual((st, corps["removed"]), (200, True))
+        self.assertEqual(len(self.get("/api/incidents", self.cookie)[1]["incidents"]), 1)
+
+    def test_unack_deux_fois_reste_un_succes(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore"}, cookie=self.cookie)
+        self.post("/api/incidents/unack", {"id": cid}, cookie=self.cookie)
+        st, corps = self.post("/api/incidents/unack", {"id": cid}, cookie=self.cookie)
+        self.assertEqual((st, corps["removed"]), (200, False))
+
+    def test_la_pastille_suit_immediatement(self):
+        cid = self.poser_down()
+        self.assertEqual(self.get("/api/mgmt/counts", self.cookie)[1]["incidents"]["now_critical"], 1)
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore"}, cookie=self.cookie)
+        # sans purge du cache, la pastille aurait gardé 1 pendant 30 s
+        self.assertEqual(self.get("/api/mgmt/counts", self.cookie)[1]["incidents"]["now_critical"], 0)
+
+    # ---- journalisation --------------------------------------------------- #
+    def test_acquittement_journalise(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack",
+                  {"id": cid, "mode": "snooze", "days": 30, "reason": "migration prévue"},
+                  cookie=self.cookie)
+        e = self.journal()[-1]
+        self.assertEqual(e["action"], "incident_ack")
+        self.assertEqual(e["arg"], cid)
+        self.assertEqual(e["domain"], "a.fr")
+        self.assertEqual(e["server"], "vps1")
+        self.assertIn("veille 30 j", e["output_tail"])
+        self.assertIn("migration prévue", e["output_tail"])
+
+    def test_ecart_journalise_son_mode(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore"}, cookie=self.cookie)
+        self.assertIn("écarté jusqu'à changement", self.journal()[-1]["output_tail"])
+
+    def test_rappel_journalise(self):
+        cid = self.poser_down()
+        self.post("/api/incidents/ack", {"id": cid, "mode": "ignore"}, cookie=self.cookie)
+        self.post("/api/incidents/unack", {"id": cid}, cookie=self.cookie)
+        e = self.journal()[-1]
+        self.assertEqual((e["action"], e["arg"]), ("incident_unack", cid))
+        self.assertIn("réactivé", e["output_tail"])
+
+    def test_refus_ne_journalise_rien(self):
+        self.poser_down()
+        self.post("/api/incidents/ack", {"id": "down:fantome.fr:", "mode": "ignore"},
+                  cookie=self.cookie)
+        self.assertFalse(os.path.exists(A.LOG))
 
 
 if __name__ == "__main__":

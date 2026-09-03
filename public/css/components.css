@@ -295,6 +295,16 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 .modal .box.medium{max-width:620px}
 .modal .box.wide{max-width:560px}
 
+/* ---- modale « Ne plus signaler cette alerte » -----------------------------
+   Trois durées et une raison. Les boutons radio sont dans leur <label> : toute
+   la ligne est cliquable, ce qui est indispensable à la souris comme au doigt
+   (la cible d'un radio seul fait 13 px). */
+.ackopts{display:flex;flex-direction:column;gap:2px;margin-bottom:var(--s-12)}
+.ackopt{display:flex;align-items:center;gap:var(--s-8);padding:6px var(--s-8);
+  border-radius:var(--r-ctl);cursor:pointer}
+.ackopt:hover{background:var(--surface-2)}
+.ackl{display:block;margin-bottom:var(--s-4)}
+
 /* ---- barre de notifications ----------------------------------------------
    z-index 1000 : elle vit dans <body>, hors de tout contexte d'empilement
    local, donc au-dessus des menus (21), des modales (20) et de la bulle (40).
@@ -323,6 +333,9 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 .ntf-x{flex:0 0 auto;background:none;border:0;color:var(--muted);cursor:pointer;
   padding:1px 2px;display:inline-flex;line-height:1}
 .ntf-x:hover{color:var(--ink)}
+/* Action d'un toast (« Annuler ») : sous le libellé, à la place qu'occupe la
+   barre de progression d'une action en cours. */
+.ntf-a{margin-top:6px}
 #notif-clear{pointer-events:auto;align-self:flex-end}
 @media(max-width:560px){
   #notifbar{left:0;right:0;width:auto;gap:0}

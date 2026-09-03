@@ -19,10 +19,13 @@
    repliées. Plusieurs incidents peuvent rester ouverts en même temps — comparer
    deux erreurs fatales est le cas normal, pas l'exception. */
 
-import { h } from '../lib/dom.js';
+import { api } from '../lib/api.js';
+import { esc, h } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
-import { relTime, absTime, dateCourte } from '../lib/format.js';
+import { relTime, absTime, dateCourte, tsMs } from '../lib/format.js';
 import { chipEl } from '../components/chip.js';
+import { askInfo, askOpen } from '../components/confirm.js';
+import { NOTIF } from '../components/toast.js';
 
 /* `kind` → ce que la ligne dit à un humain. Un type inconnu garde sa clé :
    mieux vaut un mot technique qu'une ligne muette. */
@@ -161,6 +164,99 @@ function extraEl(extra) {
   return lignes.length ? h('div', { class: 'incp-xs' }, lignes) : null;
 }
 
+/* ---- acquitter une alerte ---------------------------------------------------
+   Une file dont RIEN ne peut disparaître n'est plus lue : le PHP en fin de
+   support, le moniteur en pause depuis dix jours et la sauvegarde d'un site
+   abandonné y restaient indéfiniment, et finissaient par masquer les quatre
+   lignes qui se règlent d'un clic.
+
+   Trois gestes, une seule modale : deux veilles datées et un « jusqu'à ce que
+   ça change » qui s'appuie sur l'empreinte calculée par le serveur — si la
+   situation bouge (autre version vulnérable, autre fichier en erreur), l'alerte
+   revient d'elle-même avec un bandeau qui le dit. */
+
+/** Une ligne « à traiter » (le reste est « à planifier »). */
+export const estNow = inc => !inc || inc.bucket !== 'plan';
+
+const ACK_CHOIX = [
+  ['7', '7 jours'],
+  ['30', '30 jours'],
+  ['ignore', 'jusqu’à ce que la situation change'],
+];
+
+/** « 3 sept. » — de quoi situer une décision, sans l'heure qui n'y apprend rien. */
+function jourCourt(v) {
+  const t = tsMs(v);
+  return t === null ? '' : new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+}
+
+/** La modale de choix → {mode, days, reason} ou null si l'on renonce. */
+function demanderAcquittement(inc) {
+  return new Promise(res => {
+    const opts = ACK_CHOIX.map(([v, lbl], i) =>
+      `<label class="ackopt"><input type="radio" name="ackmode" value="${v}"`
+      + `${i ? '' : ' checked'}> <span>${esc(lbl)}</span></label>`).join('');
+    askOpen('Ne plus signaler cette alerte',
+      esc(inc.title || kindLabel(inc.kind)),
+      `<div class="ackopts" role="radiogroup" aria-label="Ne plus signaler pendant">${opts}</div>`
+      + '<label class="small muted ackl" for="ack-reason">Raison (facultative)</label>'
+      + '<input class="inp w100" id="ack-reason" maxlength="300" '
+      + 'placeholder="ce que vous avez décidé, pour vous en souvenir">',
+      () => {
+        const coche = document.querySelector('#ask-body input[name="ackmode"]:checked');
+        const v = coche ? coche.value : 'ignore';
+        const raison = (document.getElementById('ack-reason').value || '').trim();
+        res(v === 'ignore' ? { mode: 'ignore', reason: raison }
+          : { mode: 'snooze', days: Number(v), reason: raison });
+      },
+      () => res(null));
+    document.getElementById('ask-ok').textContent = 'Confirmer';
+  });
+}
+
+/** Réactive une alerte acquittée → vrai si le serveur a bien repris la main. */
+async function reactiverIncident(id) {
+  let j = null;
+  try { j = await api('/api/incidents/unack', { id }); } catch (e) { j = null; }
+  if (!j || !j.ok) {
+    askInfo('Réactivation impossible',
+      esc((j && j.error) || "le serveur n'a pas répondu"));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Ouvre la modale, acquitte, annonce le résultat — et laisse l'écran redessiner.
+ * `recharger()` est appelé après l'acquittement ET après une annulation :
+ * l'écran seul sait ce qu'il doit relire.
+ */
+async function acquitterIncident(inc, recharger) {
+  const choix = await demanderAcquittement(inc);
+  if (!choix) return false;
+  const corps = { id: inc.id, mode: choix.mode, reason: choix.reason };
+  if (choix.days) corps.days = choix.days;
+  let j = null;
+  try { j = await api('/api/incidents/ack', corps); } catch (e) { j = null; }
+  if (!j || !j.ok) {
+    askInfo('Acquittement impossible',
+      esc((j && j.error) || "le serveur n'a pas répondu"));
+    return false;
+  }
+  if (recharger) recharger();
+  NOTIF.toast({
+    label: choix.mode === 'snooze'
+      ? 'Alerte mise en veille (' + choix.days + ' jours)'
+      : 'Alerte écartée jusqu’à ce que la situation change',
+    detail: inc.title || '',
+    action: 'Annuler',
+    onAction: async () => {
+      if (await reactiverIncident(inc.id) && recharger) recharger();
+    },
+  });
+  return true;
+}
+
 /* ---- le panneau ------------------------------------------------------------ */
 function locEl(fichier, ligne) {
   const s = String(fichier || '');
@@ -217,7 +313,7 @@ function copieDeSecours(texte) {
  * Le contenu déplié, à partir d'un descripteur normalisé :
  *   { kind, message, file, line, count, first, last, trace, tronquee, extra }
  */
-function panneau(d) {
+function panneau(d, boutons) {
   const trace = Array.isArray(d.trace) ? d.trace.filter(Boolean) : [];
   const fen = fenetreTexte(d.count, d.first, d.last);
   const aide = queFaire(d.kind, d);
@@ -246,7 +342,46 @@ function panneau(d) {
     aide ? h('div', { class: 'incp-do' },
       h('b', { class: 'small', text: 'Que faire' }),
       h('p', { class: 'small', text: aide })) : null,
-    h('div', { class: 'incp-b' }, bt, dire));
+    h('div', { class: 'incp-b' }, bt, boutons || null, dire));
+}
+
+/* « Ne plus signaler… » et « Réactiver » : le geste qui vide la file. Ils vivent
+   dans le PLI et non sur la ligne — écarter une alerte demande de l'avoir lue,
+   et la ligne repliée porte déjà l'action qui la corrige. */
+function boutonsAcquittement(inc, opts) {
+  if (!opts.onAck) return null;
+  if (opts.acquitte) {
+    const b = h('button', { type: 'button', class: 'btn sm', text: 'Réactiver' });
+    b.onclick = async e => {
+      e.stopPropagation();
+      b.disabled = true;
+      const ok = await reactiverIncident(inc.id);
+      b.disabled = false;
+      if (ok) opts.onAck();
+    };
+    return b;
+  }
+  const b = h('button', { type: 'button', class: 'btn sm', text: 'Ne plus signaler…' });
+  b.onclick = e => { e.stopPropagation(); acquitterIncident(inc, opts.onAck); };
+  return b;
+}
+
+/* Bandeau discret d'une alerte REVENUE : elle avait été écartée, mais
+   l'empreinte de la situation a changé depuis. Sans lui, on ne comprend pas
+   pourquoi une ligne qu'on croyait rangée reparaît. */
+function bandeauAck(inc) {
+  const a = inc.acked;
+  if (!a) return null;
+  if (a.stale_fingerprint) {
+    return h('div', { class: 'muted small inc-ack' },
+      'écartée le ' + jourCourt(a.ts) + ' — la situation a changé depuis'
+      + (a.reason ? ' · ' + a.reason : ''));
+  }
+  const quand = a.mode === 'snooze' && a.until
+    ? 'en veille jusqu’au ' + jourCourt(a.until)
+    : 'écartée le ' + jourCourt(a.ts);
+  return h('div', { class: 'muted small inc-ack' },
+    quand + (a.reason ? ' · ' + a.reason : '') + (a.by ? ' · ' + a.by : ''));
 }
 
 /* ---- l'ossature repliable -------------------------------------------------- */
@@ -288,7 +423,9 @@ function anciennete(inc) {
  *   chipKind pastille du type d'incident (écran Incidents seulement)
  *   actions  bloc `.inc-b` construit par l'écran — lui seul sait quoi lancer
  */
-export function incidentEl(inc, { siteEl = null, chipKind = false, actions = null } = {}) {
+export function incidentEl(inc, {
+  siteEl = null, chipKind = false, actions = null, onAck = null, acquitte = false,
+} = {}) {
   const quand = anciennete(inc);
   const x = (inc.extra && typeof inc.extra === 'object') ? inc.extra : {};
   const corps = panneau({
@@ -296,21 +433,24 @@ export function incidentEl(inc, { siteEl = null, chipKind = false, actions = nul
     file: String(x.file || ''), line: x.line || 0,
     count: x.count || 0, first: x.first || '', last: x.last || '',
     trace: x.trace, tronquee: !!x.trace_truncated, extra: x,
-  });
+  }, boutonsAcquittement(inc, { onAck, acquitte }));
   const resume = [
     h('div', { class: 'inc-m' },
       h('div', { class: 'inc-t' },
         chipKind ? chipEl(kindLabel(inc.kind), 'mut') : null,
         siteEl,
         h('span', { class: 'inc-h', text: inc.title || '' })),
-      inc.detail ? h('div', { class: 'muted small inc-d', text: inc.detail }) : null),
+      inc.detail ? h('div', { class: 'muted small inc-d', text: inc.detail }) : null,
+      bandeauAck(inc)),
     quand ? h('span', {
       class: 'muted small inc-a', title: inc.since ? absTime(inc.since) : '', text: quand,
     }) : null,
     actions,
   ];
-  return depliable('inc ' + (inc.severity === 'critical' ? 'err' : 'warn'),
-    resume, corps, inc.title || kindLabel(inc.kind));
+  // Une ligne « à planifier » n'est pas une urgence : elle garde la même forme,
+  // mais pas le trait rouge — sinon la section entière crie comme la file.
+  const ton = inc.bucket === 'plan' ? 'plan' : (inc.severity === 'critical' ? 'err' : 'warn');
+  return depliable('inc ' + ton, resume, corps, inc.title || kindLabel(inc.kind));
 }
 
 /**

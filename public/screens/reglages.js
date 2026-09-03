@@ -434,13 +434,14 @@ function sectionIncidents() {
     [h('span', { class: 'small', id: 'inc-sum' })],
     h('p', { class: 'hint', text: 'Seuils de la file « à traiter » : ils pilotent l’écran Incidents, les '
       + 'pastilles de la barre latérale ET les colonnes du Parc. Un seuil changé ici change les trois d’un coup.' }),
-    h('div', { id: 'inc-body' }, h('span', { class: 'muted small', text: 'chargement…' })));
+    h('div', { id: 'reg-inc-body' }, h('span', { class: 'muted small', text: 'chargement…' })));
 }
 
 /* Un champ = une clé de `incident_rules`. Le backend recompose TOUT le
    sous-dictionnaire à partir de ses valeurs par défaut : une clé absente du
    corps envoyé reviendrait au défaut, jamais à la valeur enregistrée. On
-   renvoie donc toujours les cinq clés ensemble. */
+   renvoie donc toujours les SIX clés ensemble — y compris `plan_kinds`, qu'un
+   oubli remettrait silencieusement à sa valeur d'usine. */
 const REGLES_NUM = [
   ['backup_max_age_h', 'inc-backup', 'Sauvegarde en retard au-delà de (heures)', 48,
     'Une sauvegarde UpdraftPlus plus ancienne devient un incident « avertissement ».'],
@@ -451,7 +452,7 @@ const REGLES_NUM = [
 ];
 
 function renderIncidentRules() {
-  const bd = document.getElementById('inc-body');
+  const bd = document.getElementById('reg-inc-body');
   if (!bd) return;
   const r = (store.settings && store.settings.incident_rules) || {};
   const champs = {};
@@ -466,6 +467,8 @@ function renderIncidentRules() {
   high.checked = !!r.vuln_high_is_incident;
   const php = h('input', { class: 'inp w100', id: 'inc-php', placeholder: '7.0, 7.4, 8.0' });
   php.value = (Array.isArray(r.php_eol_versions) ? r.php_eol_versions : []).join(', ');
+  const plan = h('input', { class: 'inp w100', id: 'inc-plan', placeholder: 'php_eol, server_stale' });
+  plan.value = (Array.isArray(r.plan_kinds) ? r.plan_kinds : []).join(', ');
 
   const save = h('button', { type: 'button', class: 'btn primary sm', id: 'inc-save', text: 'Enregistrer' });
   save.onclick = async () => {
@@ -485,6 +488,14 @@ function renderIncidentRules() {
       return;
     }
     regles.php_eol_versions = versions;
+    const types = plan.value.split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
+    const typeHorsForme = types.find(x => !/^[a-z][a-z0-9_]*$/.test(x));
+    if (typeHorsForme) {
+      dire('inc-msg', 'err', 'type invalide',
+        '« ' + typeHorsForme + ' » — un type d’incident s’écrit en minuscules (php_eol, backup_late).');
+      return;
+    }
+    regles.plan_kinds = types;
     attendre('inc-msg');
     setBusy(save);
     try {
@@ -508,6 +519,11 @@ function renderIncidentRules() {
       h('label', { for: 'inc-php', text: 'Versions PHP en fin de support' }), php,
       h('div', { class: 'aide', text: 'Majeure.mineure, séparées par des virgules. Un serveur sous l’une de '
         + 'ces branches remonte en incident et le Parc marque ses sites.' })),
+    h('div', { class: 'field' },
+      h('label', { for: 'inc-plan', text: 'Types classés « à planifier »' }), plan,
+      h('div', { class: 'aide', text: 'Ces types-là sortent de la file « à traiter » et de la pastille : '
+        + 'ce sont des chantiers, pas des urgences. Trois autres cas y basculent d’eux-mêmes selon le '
+        + 'contexte (moniteur en pause, sauvegarde sans rien à cliquer, certificat encore loin).' })),
     piedSection('inc-msg', save));
   // Trois chips courtes plutôt qu'une longue : une chip ne se coupe pas
   // (white-space:nowrap), et une seule ligne de 50 caractères déborderait en
@@ -518,7 +534,9 @@ function renderIncidentRules() {
       { title: 'âge maximal d’une sauvegarde avant incident' }), ' ',
     chipEl('certificat ' + (r.cert_warn_days ?? 21) + '/' + (r.cert_critical_days ?? 7) + ' j', 'mut',
       { title: 'seuils d’avertissement et de criticité d’un certificat' }), ' ',
-    chipEl(n + ' branche(s) PHP', 'mut', { title: 'versions PHP considérées en fin de support' }));
+    chipEl(n + ' branche(s) PHP', 'mut', { title: 'versions PHP considérées en fin de support' }), ' ',
+    chipEl((Array.isArray(r.plan_kinds) ? r.plan_kinds : []).length + ' type(s) à planifier', 'mut',
+      { title: 'types d’incidents sortis de la file « à traiter »' }));
 }
 
 /* ============================================================================

@@ -153,6 +153,34 @@ def traiter(nom, jours, jours_longs, filet, important, dry=False):
             "retirees": retirees, "conservees_car_importantes": sauvees}
 
 
+# --- acquittements d'incidents -------------------------------------------- #
+# data/incident_acks.json n'est pas un journal : c'est un état. Mais il vieillit
+# de la même façon — une alerte écartée dont l'incident a disparu depuis des
+# mois n'a plus d'objet, et l'entrée oubliée masquerait un incident de MÊME
+# identifiant qui reviendrait bien plus tard. La règle (90 jours sans revoir
+# l'incident) vit dans actions_server, qui connaît la forme du fichier ; la
+# rotation ne fait que l'appeler, au même rythme que le reste.
+def purger_acquittements(dry=False):
+    """→ nombre d'entrées retirées, ou None si le module n'est pas importable."""
+    try:
+        import actions_server
+    except Exception:
+        return None                      # rotation lancée hors installation complète
+    if not dry:
+        return actions_server.incident_acks_purge()
+    limite = datetime.datetime.now().timestamp() - actions_server.ACK_PURGE_DAYS * 86400
+
+    def perimee(e):
+        if not isinstance(e, dict):
+            return True
+        try:
+            return float(e.get("last_seen") or e.get("ts") or 0) < limite
+        except (TypeError, ValueError):
+            return True
+
+    return sum(1 for e in actions_server.incident_acks().values() if perimee(e))
+
+
 def main():
     dry = "--dry-run" in sys.argv
     total = 0
@@ -166,6 +194,9 @@ def main():
                   f"  (-{r['retirees']}"
                   + (f", {r['conservees_car_importantes']} gardées car importantes" if r["conservees_car_importantes"] else "")
                   + ")")
+    acks = purger_acquittements(dry)
+    if acks:
+        print(f"  {'incident_acks.json':24} -{acks} acquittement(s) sans objet")
     print(("[simulation] " if dry else "") + f"{total} ligne(s) retirée(s).")
 
 

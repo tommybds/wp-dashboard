@@ -710,6 +710,7 @@ Chaque incident a la même forme :
  "title": "ml-slider 3.100.1 · critical corrigeable",
  "detail": "Stored XSS (CVE-2026-1) — correctif en 3.100.2",
  "since": "2026-09-02T18:05:00", "age_h": 14.6,
+ "bucket": "now", "acked": null,
  "action": {"label": "MAJ ml-slider → 3.100.2", "act": "plugin_update", "arg": "ml-slider"},
  "link": {"tab": "securite", "sub": "vulns"},
  "extra": {"cve": ["CVE-2026-1"], "slug": "ml-slider", "from": "3.100.1", "to": "3.100.2"}}
@@ -723,17 +724,46 @@ rien à lancer — notamment sur un **site REST**, où aucune commande wp-cli n'
 disponible : l'incident reste, le bouton disparaît. `since` vaut `null` (et
 `age_h` 0) quand la source ne date pas son constat.
 
-| `kind` | Gravité | Déclenchement | Action proposée |
-|---|---|---|---|
-| `down` | critique | Dernier battement Kuma en `status 0`, sur un site visible. `since` = heure du battement | `rescan` |
-| `php_fatal` | critique | `Fatal error` / `Parse error` dans la fenêtre courante de `data/php_errors.json` | — |
-| `vuln_critical_fixable` | critique | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, composant) | `plugin_update` / `core_update` |
-| `checksums_modified` | critique | Dernier `wp core verify-checksums` en échec (`data/checksums.json`) | — |
-| `admin_unknown` | critique | Administrateur absent de `data/admins_baseline.json`. Un site **sans référence** est ignoré | — |
-| `server_stale` | avertissement | Serveur `stale` dans `fleet.json` (injoignable à la dernière collecte) | — |
-| `backup_late` | avertissement | Sauvegarde UpdraftPlus plus vieille que le seuil, ou jamais faite. Un site **sans UpdraftPlus** est ignoré | `updraft_backup` |
-| `cert_expiring` | avert. / critique | Jours restants sous le seuil (critique sous le second seuil, ou déjà expiré) | — |
-| `php_eol` | avertissement | Version PHP hors support : **une entrée par serveur et par version**, sites regroupés dans le détail | — |
+| `kind` | Gravité | `bucket` | Déclenchement | Action proposée |
+|---|---|---|---|---|
+| `down` | critique | `now` | Dernier battement Kuma en `status 0`, sur un site visible. `since` = heure du battement | `rescan` |
+| `down` (moniteur en **pause**) | avertissement | `plan` | Même chose, mais la surveillance a été coupée exprès : situation connue, pas une urgence | `rescan` |
+| `php_fatal` | critique | `now` | `Fatal error` / `Parse error` dans la fenêtre courante de `data/php_errors.json` | — |
+| `vuln_critical_fixable` | critique | `now` | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, composant) | `plugin_update` / `core_update` |
+| `checksums_modified` | critique | `now` | Dernier `wp core verify-checksums` en échec (`data/checksums.json`) | — |
+| `admin_unknown` | critique | `now` | Administrateur absent de `data/admins_baseline.json`. Un site **sans référence** est ignoré | — |
+| `server_stale` | avertissement | `plan` | Serveur `stale` dans `fleet.json` (injoignable à la dernière collecte) | — |
+| `backup_late` | avertissement | `now` | Sauvegarde UpdraftPlus plus vieille que le seuil, **datée**, sur un site en SSH : le bouton marche | `updraft_backup` |
+| `backup_late` (aucune sauvegarde connue, ou site **REST**) | avertissement | `plan` | Rien à cliquer : la ligne resterait dans la file indéfiniment | — |
+| `cert_expiring` | critique | `now` | Jours restants sous `cert_critical_days` (7 par défaut), ou déjà expiré | — |
+| `cert_expiring` | avertissement | `plan` | Jours restants sous `cert_warn_days` mais au-dessus du seuil critique : un rendez-vous, pas une urgence | — |
+| `php_eol` | avertissement | `plan` | Version PHP hors support : **une entrée par serveur et par version**, sites regroupés dans le détail | — |
+
+#### `bucket` : « à traiter » ou « à planifier »
+
+Une file dont **rien ne peut disparaître** n'est plus lue. Sur treize alertes,
+quatre se réglaient d'un clic ; les neuf autres étaient des chantiers (PHP en
+fin de support) ou des situations connues et assumées (moniteur en pause depuis
+dix jours, sauvegarde d'un site abandonné en retard depuis 285 jours). D'où deux
+natures de ligne :
+
+* **`now`** — ça se règle maintenant : un bouton suffit, ou c'est une urgence.
+  C'est ce que compte la **pastille rouge** de la barre latérale, et c'est tout
+  ce que montre la file de l'accueil (**cinq lignes au plus**, suivies d'un
+  renvoi « + N autres · voir tout » vers l'écran Incidents).
+* **`plan`** — un chantier ou une décision déjà prise. Bloc séparé sur l'écran
+  Incidents, ton neutre, **hors pastille**.
+
+Les sources posent le `bucket` qui dépend du **contexte** (les trois lignes
+grisées du tableau ci-dessus). Le réglage `incident_rules.plan_kinds` déplace
+ensuite un **type entier** — défaut `["php_eol", "server_stale"]`, modifiable
+depuis **Réglages → Règles d'incidents**. Vider la liste ramène ces types dans la
+file ; y ajouter `backup_late` en sort toutes les sauvegardes en retard. Il n'agit
+que sur les types : un `down` de moniteur en pause reste `plan` quoi qu'il
+contienne.
+
+`counts` porte donc six chiffres : `critical` et `warning` (la file visible,
+inchangés), `now_critical`, `now_warning`, `plan`, et `acked`.
 
 #### `extra` : ce que la ligne ne peut pas dire
 
@@ -745,7 +775,7 @@ connaît pas une l'ignore. Il est toujours présent, éventuellement vide.
 
 | `kind` | Clés de `extra` |
 |---|---|
-| `php_fatal` | `trace` (liste de cadres, 12 au plus), `trace_truncated`, `sample_ts` (occurrence qui a fourni la pile), `count`, `first`, `last`, `file` (chemin raccourci), `line` |
+| `php_fatal` | `trace` (liste de cadres, 12 au plus), `trace_truncated`, `sample_ts` (occurrence qui a fourni la pile), `message` (le message SEUL, sans le « ×N » du détail — c'est lui qui entre dans l'empreinte d'acquittement), `count`, `first`, `last`, `file` (chemin raccourci), `line` |
 | `vuln_critical_fixable` | `cve` (liste — une extension cumule souvent plusieurs CVE graves), `slug`, `from`, `to` |
 | `backup_late` | `last_backup` (ISO, `""` si jamais), `age_h` (`null` si jamais), `service` |
 | `cert_expiring` | `days_left`, `expires` |
@@ -774,6 +804,7 @@ Les seuils vivent dans `data/settings.json`, sous la clé `incident_rules` :
 | `cert_critical_days` | `7` | …et sous lesquels il devient **critique** |
 | `vuln_high_is_incident` | `false` | Compter aussi les vulnérabilités `high` corrigeables comme des incidents critiques |
 | `php_eol_versions` | `["7.0","7.1","7.2","7.3","7.4","8.0"]` | Versions PHP majeure.mineure considérées hors support |
+| `plan_kinds` | `["php_eol","server_stale"]` | Types classés « à planifier » quel que soit leur contexte (hors pastille) |
 
 ```bash
 curl -s ... -d '{"settings":{"incident_rules":{"backup_max_age_h":24}}}' ... /api/mgmt/settings
@@ -782,6 +813,75 @@ curl -s ... -d '{"settings":{"incident_rules":{"backup_max_age_h":24}}}' ... /ap
 Une écriture **partielle** conserve les autres seuils, les clés inconnues sont
 ignorées et une valeur d'un autre type est ramenée au type attendu — mêmes règles
 qu'au premier niveau des [Réglages](#réglages).
+
+#### Acquitter une alerte
+
+Toute ligne peut être **retirée de la file**, depuis le pli de l'incident
+(« Ne plus signaler… », à côté de « Copier ») — sur l'écran Incidents, dans la
+file de l'accueil comme dans « À traiter sur ce site ». Rien n'est supprimé :
+l'incident continue d'être calculé, il est seulement **masqué tant que la
+décision tient**. Trois choix, deux modes côté serveur :
+
+| Choix dans la modale | `mode` | Ce qui le fait revenir |
+|---|---|---|
+| **7 jours** / **30 jours** | `snooze` | L'échéance `until`. Une veille échue ne dit plus rien : la ligne redevient ordinaire, sans mention |
+| **jusqu'à ce que la situation change** | `ignore` | Le changement de l'**empreinte** (ci-dessous). L'alerte revient avec un bandeau « écartée le 3 sept. — la situation a changé depuis » |
+
+Une raison facultative (300 caractères au plus) accompagne la décision ; elle est
+affichée dans le bloc **Acquittés** de l'écran Incidents, avec l'échéance, l'auteur
+et un bouton **Réactiver**. Juste après l'acquittement, un message « Alerte mise
+en veille · **Annuler** » laisse huit secondes pour revenir en arrière.
+
+**L'empreinte** (`incident_fingerprint`) est un condensé de la SITUATION au
+moment de l'acquittement — jamais de son ampleur (un compteur qui monte n'est
+pas une situation nouvelle) ni de sa fraîcheur (une date de dernier constat
+ferait revenir l'incident à chaque collecte) :
+
+| `kind` | Ce qui compose l'empreinte |
+|---|---|
+| `php_fatal` | `file`:`line` + le message **normalisé** (minuscules, nombres masqués). **Pas** `count` |
+| `vuln_critical_fixable` | composant + **version installée** — une nouvelle version vulnérable ressort |
+| `backup_late` | date de la dernière sauvegarde connue (vide si aucune) — sauvegarde faite puis re-retardée : ça ressort |
+| `cert_expiring` | le certificat courant (sa date de fin) — renouvelé puis à nouveau proche : ça ressort |
+| `checksums_modified` | la liste des fichiers qui ne vérifient pas |
+| `admin_unknown` | le compte (`login`) |
+| `php_eol` | la version de PHP (pas la liste des sites, qui bouge à chaque ajout) |
+| `down`, `server_stale` | **rien** : c'est l'état lui-même. L'incident disparaît de lui-même quand le site remonte |
+
+Les décisions vivent dans `data/incident_acks.json` (0600), une entrée par
+identifiant d'incident :
+
+```json
+{"backup_late:vieux-site.fr:": {"mode": "ignore", "until": null,
+  "reason": "site abandonné, migration prévue", "by": "tommy",
+  "ts": 1788000000, "fingerprint": "9f2c1ab30de44571", "last_seen": 1788600000}}
+```
+
+```bash
+curl -s ... -H 'X-Dash: 1' -d '{"id":"…","mode":"snooze","days":7,"reason":"…"}' ... /api/incidents/ack
+curl -s ... -H 'X-Dash: 1' -d '{"id":"…"}'                                       ... /api/incidents/unack
+curl -s ... /api/incidents?include=acked   # → + "acked": [ … ]
+```
+
+`mode` vaut `snooze` ou `ignore`, `days` est exigé pour une veille et tient entre
+**1 et 365**, `reason` fait **300 caractères** au plus, et l'identifiant doit
+correspondre à un incident **existant** (sans lui, l'empreinte ne peut pas être
+calculée) — sinon `400` ou `404`, et rien n'est écrit. Chaque acquittement et
+chaque rappel laissent une ligne dans `data/actions.log`
+(`incident_ack` / `incident_unack`, `arg` = l'identifiant, sortie = le mode et la
+raison).
+
+Par défaut `/api/incidents` **exclut** les acquittés dont la décision tient
+encore et n'en donne que le nombre (`counts.acked`) ; `?include=acked` ajoute la
+liste sous la clé `acked`. Chaque incident porte `acked` : `null`, ou
+`{mode, until, reason, by, ts, stale_fingerprint}` — `stale_fingerprint` vrai
+signale précisément l'alerte **revenue parce que la situation a changé**.
+
+`rotate.py` **oublie** une entrée dont l'incident n'a plus été vu depuis
+**90 jours** : sans cela le fichier grossirait sans fin, et un incident de même
+identifiant revenant un an plus tard serait masqué par une décision oubliée. Le
+marqueur `last_seen` est rafraîchi au plus une fois par heure par
+`incidents_snapshot`.
 
 ### Réglages
 
@@ -795,7 +895,7 @@ résultat :
 | **Alertes Telegram** (`#reglages/alertes`) | Interrupteur général, jeton du bot, `chat_id`, quatre déclencheurs booléens et trois seuils, plus **Envoyer un test** (qui utilise la configuration **enregistrée**). |
 | **VizProof** (`#reglages/vizproof`) | Jeton de compte, base de l'API, **Tester**, **Effacer**. |
 | **Contrôle visuel** (`#reglages/controle-visuel`) | Les quatre cases décrites ci-dessous, enregistrées à la volée. |
-| **Règles d'incidents** (`#reglages/incidents`) | `incident_rules` en champs typés : âge maximal d'une sauvegarde, seuils de certificat (avertissement / critique), vulnérabilités `high` comptées ou non, versions PHP en fin de support. |
+| **Règles d'incidents** (`#reglages/incidents`) | `incident_rules` en champs typés : âge maximal d'une sauvegarde, seuils de certificat (avertissement / critique), vulnérabilités `high` comptées ou non, versions PHP en fin de support, types classés « à planifier ». |
 | **Clés SSH** (`#reglages/cles-ssh`) | Liste (nom, type, empreinte, clé publique dépliable), génération d'une clé dédiée, affectation par serveur avec **Tester** avant **Assigner**, et l'assignation à tous les serveurs. |
 | **Apparence** (`#reglages/apparence`) | Thème (auto / clair / sombre) et densité des tableaux. Préférences **de ce navigateur** : elles ne partent pas au serveur. |
 | **Session** (`#reglages/session`) | Utilisateur connecté, adresse du dashboard, déconnexion. |

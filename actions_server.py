@@ -138,6 +138,10 @@ ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 
 # Réglages généraux du dashboard (distincts des alertes, qui ont leur fichier).
 SETTINGS_PATH = os.path.join(DATA, "settings.json")
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
+# Acquittements de la file « à traiter » : une entrée par identifiant
+# d'incident, écrite en 0600 comme tout ce qui vit dans data/ (elle cite des
+# domaines et la raison saisie par l'exploitant). Cf. « Acquitter une alerte ».
+ACKS_PATH = os.path.join(DATA, "incident_acks.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 PHPERR_PATH = os.path.join(DATA, "php_errors.json")
 # Index local des archives de restauration : interroger le serveur en SSH à
@@ -870,6 +874,15 @@ INCIDENT_RULES_DEFAULTS = {
     "vuln_high_is_incident": False,
     # Versions PHP majeure.mineure hors support (une entrée par serveur).
     "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"],
+    # Types d'incidents classés « à planifier » (`bucket: "plan"`) quel que soit
+    # leur contexte : un chantier ou une décision, pas un bouton. Ils sortent de
+    # la pastille rouge et de la file de l'accueil.
+    #
+    # Trois autres cas basculent en « à planifier » selon le CONTEXTE, et non
+    # selon leur type — ils ne se règlent donc pas ici : un `down` de moniteur
+    # en pause, un `backup_late` sans sauvegarde datée (ou sans bouton, site
+    # REST), un `cert_expiring` encore au-dessus de `cert_critical_days`.
+    "plan_kinds": ["php_eol", "server_stale"],
 }
 
 # ---------- réglages persistants (data/settings.json) ----------
@@ -3321,7 +3334,8 @@ def incident_iso(epoch):
 
 
 def make_incident(kind, severity, key, title, detail, site="", server="", arg="",
-                  since=None, action=None, link=None, now=None, extra=None):
+                  since=None, action=None, link=None, now=None, extra=None,
+                  bucket="now"):
     """Une entrée de la file. `id` = kind:cible:arg — stable d'un appel à l'autre.
 
     La « cible » est la clé du site (clé Kuma ou domaine) ou, pour les incidents
@@ -3332,6 +3346,17 @@ def make_incident(kind, severity, key, title, detail, site="", server="", arg=""
     Ce qui ne tient pas sur une ligne (pile d'appels, liste de CVE, liste de
     fichiers…) va dans `extra`, dictionnaire libre dont les clés dépendent du
     `kind` — l'interface le déplie, la liste n'en est pas alourdie.
+
+    `bucket` sépare deux natures de ligne, et c'est LUI qui décide de la pastille
+    rouge (elle ne compte que `now`) :
+      * `now`  — ça se règle maintenant : un bouton suffit, ou c'est une urgence ;
+      * `plan` — un chantier ou une décision déjà prise (PHP en fin de support,
+                 moniteur volontairement en pause, sauvegarde d'un site sans
+                 rien à cliquer). Une file qu'on ne peut pas vider n'est plus
+                 lue : ces lignes-là ne doivent pas y figurer.
+    Les sources posent le bucket qui dépend du CONTEXTE ; le réglage
+    `incident_rules.plan_kinds` déplace ensuite un TYPE entier (cf.
+    `incidents_snapshot`).
     """
     age = 0.0
     if since is not None:
@@ -3342,7 +3367,212 @@ def make_incident(kind, severity, key, title, detail, site="", server="", arg=""
             "site": site, "server": server or "", "title": title, "detail": detail,
             "since": incident_iso(since), "age_h": round(age, 2),
             "action": action, "link": link,
+            "bucket": "plan" if bucket == "plan" else "now", "acked": None,
             "extra": dict(extra) if isinstance(extra, dict) else {}}
+
+
+# ---------------------------------------------------------------------------
+#  Acquittement d'un incident (veille / écarté) — data/incident_acks.json
+# ---------------------------------------------------------------------------
+# Le besoin : une file dont RIEN ne peut disparaître n'est plus lue. Trois
+# gestes, donc, sur n'importe quelle ligne :
+#   * « 7 jours » / « 30 jours » → `mode: "snooze"`, avec une échéance `until` ;
+#   * « jusqu'à ce que ça change » → `mode: "ignore"`, sans échéance, mais
+#     accompagné d'une EMPREINTE de l'état au moment de l'acquittement.
+#
+# L'empreinte est ce qui distingue « je ne veux plus voir CE problème-là » de
+# « je ne veux plus voir ce type d'alerte ». Si l'état change (autre version
+# vulnérable, autre fichier en erreur, sauvegarde faite puis re-retardée),
+# l'empreinte change et l'incident REVIENT, avec la mention « déjà écarté le …,
+# la situation a changé ».
+ACK_MODES = ("snooze", "ignore")
+ACK_MAX_DAYS = 365          # au-delà, ce n'est plus une veille, c'est un « ignore »
+ACK_REASON_MAX = 300        # la raison tient sur une ligne de liste
+ACK_PURGE_DAYS = 90         # entrée dont l'incident a disparu depuis 90 j → oubliée
+ACK_SEEN_REFRESH_S = 3600   # « vu à » n'est réécrit qu'une fois par heure
+
+# Ce qui compose l'empreinte, PAR TYPE. La règle est toujours la même : ce qui
+# décrit la SITUATION, jamais ce qui décrit son ampleur (un compteur qui monte
+# n'est pas une situation nouvelle) ni sa fraîcheur (une date de dernier
+# constat ferait revenir l'incident à chaque collecte, l'acquittement ne
+# vaudrait rien).
+#
+#   php_fatal             fichier:ligne + message normalisé (chiffres et
+#                         adresses masqués). PAS `count`.
+#   vuln_critical_fixable composant + version INSTALLÉE : une nouvelle version
+#                         vulnérable, ou une autre extension, ressort.
+#   backup_late           date de la dernière sauvegarde connue (vide si aucune) :
+#                         une sauvegarde faite puis re-retardée ressort.
+#   cert_expiring         le certificat courant (sa date de fin) : renouvelé
+#                         puis à nouveau proche de l'échéance, il ressort.
+#   checksums_modified    la liste des fichiers qui ne vérifient pas.
+#   admin_unknown         le compte (login) — l'identifiant le porte déjà, mais
+#                         l'empreinte le rend explicite.
+#   down                  RIEN : l'état lui-même est l'empreinte. Écarter un
+#                         site injoignable le masque tant qu'on ne le réactive
+#                         pas (l'incident disparaît de lui-même s'il remonte).
+#   server_stale          RIEN, même raison.
+#   php_eol               la version de PHP. La liste des sites bouge à chaque
+#                         ajout : elle ferait ressortir le chantier pour rien.
+_ACK_FP_NUM = re.compile(r"0x[0-9a-fA-F]+|\d+")
+
+
+def _fp_message(msg):
+    """Message d'erreur réduit à sa forme : minuscules, nombres masqués."""
+    return _ACK_FP_NUM.sub("#", " ".join(str(msg or "").split()).lower())[:300]
+
+
+def incident_fingerprint(inc):
+    """Empreinte de la SITUATION d'un incident → chaîne courte et stable.
+
+    Deux appels sur un état inchangé rendent la même valeur ; le moindre
+    changement de ce qui compte (cf. le tableau ci-dessus) en rend une autre.
+    Un `kind` inconnu retombe sur `title` + `detail`, ce qui est conservateur :
+    l'incident ressortira au premier mot qui change.
+    """
+    if not isinstance(inc, dict):
+        return ""
+    kind = str(inc.get("kind") or "")
+    x = inc.get("extra") if isinstance(inc.get("extra"), dict) else {}
+    if kind == "php_fatal":
+        parts = [str(x.get("file") or ""), str(x.get("line") or ""),
+                 _fp_message(x.get("message") or inc.get("detail"))]
+    elif kind == "vuln_critical_fixable":
+        parts = [str(x.get("slug") or ""), str(x.get("from") or "")]
+    elif kind == "backup_late":
+        parts = [str(x.get("last_backup") or "")]
+    elif kind == "cert_expiring":
+        parts = [str(x.get("expires") or "")]
+    elif kind == "checksums_modified":
+        parts = sorted(str(f) for f in (x.get("files") or []))
+    elif kind == "admin_unknown":
+        parts = [str(x.get("login") or "")]
+    elif kind == "php_eol":
+        parts = [str(x.get("version") or "")]
+    elif kind in ("down", "server_stale"):
+        parts = []
+    else:
+        parts = [str(inc.get("title") or ""), str(inc.get("detail") or "")]
+    brut = "|".join([kind] + parts)
+    return hashlib.sha1(brut.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def incident_acks():
+    """Contenu de data/incident_acks.json ({} s'il est absent ou illisible)."""
+    store = load_json(ACKS_PATH, {})
+    return store if isinstance(store, dict) else {}
+
+
+def incident_ack_state(entry, inc, now):
+    """Un acquittement appliqué à un incident → (masqué, `acked` ou None).
+
+    * veille en cours       → masqué, `acked` posé ;
+    * veille expirée        → l'entrée ne dit plus rien : ni masquage, ni `acked`
+                              (l'incident redevient une ligne ordinaire) ;
+    * écarté, empreinte identique → masqué ;
+    * écarté, empreinte changée   → visible, `acked.stale_fingerprint` vrai :
+                                    c'est ce qui déclenche « la situation a
+                                    changé depuis » dans l'interface.
+    """
+    if not isinstance(entry, dict):
+        return False, None
+    mode = str(entry.get("mode") or "")
+    if mode not in ACK_MODES:
+        return False, None
+    vu = {"mode": mode, "until": entry.get("until"),
+          "reason": str(entry.get("reason") or ""), "by": str(entry.get("by") or ""),
+          "ts": entry.get("ts"), "stale_fingerprint": False}
+    if mode == "snooze":
+        until = to_number(entry.get("until"))
+        if until is None or now >= until:
+            return False, None
+        return True, vu
+    perime = str(entry.get("fingerprint") or "") != incident_fingerprint(inc)
+    vu["stale_fingerprint"] = perime
+    return (not perime), vu
+
+
+def incident_ack_write(inc_id, mode, until, reason, by, fingerprint, now=None):
+    """Pose (ou remplace) l'acquittement d'un incident → l'entrée écrite."""
+    now = time.time() if now is None else float(now)
+    entree = {"mode": mode, "until": until, "reason": reason, "by": by,
+              "ts": round(now), "fingerprint": fingerprint, "last_seen": round(now)}
+
+    def _muter(cur):
+        store = cur if isinstance(cur, dict) else {}
+        store[inc_id] = entree
+        return store
+
+    update_json(ACKS_PATH, _muter, {})
+    return entree
+
+
+def incident_ack_clear(inc_id):
+    """Retire l'acquittement d'un incident → vrai s'il y en avait un."""
+    trouve = {"v": False}
+
+    def _muter(cur):
+        store = cur if isinstance(cur, dict) else {}
+        trouve["v"] = store.pop(inc_id, None) is not None
+        return store
+
+    update_json(ACKS_PATH, _muter, {})
+    return trouve["v"]
+
+
+def incident_acks_touch(ids, now=None):
+    """Marque « encore vus » les acquittements dont l'incident existe toujours.
+
+    C'est ce marqueur que la purge lit : sans lui, on ne saurait pas depuis
+    quand un incident acquitté a disparu. L'écriture est étranglée à une fois
+    par heure — la file est recalculée à chaque affichage d'écran.
+    """
+    now = round(time.time() if now is None else float(now))
+    store = incident_acks()
+    a_ecrire = [i for i in ids if isinstance(store.get(i), dict)
+                and now - (to_number(store[i].get("last_seen")) or 0) > ACK_SEEN_REFRESH_S]
+    if not a_ecrire:
+        return 0
+
+    def _muter(cur):
+        s = cur if isinstance(cur, dict) else {}
+        for i in a_ecrire:
+            if isinstance(s.get(i), dict):
+                s[i]["last_seen"] = now
+        return s
+
+    update_json(ACKS_PATH, _muter, {})
+    return len(a_ecrire)
+
+
+def incident_acks_purge(now=None, days=ACK_PURGE_DAYS):
+    """Oublie les acquittements dont l'incident n'existe plus depuis `days` jours.
+
+    Un acquittement sans incident correspondant n'est pas une erreur : le
+    problème a pu être réparé le lendemain. Mais garder l'entrée pour toujours
+    ferait grossir le fichier sans fin — et un incident de MÊME identifiant qui
+    reviendrait un an plus tard serait masqué par une décision oubliée.
+    → nombre d'entrées retirées.
+    """
+    limite = (time.time() if now is None else float(now)) - float(days) * 86400
+    retires = {"n": 0}
+
+    def _muter(cur):
+        store = cur if isinstance(cur, dict) else {}
+        garde = {}
+        for cle, e in store.items():
+            if not isinstance(e, dict):
+                retires["n"] += 1
+                continue
+            vu = to_number(e.get("last_seen")) or to_number(e.get("ts")) or 0
+            if vu < limite:
+                retires["n"] += 1
+            else:
+                garde[cle] = e
+        return garde
+
+    update_json(ACKS_PATH, _muter, {})
+    return retires["n"]
 
 
 def incident_fleet():
@@ -3391,6 +3621,10 @@ def inc_down(sites, now):
             site=nom, server=server, since=hb.get("ts"), now=now,
             action={"label": "Re-scan", "act": "rescan", "arg": ""},
             link={"tab": "incidents", "sub": ""},
+            # Moniteur en pause : la situation est connue et assumée (le site
+            # est arrêté, la surveillance a été coupée exprès). Elle a sa place
+            # dans « à planifier », pas dans une file d'urgences.
+            bucket="now" if actif else "plan",
             extra={"msg": hb.get("msg") or "", "since": incident_iso(hb.get("ts"))}))
     return out
 
@@ -3431,6 +3665,10 @@ def inc_php_fatal(index, now):
                 extra={"trace": trace,
                        "trace_truncated": bool(g.get("trace_truncated")),
                        "sample_ts": g.get("sample_ts") or "",
+                       # `message` seul, sans le « (×N) » du détail : c'est lui
+                       # qui entre dans l'empreinte d'acquittement, et le
+                       # compteur ne doit PAS en faire partie.
+                       "message": str(g.get("message") or ""),
                        "count": n, "first": g.get("first") or "",
                        "last": g.get("last") or "",
                        "file": str(g.get("short") or g.get("file") or ""),
@@ -3605,6 +3843,11 @@ def inc_backup(sites, rules, now):
             action=None if rest else {"label": "Sauvegarder",
                                       "act": "updraft_backup", "arg": ""},
             link={"tab": "parc", "sub": ""},
+            # « À traiter » seulement quand le bouton Sauvegarder marche ET
+            # qu'une sauvegarde datée existe : sans cela il n'y a rien à
+            # cliquer (site REST, ou site abandonné qui n'a jamais sauvegardé),
+            # et la ligne resterait indéfiniment dans la file.
+            bucket="now" if (ts and not rest) else "plan",
             extra={"last_backup": incident_iso(ts) if ts else "",
                    "age_h": round(age_h, 1) if age_h is not None else None,
                    "service": str(up.get("service") or "")}))
@@ -3638,6 +3881,10 @@ def inc_certs(index, rules, now):
             f"Certificat de {nom} à renouveler", detail + f" — seuil {warn:g} j",
             site=nom, server=server, now=now,
             link={"tab": "securite", "sub": "certs"},
+            # Une échéance encore lointaine est un rendez-vous, pas une urgence :
+            # elle passe en « à planifier » tant qu'elle n'a pas franchi le
+            # seuil critique (7 jours par défaut).
+            bucket="now" if jours < crit else "plan",
             extra={"days_left": jours, "expires": str(c.get("valid_to") or "")}))
     return out
 
@@ -3729,21 +3976,51 @@ def incidents_snapshot(now=None):
             continue
         vus.add(i["id"])
         uniques.append(i)
+    # `plan_kinds` déplace un TYPE entier vers « à planifier ». Il s'applique
+    # APRÈS les sources : celles-ci ne connaissent que le contexte d'une ligne,
+    # le réglage, lui, tranche pour toute une famille.
+    plan_kinds = {str(k) for k in (rules.get("plan_kinds") or []) if str(k)}
+    for i in uniques:
+        if i["kind"] in plan_kinds:
+            i["bucket"] = "plan"
     # Critique avant avertissement, puis le plus ancien d'abord ; `id` en
     # dernier ressort pour que deux appels rendent exactement le même ordre.
     uniques.sort(key=lambda i: (0 if i["severity"] == "critical" else 1, -i["age_h"], i["id"]))
 
+    # Acquittements : chaque incident porte sa décision (`acked`), et ceux dont
+    # la décision tient encore sortent de la liste — sauf demande explicite.
+    acks, masques, visibles = incident_acks(), [], []
+    for i in uniques:
+        cache, vu = incident_ack_state(acks.get(i["id"]), i, now)
+        i["acked"] = vu
+        (masques if cache else visibles).append(i)
+    if acks:
+        try:
+            incident_acks_touch([i["id"] for i in uniques], now)
+        except OSError:
+            pass          # data/ en lecture seule : l'affichage n'en dépend pas
+
     extra = {"vulns_fixable": 0, "updates_sites": 0,
-             "admins_unknown": sum(1 for i in uniques if i["kind"] == "admin_unknown")}
+             "admins_unknown": sum(1 for i in visibles if i["kind"] == "admin_unknown")}
     try:
         extra.update(inc_counters(sites, index))
     except Exception as e:
         errors.append({"source": "counters", "error": f"{type(e).__name__}: {e}"[:300]})
 
+    def compte(lot, **crit):
+        return sum(1 for i in lot if all(i.get(k) == v for k, v in crit.items()))
+
     payload = {"generated_at": incident_iso(now),
-               "counts": {"critical": sum(1 for i in uniques if i["severity"] == "critical"),
-                          "warning": sum(1 for i in uniques if i["severity"] == "warning")},
-               "incidents": uniques, "errors": errors}
+               # `critical`/`warning` : la file visible, comme avant.
+               # `now_*`/`plan` : les deux sections de l'interface. La pastille
+               # de la barre latérale ne compte QUE `now_*`.
+               "counts": {"critical": compte(visibles, severity="critical"),
+                          "warning": compte(visibles, severity="warning"),
+                          "now_critical": compte(visibles, bucket="now", severity="critical"),
+                          "now_warning": compte(visibles, bucket="now", severity="warning"),
+                          "plan": compte(visibles, bucket="plan"),
+                          "acked": len(masques)},
+               "incidents": visibles, "acked": masques, "errors": errors}
     return payload, extra
 
 
@@ -3770,7 +4047,12 @@ def incidents_cached(max_age=INCIDENT_CACHE_TTL, refresh=False):
 
 
 def sidebar_counts():
-    """Pastilles de la barre latérale, dérivées du MÊME agrégat que les incidents."""
+    """Pastilles de la barre latérale, dérivées du MÊME agrégat que les incidents.
+
+    `incidents` porte les six compteurs de la file ; c'est l'interface qui ne
+    retient que `now_critical` + `now_warning` pour la pastille — une pastille
+    qui compterait les chantiers ne redescendrait jamais à zéro.
+    """
     payload, extra = incidents_cached()
     return {"incidents": dict(payload["counts"]),
             "securite": {"vulns_fixable": extra.get("vulns_fixable", 0),
@@ -5228,6 +5510,76 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    # ---- acquittement d'une alerte de la file « à traiter » ---------------- #
+    def _incident_par_id(self, inc_id):
+        """L'incident courant portant cet identifiant, acquittés compris."""
+        payload, _extra = incidents_cached(refresh=True)
+        for i in list(payload.get("incidents") or []) + list(payload.get("acked") or []):
+            if i.get("id") == inc_id:
+                return i
+        return None
+
+    def _incident_journal(self, action, inc, inc_id, sortie):
+        """Trace dans actions.log : c'est là qu'on relit QUI a écarté QUOI."""
+        append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "incidents", "server": (inc or {}).get("server") or "",
+                    "domain": (inc or {}).get("site") or "", "action": action,
+                    "arg": inc_id, "rc": 0, "duration_s": 0.0,
+                    "output_tail": sortie[:2000]})
+
+    def _incident_ack(self, body):
+        inc_id = str(body.get("id") or "").strip()
+        mode = str(body.get("mode") or "").strip()
+        raison = str(body.get("reason") or "")
+        if not inc_id or len(inc_id) > 300:
+            return self._send(400, {"error": "identifiant d'incident invalide"})
+        if mode not in ACK_MODES:
+            return self._send(400, {"error": "mode invalide (snooze ou ignore)"})
+        if len(raison) > ACK_REASON_MAX:
+            return self._send(400, {"error": f"raison : {ACK_REASON_MAX} caractères au plus"})
+        jours = None
+        if mode == "snooze":
+            try:
+                jours = int(body.get("days"))
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "days : un nombre de jours est attendu"})
+            if not 1 <= jours <= ACK_MAX_DAYS:
+                return self._send(400, {"error": f"days : entre 1 et {ACK_MAX_DAYS}"})
+        inc = self._incident_par_id(inc_id)
+        if inc is None:
+            # Refuser plutôt qu'écrire à l'aveugle : sans l'incident, on ne sait
+            # pas calculer l'empreinte, et l'entrée resterait sans objet.
+            return self._send(404, {"error": "incident inconnu (déjà résolu ?)"})
+        now = time.time()
+        entree = incident_ack_write(
+            inc_id, mode, (now + jours * 86400) if jours else None,
+            " ".join(raison.split()), cookie_user(self.headers) or "?",
+            incident_fingerprint(inc), now=now)
+        with _INCIDENTS_CACHE_LOCK:      # la pastille doit suivre immédiatement
+            _INCIDENTS_CACHE.update({"ts": 0.0, "payload": None, "extra": None})
+        self._incident_journal(
+            "incident_ack", inc, inc_id,
+            (f"veille {jours} j" if jours else "écarté jusqu'à changement")
+            + (" — " + entree["reason"] if entree["reason"] else ""))
+        return self._send(200, {"ok": True, "id": inc_id, "acked": {
+            "mode": entree["mode"], "until": entree["until"],
+            "reason": entree["reason"], "by": entree["by"], "ts": entree["ts"],
+            "stale_fingerprint": False}})
+
+    def _incident_unack(self, body):
+        inc_id = str(body.get("id") or "").strip()
+        if not inc_id or len(inc_id) > 300:
+            return self._send(400, {"error": "identifiant d'incident invalide"})
+        efface = incident_ack_clear(inc_id)
+        with _INCIDENTS_CACHE_LOCK:
+            _INCIDENTS_CACHE.update({"ts": 0.0, "payload": None, "extra": None})
+        # Un rappel sur une alerte déjà réactivée n'est pas une erreur : c'est
+        # exactement l'état demandé (le bouton « Annuler » du toast peut partir
+        # deux fois). On le journalise quand même, il documente l'intention.
+        self._incident_journal("incident_unack", self._incident_par_id(inc_id), inc_id,
+                               "réactivé" if efface else "aucun acquittement à retirer")
+        return self._send(200, {"ok": True, "id": inc_id, "removed": efface})
+
     def do_GET(self):
         p = self.path.split("?")[0]
         q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&") if "=" in x) if "?" in self.path else {}
@@ -5314,7 +5666,13 @@ class Handler(BaseHTTPRequestHandler):
             # aucun appel réseau ni ssh. Toujours recalculée (c'est l'écran qui
             # fait autorité), ce qui rafraîchit au passage le cache des compteurs.
             payload, _extra = incidents_cached(refresh=True)
-            self._send(200, payload)
+            rep = dict(payload)
+            # Les acquittés ne sortent que sur demande : la file par défaut est
+            # ce qui reste À FAIRE, et l'écran ouvre le bloc « Acquittés » en
+            # rappelant la route avec `include=acked`.
+            if q.get("include") != "acked":
+                rep.pop("acked", None)
+            self._send(200, rep)
         elif p == "/api/mgmt/counts":
             # Pastilles de la barre latérale : même agrégat, mis en cache 30 s.
             self._send(200, sidebar_counts())
@@ -5514,6 +5872,16 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/actions/collect":
             ok = start_collect()
             return self._send(200 if ok else 409, {"ok": ok, "error": None if ok else "collecte déjà en cours"})
+
+        # ---- acquittement d'une alerte -------------------------------------
+        # Trois modes côté interface (7 j, 30 j, « jusqu'à ce que ça change »),
+        # deux côté serveur : une veille datée, ou un écart lié à l'empreinte
+        # de la situation. Rien n'est supprimé : l'incident reste calculé, il
+        # est seulement retiré de la file tant que la décision tient.
+        if p == "/api/incidents/ack":
+            return self._incident_ack(body)
+        if p == "/api/incidents/unack":
+            return self._incident_unack(body)
 
         if p == "/api/actions/run":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))

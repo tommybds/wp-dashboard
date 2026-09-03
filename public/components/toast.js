@@ -160,8 +160,33 @@ export const NOTIF = (() => {
     // c'est précisément ce qu'il ne faut pas rater en changeant d'écran.
     if (n.etat === 'ok') n.timer = setTimeout(() => retirer(id), 8000);
   }
+  /* Un message DÉJÀ terminé, avec UNE action facultative — « Alerte mise en
+     veille · Annuler ». Ce n'est pas une action en cours : ni barre de
+     progression, ni chronomètre, seulement un verdict et la possibilité de
+     revenir dessus avant qu'il ne s'efface (8 s, comme tout succès). Le bouton
+     retire la ligne lui-même : laisser le compte à rebours l'effacer après le
+     clic donnerait l'impression que rien ne s'était passé. */
+  function toast(o) {
+    o = o || {};
+    const id = start({ label: o.label || '', kind: 'ok' });
+    done(id, { ok: true, message: o.detail || '' });
+    const n = L.get(id);
+    if (!o.action || !n || !n.el) return id;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn sm ntf-a';
+    b.textContent = o.action;
+    b.onclick = e => {
+      e.stopPropagation();
+      retirer(id);
+      if (o.onAction) o.onAction();
+    };
+    n.el.querySelector('.ntf-main').appendChild(b);
+    return id;
+  }
+
   return {
-    start, update, done, remove: retirer,
+    start, update, done, toast, remove: retirer,
     encours: id => { const n = L.get(id); return !!n && !n.fini; },
   };
 })();

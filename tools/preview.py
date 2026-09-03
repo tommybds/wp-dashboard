@@ -182,13 +182,19 @@ def phperrors():
         "truncated": {}, "servers_failed": {}}
 
 
-def incidents():
-    """File « à traiter » : les deux gravités du backend (plus une inconnue),
-    neuf types, trois formes d'action et une source en échec.
+def incidents(include_acked=False):
+    """File « à traiter » : les deux buckets, les trois gravités, neuf types.
 
     Volontairement bâtie « à la main » plutôt que dérivée de fleet() : c'est le
-    rendu de la file qu'on veut éprouver (gravités, ancienneté, action en ligne,
-    lien seul, incident sans site, type inattendu), pas la logique du backend.
+    rendu de la file qu'on veut éprouver (buckets, gravités, ancienneté, action
+    en ligne, lien seul, incident sans site, type inattendu, acquittements), pas
+    la logique du backend.
+
+    Composition : 6 lignes « à traiter » (dont 2 critiques et une REVENUE parce
+    que son empreinte a changé), 4 lignes « à planifier » (les quatre cas que le
+    contexte fait basculer : PHP en fin de support, serveur injoignable,
+    certificat encore loin, moniteur en pause) et 3 acquittées (une veille, deux
+    écarts). Treize en tout — le nombre exact qui a motivé la refonte.
 
     Chaque incident porte son `extra` — le hors-ligne que le pli affiche : pile
     d'appels et fenêtre pour `php_fatal`, CVE et versions pour une vulnérabilité,
@@ -198,7 +204,9 @@ def incidents():
         return (datetime.now() - timedelta(hours=h)).replace(microsecond=0).isoformat()
 
     inc = [
+        # ---- à traiter : 2 critiques ------------------------------------- #
         {"id": "down:site-00.exemple.fr:", "severity": "critical", "kind": "down",
+         "bucket": "now",
          "site": "site-00.exemple.fr", "server": "plesk-mutu",
          "title": "site-00.exemple.fr injoignable",
          "detail": "moniteur Kuma en échec — 503 Service Unavailable",
@@ -207,23 +215,18 @@ def incidents():
          "link": {"tab": "incidents", "sub": ""},
          "extra": {"msg": "503 Service Unavailable", "since": iso(216)}},
         {"id": "vuln_critical_fixable:site-01.exemple.fr:plugin-2", "severity": "critical",
-         "kind": "vuln_critical_fixable", "site": "site-01.exemple.fr", "server": "vps-1",
-         "title": "plugin-2 1.2.0 · critical corrigeable",
-         "detail": "RCE (CVE-2025-0002) — correctif en 1.2.1",
+         "kind": "vuln_critical_fixable", "bucket": "now",
+         "site": "site-01.exemple.fr", "server": "vps-1",
+         "title": "plugin-2 1.3.0 · critical corrigeable",
+         "detail": "RCE (CVE-2025-0002) — correctif en 1.3.1",
          "since": iso(30), "age_h": 30.0,
-         "action": {"label": "MAJ plugin-2 → 1.2.1", "act": "plugin_update", "arg": "plugin-2"},
+         "action": {"label": "MAJ plugin-2 → 1.3.1", "act": "plugin_update", "arg": "plugin-2"},
          "link": {"tab": "securite", "sub": "vulns"},
          "extra": {"cve": ["CVE-2025-0002", "CVE-2025-0011"], "slug": "plugin-2",
-                   "from": "1.2.0", "to": "1.2.1"}},
-        {"id": "admin_unknown:site-02.exemple.fr:wpsvc", "severity": "critical",
-         "kind": "admin_unknown", "site": "site-02.exemple.fr", "server": "vps-2",
-         "title": "Administrateur inconnu sur site-02.exemple.fr",
-         "detail": "compte « wpsvc_fkmdmu » absent de la référence (inscrit le 2026-08-11)",
-         "since": iso(72), "age_h": 72.0, "action": None,
-         "link": {"tab": "securite", "sub": "admins"},
-         "extra": {"login": "wpsvc_fkmdmu", "email": "wpsvc@mail.ru",
-                   "registered": "2026-08-11 04:12:00"}},
+                   "from": "1.3.0", "to": "1.3.1"}},
+        # ---- à traiter : sauvegardes en retard, mais DATÉES (bouton utile) - #
         {"id": "backup_late:site-03.exemple.fr:", "severity": "warning", "kind": "backup_late",
+         "bucket": "now",
          "site": "site-03.exemple.fr", "server": "plesk-mutu",
          "title": "Sauvegarde en retard sur site-03.exemple.fr",
          "detail": "dernière sauvegarde il y a 56 h — seuil 48 h",
@@ -231,7 +234,35 @@ def incidents():
          "action": {"label": "Sauvegarder", "act": "updraft_backup", "arg": ""},
          "link": {"tab": "parc", "sub": ""},
          "extra": {"last_backup": iso(56), "age_h": 56.0, "service": "sftp"}},
+        {"id": "backup_late:site-08.exemple.fr:", "severity": "warning", "kind": "backup_late",
+         "bucket": "now",
+         "site": "site-08.exemple.fr", "server": "vps-1",
+         "title": "Sauvegarde en retard sur site-08.exemple.fr",
+         "detail": "dernière sauvegarde il y a 74 h — seuil 48 h",
+         "since": iso(74), "age_h": 74.0,
+         "action": {"label": "Sauvegarder", "act": "updraft_backup", "arg": ""},
+         "link": {"tab": "parc", "sub": ""},
+         "extra": {"last_backup": iso(74), "age_h": 74.0, "service": "googledrive"}},
+        {"id": "backup_late:site-11.exemple.fr:", "severity": "warning", "kind": "backup_late",
+         "bucket": "now",
+         "site": "site-11.exemple.fr", "server": "vps-2",
+         "title": "Sauvegarde en retard sur site-11.exemple.fr",
+         "detail": "dernière sauvegarde il y a 51 h — seuil 48 h",
+         "since": iso(51), "age_h": 51.0,
+         "action": {"label": "Sauvegarder", "act": "updraft_backup", "arg": ""},
+         "link": {"tab": "parc", "sub": ""},
+         "extra": {"last_backup": iso(51), "age_h": 51.0, "service": "sftp"}},
+        # Gravité inconnue du front : elle doit rester visible, pas disparaître.
+        {"id": "inattendu:site-06.exemple.fr:", "severity": "info", "kind": "type_inconnu",
+         "bucket": "now",
+         "site": "site-06.exemple.fr", "server": "vps-2",
+         "title": "Type d'incident inconnu du front",
+         "detail": "backend plus récent que l'interface : la ligne reste lisible",
+         "since": iso(1), "age_h": 1.0, "action": None, "link": None, "extra": {}},
+
+        # ---- à planifier : les quatre cas que le CONTEXTE fait basculer --- #
         {"id": "php_eol:vps-1:7.4", "severity": "warning", "kind": "php_eol",
+         "bucket": "plan",
          "site": "", "server": "vps-1",
          "title": "PHP 7.4 en fin de support sur vps-1",
          "detail": "3 site(s) : site-04.exemple.fr, site-07.exemple.fr, site-10.exemple.fr",
@@ -239,10 +270,46 @@ def incidents():
          "link": {"tab": "securite", "sub": "php"},
          "extra": {"version": "7.4", "sites": ["site-04.exemple.fr", "site-07.exemple.fr",
                                                "site-10.exemple.fr"]}},
+        {"id": "server_stale:vps-2:", "severity": "warning", "kind": "server_stale",
+         "bucket": "plan",
+         "site": "", "server": "vps-2", "title": "Serveur vps-2 injoignable",
+         "detail": "ssh: connect timeout — dernière tentative il y a 3 h",
+         "since": iso(3), "age_h": 3.0, "action": None,
+         "link": {"tab": "gestion", "sub": "serveurs"},
+         "extra": {"error": "ssh: connect timeout", "last_attempt": iso(3)}},
+        {"id": "cert_expiring:site-01.exemple.fr:", "severity": "warning", "kind": "cert_expiring",
+         "bucket": "plan",
+         "site": "site-01.exemple.fr", "server": "vps-1",
+         "title": "Certificat de site-01.exemple.fr à renouveler",
+         "detail": "expire dans 15 jour(s) (le 2026-09-18) — seuil 21 j",
+         "since": None, "age_h": 0.0, "action": None,
+         "link": {"tab": "securite", "sub": "certs"},
+         "extra": {"days_left": 15, "expires": "2026-09-18T00:00:00Z"}},
+        {"id": "down:site-09.exemple.fr:", "severity": "warning", "kind": "down",
+         "bucket": "plan",
+         "site": "site-09.exemple.fr", "server": "vps-2",
+         "title": "site-09.exemple.fr : moniteur en pause, dernier état injoignable",
+         "detail": "connection refused — réactiver le moniteur dans Gestion une fois "
+                   "le site réparé",
+         "since": iso(240), "age_h": 240.0,
+         "action": {"label": "Re-scan", "act": "rescan", "arg": ""},
+         "link": {"tab": "incidents", "sub": ""},
+         "extra": {"msg": "connection refused", "since": iso(240)}},
+
+        # ---- acquittés d'office (cf. ACKS ci-dessous) --------------------- #
+        {"id": "admin_unknown:site-02.exemple.fr:wpsvc_fkmdmu", "severity": "critical",
+         "kind": "admin_unknown", "bucket": "now",
+         "site": "site-02.exemple.fr", "server": "vps-2",
+         "title": "Administrateur inconnu sur site-02.exemple.fr",
+         "detail": "compte « wpsvc_fkmdmu » absent de la référence (inscrit le 2026-08-11)",
+         "since": iso(72), "age_h": 72.0, "action": None,
+         "link": {"tab": "securite", "sub": "admins"},
+         "extra": {"login": "wpsvc_fkmdmu", "email": "wpsvc@mail.ru",
+                   "registered": "2026-08-11 04:12:00"}},
         # Le cas qui a motivé le pli : message long, fichier du CŒUR (le « que
         # faire » doit alors renvoyer à la trace), pile de 6 cadres dont un coupé.
         {"id": "php_fatal:site-01.exemple.fr:class-wp-rest-server.php:1120",
-         "severity": "critical", "kind": "php_fatal",
+         "severity": "critical", "kind": "php_fatal", "bucket": "now",
          "site": "site-01.exemple.fr", "server": "vps-1",
          "title": "Fatal error sur site-01.exemple.fr",
          "detail": "Uncaught Error: Call to undefined method WP_Error::get_method() — "
@@ -250,23 +317,13 @@ def incidents():
          "since": iso(8), "age_h": 8.0, "action": None,
          "link": {"tab": "securite", "sub": "phperrors"},
          "extra": {"trace": TRACE, "trace_truncated": True, "sample_ts": now(1),
+                   "message": "Uncaught Error: Call to undefined method WP_Error::get_method()",
                    "count": 5, "first": now(8), "last": now(1),
                    "file": "wp-includes/rest-api/class-wp-rest-server.php",
                    "line": 1120}},
-        # Le même type, mais parti d'une EXTENSION et sans pile : le « que faire »
-        # doit changer, et le panneau ne doit pas montrer de cadre de trace vide.
-        {"id": "php_fatal:site-02.exemple.fr:x.php:42", "severity": "critical",
-         "kind": "php_fatal", "site": "site-02.exemple.fr", "server": "vps-2",
-         "title": "Fatal error sur site-02.exemple.fr",
-         "detail": "Uncaught Error: Call to undefined function acf_get_field() — "
-                   "wp-content/plugins/x/x.php:42 (×3)",
-         "since": iso(4), "age_h": 4.0, "action": None,
-         "link": {"tab": "securite", "sub": "phperrors"},
-         "extra": {"trace": [], "trace_truncated": False, "sample_ts": "",
-                   "count": 3, "first": now(4), "last": now(2),
-                   "file": "wp-content/plugins/x/x.php", "line": 42}},
         {"id": "checksums_modified:site-05.exemple.fr:", "severity": "critical",
-         "kind": "checksums_modified", "site": "site-05.exemple.fr", "server": "vps-2",
+         "kind": "checksums_modified", "bucket": "now",
+         "site": "site-05.exemple.fr", "server": "vps-2",
          "title": "Intégrité du cœur en échec sur site-05.exemple.fr",
          "detail": "3 fichier(s) ne correspondent pas au cœur officiel — "
                    "wp-includes/load.php doesn't verify against checksum",
@@ -275,49 +332,91 @@ def incidents():
          "link": {"tab": "securite", "sub": "checksums"},
          "extra": {"files": ["wp-includes/load.php", "wp-admin/includes/file.php",
                              "wp-includes/version.php"]}},
-        {"id": "cert_expiring:site-01.exemple.fr:", "severity": "warning", "kind": "cert_expiring",
-         "site": "site-01.exemple.fr", "server": "vps-1",
-         "title": "Certificat de site-01.exemple.fr à renouveler",
-         "detail": "expire dans 6 jour(s) (le 2026-09-09) — seuil 21 j",
-         "since": None, "age_h": 0.0, "action": None,
-         "link": {"tab": "securite", "sub": "certs"},
-         "extra": {"days_left": 6, "expires": "2026-09-09T00:00:00Z"}},
-        # Gravité inconnue du front : elle doit rester visible, pas disparaître.
-        {"id": "inattendu:site-06.exemple.fr:", "severity": "info", "kind": "type_inconnu",
-         "site": "site-06.exemple.fr", "server": "vps-2",
-         "title": "Type d'incident inconnu du front",
-         "detail": "backend plus récent que l'interface : la ligne reste lisible",
-         "since": iso(1), "age_h": 1.0, "action": None, "link": None},
     ]
-    if SCENARIO == "stale":
-        inc.append({"id": "server_stale:vps-1:", "severity": "warning", "kind": "server_stale",
-                    "site": "", "server": "vps-1", "title": "Serveur vps-1 injoignable",
-                    "detail": "ssh: connect timeout — dernière tentative il y a 3 h",
-                    "since": iso(3), "age_h": 3.0, "action": None,
-                    "link": {"tab": "gestion", "sub": "serveurs"},
-                    "extra": {"error": "ssh: connect timeout",
-                              "last_attempt": iso(3)}})
     if SCENARIO == "vide":
         inc = []
     # Une source en échec : la file doit le DIRE, sinon « rien à traiter » se
     # confond avec « on n'a pas pu regarder ».
     errs = [] if SCENARIO == "vide" else [
         {"source": "certs", "error": "RuntimeError: docker exec: conteneur uptime-kuma absent"}]
-    return {"generated_at": now(0),
-            "counts": {"critical": sum(1 for i in inc if i["severity"] == "critical"),
-                       "warning": sum(1 for i in inc if i["severity"] == "warning")},
-            "incidents": inc, "errors": errs}
+
+    visibles, masques = [], []
+    for i in inc:
+        i = dict(i)
+        i["acked"] = ack_vu(ACKS.get(i["id"]))
+        (masques if ack_masque(ACKS.get(i["id"])) else visibles).append(i)
+    rep = {"generated_at": now(0),
+           "counts": {"critical": _n(visibles, severity="critical"),
+                      "warning": _n(visibles, severity="warning"),
+                      "now_critical": _n(visibles, bucket="now", severity="critical"),
+                      "now_warning": _n(visibles, bucket="now", severity="warning"),
+                      "plan": _n(visibles, bucket="plan"),
+                      "acked": len(masques)},
+           "incidents": visibles, "errors": errs}
+    if include_acked:
+        rep["acked"] = masques
+    return rep
+
+
+def _n(lot, **crit):
+    return sum(1 for i in lot if all(i.get(k) == v for k, v in crit.items()))
+
+
+# Acquittements de la page bouchonnée : deux posés d'avance (une veille, deux
+# écarts) et un « écarté dont l'empreinte a changé » — l'incident est donc
+# VISIBLE, avec le bandeau « la situation a changé depuis ». Les POST
+# /api/incidents/ack et /unack écrivent ici : le bouton a un effet réel.
+def _epoch(jours=0):
+    return int((datetime.now() + timedelta(days=jours)).timestamp())
+
+
+ACKS = {
+    "admin_unknown:site-02.exemple.fr:wpsvc_fkmdmu": {
+        "mode": "snooze", "until": _epoch(5), "reason": "audit prévu vendredi",
+        "by": "tommy", "ts": _epoch(-2), "stale": False},
+    "php_fatal:site-01.exemple.fr:class-wp-rest-server.php:1120": {
+        "mode": "ignore", "until": None, "reason": "extension abandonnée, site à refaire",
+        "by": "tommy", "ts": _epoch(-9), "stale": False},
+    "checksums_modified:site-05.exemple.fr:": {
+        "mode": "ignore", "until": None, "reason": "fichiers de langue retouchés à la main",
+        "by": "tommy", "ts": _epoch(-20), "stale": False},
+    "vuln_critical_fixable:site-01.exemple.fr:plugin-2": {
+        "mode": "ignore", "until": None, "reason": "version 1.2.0 gelée pour le client",
+        "by": "tommy", "ts": _epoch(-11), "stale": True},
+}
+
+
+def ack_masque(e):
+    """L'acquittement tient-il encore ? (veille non échue, ou écart non périmé)"""
+    if not isinstance(e, dict):
+        return False
+    if e.get("mode") == "snooze":
+        return bool(e.get("until")) and e["until"] > datetime.now().timestamp()
+    return e.get("mode") == "ignore" and not e.get("stale")
+
+
+def ack_vu(e):
+    """L'acquittement tel que l'API le renvoie (None si une veille est échue)."""
+    if not isinstance(e, dict):
+        return None
+    if e.get("mode") == "snooze" and not ack_masque(e):
+        return None
+    return {"mode": e.get("mode"), "until": e.get("until"), "reason": e.get("reason", ""),
+            "by": e.get("by", ""), "ts": e.get("ts"),
+            "stale_fingerprint": bool(e.get("stale")) and e.get("mode") == "ignore"}
 
 
 def sidebar_counts():
-    """Pastilles de la barre latérale, comme le backend : `counts` ne compte que
-    `critical` et `warning`. La file bouchonnée porte EN PLUS un incident de
-    gravité inconnue (pour éprouver le groupe « Autres »), d'où un écart de 1
-    entre la pastille et la longueur de la liste — écart impossible en
-    production, où le backend n'émet que ces deux gravités.
+    """Pastilles de la barre latérale, comme le backend : `incidents` porte les
+    six compteurs de la file, et c'est l'interface qui ne retient que
+    `now_critical` + `now_warning` — la pastille ne compte pas les chantiers.
+
+    La file bouchonnée porte EN PLUS un incident de gravité inconnue (pour
+    éprouver le groupe « Autres »), d'où un écart de 1 entre la pastille et la
+    longueur du bloc « à traiter » — écart impossible en production, où le
+    backend n'émet que `critical` et `warning`.
     """
-    p = incidents()
-    return {"incidents": dict(p["counts"]),
+    return {"incidents": dict(incidents()["counts"]),
             "securite": {"vulns_fixable": 6, "admins_unknown": 1},
             "parc": {"updates_sites": 12}}
 
@@ -363,7 +462,8 @@ SETTINGS = {
     "vizproof_api_base": "https://vizproof.com",
     "incident_rules": {"backup_max_age_h": 48, "cert_warn_days": 21,
                        "cert_critical_days": 7, "vuln_high_is_incident": False,
-                       "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]},
+                       "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"],
+                       "plan_kinds": ["php_eol", "server_stale"]},
 }
 ALERTES = {"enabled": True, "token_set": True, "token_tail": "aa42", "chat_id": "-100123",
            "rules": {"new_admin": True, "checksum_fail": True, "viz_anomaly": False,
@@ -637,7 +737,10 @@ STUB = """
   // réglage enregistré n'apparaîtrait jamais au rechargement de la section.
   const DIRECT = ['/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
     '/api/mgmt/sshkeys', '/api/mgmt/settings', '/api/mgmt/alerts', '/api/mgmt/schedule',
-    '/api/mgmt/candidates', '/api/mgmt/events', '/api/actions/viz_pages'];
+    '/api/mgmt/candidates', '/api/mgmt/events', '/api/actions/viz_pages',
+    // la file dépend des acquittements posés depuis l'interface, et sa réponse
+    // dépend de `?include=acked` : elle ne peut pas venir du paquet figé.
+    '/api/incidents', '/api/mgmt/counts'];
   const vrai = window.fetch.bind(window);
   window.__PREVIEW__ = true;
   window.fetch = function(url, opts){
@@ -683,6 +786,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         chemin = self.path.split("?")[0]
+        if chemin == "/api/incidents":
+            import urllib.parse as up
+            q = up.parse_qs(self.path.split("?", 1)[-1]) if "?" in self.path else {}
+            return self._json(200, incidents(q.get("include", [""])[0] == "acked"))
         if chemin == "/api/actions/viz_pages":
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
@@ -722,6 +829,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except ValueError:
             corps = {}
         rep, code = {"ok": True}, 200
+        # Acquittements : ils ont un EFFET (la ligne disparaît, le toast peut
+        # l'annuler, le bloc « Acquittés » la retrouve), sinon on ne peut rien
+        # vérifier du geste qui vide la file.
+        if chemin == "/api/incidents/ack":
+            cid = str(corps.get("id") or "")
+            mode = str(corps.get("mode") or "")
+            if mode not in ("snooze", "ignore"):
+                return self._json(400, {"error": "mode invalide (snooze ou ignore)"})
+            if len(str(corps.get("reason") or "")) > 300:
+                return self._json(400, {"error": "raison : 300 caractères au plus"})
+            jours = corps.get("days")
+            if mode == "snooze" and not (isinstance(jours, int) and 1 <= jours <= 365):
+                return self._json(400, {"error": "days : entre 1 et 365"})
+            if not any(i["id"] == cid for i in incidents(True)["incidents"] + incidents(True)["acked"]):
+                return self._json(404, {"error": "incident inconnu (déjà résolu ?)"})
+            ACKS[cid] = {"mode": mode, "until": _epoch(jours) if mode == "snooze" else None,
+                         "reason": " ".join(str(corps.get("reason") or "").split()),
+                         "by": "tommy", "ts": _epoch(0), "stale": False}
+            return self._json(200, {"ok": True, "id": cid, "acked": ack_vu(ACKS[cid])})
+        if chemin == "/api/incidents/unack":
+            ACKS.pop(str(corps.get("id") or ""), None)
+            return self._json(200, {"ok": True, "id": corps.get("id"), "removed": True})
         gere = self._mgmt_post(chemin, corps)
         if gere is not None:
             return self._json(gere[0], gere[1])
@@ -951,7 +1080,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # partir des valeurs par défaut, jamais fusionné.
                     base = {"backup_max_age_h": 48, "cert_warn_days": 21, "cert_critical_days": 7,
                             "vuln_high_is_incident": False,
-                            "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]}
+                            "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"],
+                            "plan_kinds": ["php_eol", "server_stale"]}
                     base.update({kk: vv for kk, vv in v.items() if kk in base})
                     SETTINGS["incident_rules"] = base
                 elif k in SETTINGS:

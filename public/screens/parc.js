@@ -24,6 +24,7 @@ import { bindSortable, setDensity, colonnesMasquees, enregistrerColonnes } from 
 import { setIncidentCount } from '../components/shell.js';
 import { ouvrirFeuille, boutonFeuille } from '../components/sheet.js';
 import { openVizConnect, vizCellEl, vizInfo, vizOf, vizVal } from '../components/viz.js';
+import { estNow } from '../components/incident.js';
 import { incidentLigne, cleDeSite } from './site.js';
 
 /* ---- colonnes -------------------------------------------------------------
@@ -310,19 +311,29 @@ export async function chargerIncidents() {
   INCERR = (j && Array.isArray(j.errors)) ? j.errors : (j ? [] : [{ source: 'réseau', error: 'file indisponible' }]);
   INCLU = true;
   // La pastille « Incidents » de la barre latérale dit exactement ce que
-  // montre la file : une seule source, pas deux comptes qui divergent.
-  const crit = INCIDENTS.filter(i => i.severity === 'critical').length;
-  setIncidentCount(INCIDENTS.length, crit ? 'err' : 'warn');
+  // montre la file : une seule source, pas deux comptes qui divergent. Elle ne
+  // compte QUE les lignes « à traiter » — une pastille qui inclurait les
+  // chantiers ne redescendrait jamais à zéro, et on cesserait de la lire.
+  const maintenant = INCIDENTS.filter(estNow);
+  const crit = maintenant.filter(i => i.severity === 'critical').length;
+  setIncidentCount(maintenant.length, crit ? 'err' : 'warn');
   renderTodo();
   occupe('todo-list', false);
 }
+
+/* L'accueil ne montre qu'un RÉSUMÉ actionnable : les cinq premières lignes « à
+   traiter », déjà triées par le serveur, puis un renvoi vers l'écran Incidents
+   qui porte la liste complète et la section « à planifier ». */
+const TODO_MAX = 5;
 
 function renderTodo() {
   const box = document.getElementById('parc-todo');
   if (!box) return;
   const ouvert = todoOuvert();
-  const n = INCIDENTS.length;
-  const crit = INCIDENTS.filter(i => i.severity === 'critical').length;
+  const maintenant = INCIDENTS.filter(estNow);
+  const plan = INCIDENTS.length - maintenant.length;
+  const n = maintenant.length;
+  const crit = maintenant.filter(i => i.severity === 'critical').length;
 
   const bt = h('button', {
     type: 'button', class: 'todo-h', 'aria-expanded': ouvert ? 'true' : 'false', 'aria-controls': 'todo-list',
@@ -334,8 +345,21 @@ function renderTodo() {
 
   const liste = h('div', { class: 'inclist', id: 'todo-list', hidden: !ouvert });
   if (!INCLU) liste.append(h('p', { class: 'hint hint-tight', text: 'analyse en cours…' }));
-  else if (!n) liste.append(h('p', { class: 'hint hint-tight', text: 'Rien à traiter — le parc est en ordre.' }));
-  else INCIDENTS.forEach(i => liste.append(incidentLigne(i, true)));
+  else if (!n) {
+    // Rien à faire MAINTENANT n'est pas « rien à faire » : le nombre de
+    // chantiers reste dit, sans être compté comme une urgence.
+    liste.append(h('p', { class: 'hint hint-tight todo-ok' },
+      iconEl('circle-check', { size: 16 }),
+      h('span', { text: plan ? 'Rien à traiter — ' + plan + ' à planifier' : 'Rien à traiter — le parc est en ordre.' }),
+      plan ? h('a', { class: 'todo-plus', href: '#incidents', text: 'voir tout' }) : null));
+  } else {
+    maintenant.slice(0, TODO_MAX).forEach(i => liste.append(incidentLigne(i, true, chargerIncidents)));
+    const reste = (n - Math.min(n, TODO_MAX)) + plan;
+    if (reste) {
+      liste.append(h('a', { class: 'todo-plus', href: '#incidents' },
+        '+ ' + reste + ' autre' + (reste > 1 ? 's' : ''), h('span', { class: 'sep', text: ' · ' }), 'voir tout'));
+    }
+  }
   INCERR.forEach(e => liste.append(h('p', { class: 'hint hint-tight' },
     h('span', { class: 'pill warn', text: 'source incomplète' }), ' ',
     h('span', { class: 'muted small', text: (e.source || '?') + ' : ' + (e.error || '') }))));

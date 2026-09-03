@@ -228,6 +228,38 @@ def check_imports(pbs, verbose):
         print(f"  (f) {nb} noms importés vérifiés sur {len(FICHIERS_JS)} modules")
 
 
+
+def ids_dupliques(racine):
+    """Un même id déclaré par deux écrans : le second rendu écrase le premier.
+
+    Le bug s'est produit avec « inc-body », partagé par Incidents et Réglages :
+    ouvrir l'un puis l'autre vidait la liste d'incidents. Les ids sont posés par
+    `h('div', {id: 'x'})` dans les modules, et en dur dans index.html.
+    """
+    vus = {}
+    for f in sorted(racine.glob("public/**/*.js")) + [racine / "public/index.html"]:
+        if not f.exists():
+            continue
+        txt = f.read_text(encoding="utf-8")
+        trouves = set(re.findall(r"""id:\s*['"]([A-Za-z][\w-]*)['"]""", txt))
+        trouves |= set(re.findall(r"""\sid=["']([A-Za-z][\w-]*)["']""", txt))
+        for i in trouves:
+            vus.setdefault(i, []).append(f.relative_to(racine).as_posix())
+    return {i: où for i, où in vus.items() if len(où) > 1}
+
+
+
+def check_ids_uniques(pbs, verbose=False):
+    """Aucun id ne doit être déclaré par deux écrans (le second écrase le premier)."""
+    dbl = ids_dupliques(ROOT)
+    # index.html déclare la coque ; un écran qui vise un id de la coque est normal.
+    dbl = {i: où for i, où in dbl.items() if "public/index.html" not in où}
+    for i, où in sorted(dbl.items()):
+        pbs.append(f"id « {i} » déclaré dans {', '.join(où)}")
+    if verbose:
+        print(f"  identifiants uniques : {len(dbl)} doublon(s)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -237,6 +269,7 @@ def main():
     check_routes(pbs, a.verbose)
     check_actions(pbs, a.verbose)
     check_ids(pbs, a.verbose)
+    check_ids_uniques(pbs, a.verbose)
     check_emoji(pbs, a.verbose)
     check_styles(pbs, a.verbose)
     check_imports(pbs, a.verbose)

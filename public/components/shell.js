@@ -142,7 +142,13 @@ export function majCompteursServeur(force) {
   CNT_AT = Date.now();
   CNT_P = api('/api/mgmt/counts').then(c => {
     const i = (c && c.incidents) || {}, s = (c && c.securite) || {};
-    setIncidentCount((i.critical || 0) + (i.warning || 0), i.critical ? 'err' : 'warn');
+    // La pastille ne compte QUE les incidents « à traiter » : y ajouter les
+    // chantiers (PHP en fin de support, moniteur en pause) la maintiendrait
+    // rouge en permanence, et une pastille qui ne redescend jamais n'est plus
+    // lue. `critical`/`warning` restent le repli d'un backend plus ancien.
+    const crit = ('now_critical' in i) ? (i.now_critical || 0) : (i.critical || 0);
+    const avert = ('now_warning' in i) ? (i.now_warning || 0) : (i.warning || 0);
+    setIncidentCount(crit + avert, crit ? 'err' : 'warn');
     setCounter('securite', (s.vulns_fixable || 0) + (s.admins_unknown || 0),
       s.admins_unknown ? 'err' : 'warn');
     return c;

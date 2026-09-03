@@ -697,18 +697,23 @@ function incidentsEl() {
     return h('p', { class: 'hint hint-tight', text: 'Rien à traiter sur ce site.' });
   }
   const box = h('div', { class: 'inclist' });
-  INCIDENTS.forEach(i => box.append(incidentLigne(i, false)));
+  INCIDENTS.forEach(i => box.append(incidentLigne(i, false, chargerIncidents)));
   return box;
 }
 
 /* Une ligne d'incident, partagée avec l'écran Parc : trait de gravité, site,
    titre, détail court, ancienneté, action en ligne — et le pli qui donne le
-   message entier, la pile d'appels et le « que faire » (components/incident.js,
-   le même objet que sur l'écran Incidents). */
-export function incidentLigne(inc, avecSite) {
+   message entier, la pile d'appels, le « que faire » et « Ne plus signaler… »
+   (components/incident.js, le même objet que sur l'écran Incidents).
+
+   `recharger` : ce que l'écran appelant relit après un acquittement. Sans lui,
+   le bouton « Ne plus signaler… » ne s'affiche pas — une ligne qu'on acquitte
+   sans pouvoir la voir disparaître ne rassure personne. */
+export function incidentLigne(inc, avecSite, recharger) {
   return incidentEl(inc, {
     siteEl: avecSite && inc.site ? h('b', { class: 'inc-s', text: inc.site }) : null,
     actions: incidentAction(inc, avecSite),
+    onAck: recharger || null,
   });
 }
 
