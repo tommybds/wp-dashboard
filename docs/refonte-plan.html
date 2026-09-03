@@ -1,0 +1,411 @@
+<title>Refonte Parc WordPress</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F2F4F7; --surface:#FFFFFF; --ink:#18232D; --ink-2:#3E4C59; --muted:#6B7A88; --line:#D9DFE6; --line-2:#E9EDF1;
+  --accent:#1F5FA3; --accent-ink:#173F6B; --accent-bg:#E3ECF7;
+  --ok:#1E7F5C; --ok-bg:#E1F3EA; --warn:#9A6A0B; --warn-bg:#FBF0D3; --err:#B23B36; --err-bg:#F9E2E0;
+  --code-bg:#EEF1F4;
+  --f-display:"Archivo",system-ui,sans-serif; --f-body:"IBM Plex Sans",system-ui,sans-serif; --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --measure:70ch; --r:6px;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --ground:#0F1418; --surface:#161C22; --ink:#E7ECF1; --ink-2:#C4CDD6; --muted:#8E9CAA; --line:#2A343E; --line-2:#222B34;
+  --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B;
+  --ok:#5CC29A; --ok-bg:#15302A; --warn:#E0B24C; --warn-bg:#3A2E12; --err:#EF8580; --err-bg:#3D1F1E;
+  --code-bg:#1D252D;
+}}
+:root[data-theme="dark"]{
+  --ground:#0F1418; --surface:#161C22; --ink:#E7ECF1; --ink-2:#C4CDD6; --muted:#8E9CAA; --line:#2A343E; --line-2:#222B34;
+  --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B;
+  --ok:#5CC29A; --ok-bg:#15302A; --warn:#E0B24C; --warn-bg:#3A2E12; --err:#EF8580; --err-bg:#3D1F1E;
+  --code-bg:#1D252D;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.6 var(--f-body);-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-underline-offset:3px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+code,kbd,.mono{font-family:var(--f-mono);font-size:.88em}
+code{background:var(--code-bg);padding:.1em .35em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:var(--r);overflow-x:auto;font-size:.85rem;line-height:1.5}
+pre code{background:none;padding:0}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;line-height:1.15;margin:0}
+h1{font-size:2.1rem;font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.45rem;font-weight:600;margin-top:2.6rem;padding-top:1.2rem;border-top:1px solid var(--line)}
+h3{font-size:1.05rem;font-weight:600;margin-top:1.6rem}
+p,ul,ol{max-width:var(--measure);margin:.7rem 0}
+li{margin:.25rem 0}
+.eyebrow{font-family:var(--f-mono);font-size:.74rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.page{display:grid;grid-template-columns:minmax(0,1fr);gap:0;max-width:1120px;margin:0 auto;padding:32px 24px 96px}
+@media (min-width:1000px){ .page{grid-template-columns:200px minmax(0,1fr);gap:48px} .toc{position:sticky;top:24px;align-self:start} }
+.toc{font-size:.85rem}
+.toc ol{list-style:none;padding:0;margin:0;border-left:2px solid var(--line)}
+.toc li{margin:0} .toc a{display:block;padding:5px 0 5px 12px;color:var(--ink-2);text-decoration:none;border-left:2px solid transparent;margin-left:-2px}
+.toc a:hover{color:var(--accent);border-left-color:var(--accent)}
+header.top{margin-bottom:1.5rem}
+header.top p.lead{font-size:1.08rem;color:var(--ink-2);max-width:62ch}
+.meta{display:flex;flex-wrap:wrap;gap:18px 28px;margin-top:1rem;font-size:.85rem;color:var(--muted)}
+.meta b{color:var(--ink);font-weight:500}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+.tablewrap{overflow-x:auto;margin:1rem 0;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
+th{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--ground)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:.76rem;font-weight:500;font-family:var(--f-mono);letter-spacing:.02em;white-space:nowrap}
+.chip.ok{background:var(--ok-bg);color:var(--ok)} .chip.warn{background:var(--warn-bg);color:var(--warn)} .chip.err{background:var(--err-bg);color:var(--err)} .chip.acc{background:var(--accent-bg);color:var(--accent-ink)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:1rem 0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.panel h4{margin:0 0 .4rem;font:600 .95rem var(--f-display)}
+.panel p{margin:.3rem 0;font-size:.92rem;max-width:none}
+.finding{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;padding:10px 0;border-bottom:1px solid var(--line-2);max-width:var(--measure)}
+.finding:last-child{border-bottom:0}
+.finding .n{font-family:var(--f-mono);font-size:.78rem;color:var(--muted);padding-top:3px}
+.finding b{font-weight:600}
+.finding p{margin:.15rem 0 0;font-size:.93rem;color:var(--ink-2);max-width:none}
+.swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:1rem 0}
+.sw{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--surface)}
+.sw .c{height:46px}
+.sw .t{padding:8px 10px;font-size:.78rem;font-family:var(--f-mono);color:var(--ink-2)} .sw .t b{display:block;color:var(--ink);font-family:var(--f-body);font-weight:600}
+.phase{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:var(--r);background:var(--surface);padding:16px 18px;margin:1rem 0}
+.phase header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;margin-bottom:.4rem}
+.phase header h3{margin:0}
+.phase .dur{font-family:var(--f-mono);font-size:.78rem;color:var(--muted)}
+.phase ul{margin:.4rem 0}
+.phase .accept{margin-top:.6rem;padding-top:.6rem;border-top:1px dashed var(--line);font-size:.9rem}
+.phase .accept b{font-weight:600}
+figure{margin:1.2rem 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+figure svg{display:block;width:100%;height:auto}
+figcaption{font-size:.82rem;color:var(--muted);margin-top:8px}
+.wire text{font-family:var(--f-mono);font-size:11px;fill:var(--ink-2)}
+.wire .lbl{fill:var(--muted);font-size:10px}
+.wire rect.box{fill:var(--ground);stroke:var(--line);stroke-width:1}
+.wire rect.sf{fill:var(--surface);stroke:var(--line);stroke-width:1}
+.wire rect.acc{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1}
+.wire rect.st{fill:var(--ok-bg);stroke:none}
+.wire rect.stw{fill:var(--warn-bg);stroke:none}
+.wire rect.ste{fill:var(--err-bg);stroke:none}
+.wire line{stroke:var(--line);stroke-width:1}
+.note{border-left:3px solid var(--warn);background:var(--warn-bg);padding:10px 14px;border-radius:0 var(--r) var(--r) 0;font-size:.92rem;max-width:var(--measure)}
+.decisions li{margin:.45rem 0}
+@media (prefers-reduced-motion:no-preference){ a{transition:color .15s} }
+</style>
+
+<div class="page">
+<nav class="toc" aria-label="Sommaire">
+  <div class="eyebrow" style="margin-bottom:8px">Sommaire</div>
+  <ol>
+    <li><a href="#etat">1. État des lieux</a></li>
+    <li><a href="#principes">2. Principes</a></li>
+    <li><a href="#ds">3. Design system</a></li>
+    <li><a href="#ia">4. Architecture d'écrans</a></li>
+    <li><a href="#composants">5. Composants clés</a></li>
+    <li><a href="#code">6. Architecture du code</a></li>
+    <li><a href="#phases">7. Phases</a></li>
+    <li><a href="#tests">8. Vérification</a></li>
+    <li><a href="#risques">9. Risques et décisions</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="top">
+  <div class="eyebrow">Plan de refonte · dashboard.sumoto.fr · septembre 2026</div>
+  <h1 style="margin-top:6px">Refonte graphique et ergonomique du dashboard Parc WordPress</h1>
+  <p class="lead">Une console d'exploitation sobre, lisible sur grand écran et correcte au téléphone, construite sans chaîne de build : HTML, CSS et modules ES servis tels quels par nginx. Cinq phases, chacune livrable et déployable seule, sans jamais casser l'outil qui sert tous les jours.</p>
+  <div class="meta">
+    <span>Stack <b>vanilla modulaire, zéro build</b></span>
+    <span>Direction <b>console d'exploitation</b></span>
+    <span>Cibles <b>bureau d'abord, mobile correct</b></span>
+    <span>Effort estimé <b>14 à 18 jours</b></span>
+  </div>
+</header>
+
+<h2 id="etat">1. État des lieux</h2>
+<p>Le dashboard a été construit en trois jours, fonctionnalité par fonctionnalité. Il rend service, mais sa forme est celle d'une accumulation : chaque écran a été ajouté là où il y avait de la place, avec la charte qu'il avait sous la main.</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Mesure</th><th class="num">Valeur</th><th>Ce que ça dit</th></tr></thead>
+<tbody>
+<tr><td>Fichier unique <code>index.html</code></td><td class="num">3 750 lignes</td><td>Tout le front dans un fichier : impossible à relire par écran, conflits à chaque modification</td></tr>
+<tr><td>JavaScript inline</td><td class="num">3 081 lignes · 197 fonctions</td><td>Aucun découpage par responsabilité, état global partagé (FLEET, CUR, SEL, FILT…)</td></tr>
+<tr><td>Accès au DOM par identifiant</td><td class="num">324</td><td>Chaque écran est couplé à des ids uniques ; déplacer une section casse son chargeur (déjà arrivé)</td></tr>
+<tr><td>Rendu par <code>innerHTML =</code></td><td class="num">193</td><td>Le HTML est produit dans des chaînes JS : pas de composant réutilisable, échappement à la main</td></tr>
+<tr><td>Sections <code>&lt;h2&gt;</code> réparties en 4 onglets</td><td class="num">25</td><td>Trop de sous-onglets (6 en Gestion, 8 en Sécurité) : la navigation dit « où c'est rangé », pas « ce qu'il faut faire »</td></tr>
+<tr><td>Boutons</td><td class="num">102</td><td>Actions présentées à plat, sans hiérarchie de fréquence ni de risque</td></tr>
+<tr><td>Modales</td><td class="num">7</td><td>Plus un tiroir, plus une barre de notifications : trois couches qui se superposent</td></tr>
+<tr><td>Jetons CSS</td><td class="num">29</td><td>Une échelle existe (polices, rayons, espacements) mais l'iconographie est en emoji et la couleur d'état se confond avec l'accent</td></tr>
+</tbody></table></div>
+
+<h3>Ce qui gêne à l'usage</h3>
+<div class="finding"><span class="n">A</span><div><b>Le tiroir porte toute la fiche site.</b><p>Indicateurs, actions, extensions, restauration, VizProof, sauvegardes, historique : une colonne de 500 px qui défile sur trois écrans. La fiche d'un site est l'écran le plus utilisé, il mérite une vraie page.</p></div></div>
+<div class="finding"><span class="n">B</span><div><b>La page d'accueil ne dit pas quoi faire.</b><p>Six tuiles, puis un tableau de 20 lignes trié par nom. Ce qui demande une action (site down, PHP en fin de vie, vulnérabilité critique, sauvegarde en retard) n'est pas remonté en tête.</p></div></div>
+<div class="finding"><span class="n">C</span><div><b>Trois vocabulaires d'état.</b><p>Pastille de couleur, texte coloré, chip : « 7.0.4 → 7.1 » en orange, « v1.0.3 · à mettre à jour » en jaune, « il y a 15 h » en vert. Le lecteur doit ré-apprendre le code par colonne.</p></div></div>
+<div class="finding"><span class="n">D</span><div><b>Les emoji font office d'icônes.</b><p>🕘 🌓 ⚙️ ⏻ 🛡 ↻ ＋ : rendu différent selon l'OS, taille non maîtrisée, aucun état survol ou désactivé. C'est le premier signal « bricolé » de l'interface.</p></div></div>
+<div class="finding"><span class="n">E</span><div><b>Sécurité et Historique sont des tiroirs de rangement.</b><p>Huit sous-onglets pour la sécurité, deux pour l'historique, alors que l'utilisateur pose trois questions : qu'est-ce qui est cassé, qu'est-ce qui est exposé, qu'est-ce qui a changé.</p></div></div>
+<div class="finding"><span class="n">F</span><div><b>Mobile : lisible, pas utilisable.</b><p>Le tableau défile horizontalement, le tiroir prend l'écran, les actions à confirmation en deux clics sont fines. On peut consulter, pas agir.</p></div></div>
+
+<h2 id="principes">2. Principes de la refonte</h2>
+<ol>
+<li><b>Une console, pas un site.</b> Densité maîtrisée, typographie nette, pas de hero, pas d'illustration. La couleur est réservée aux états ; l'accent sert à l'action principale et au focus, rien d'autre.</li>
+<li><b>Ce qui demande une action arrive en premier.</b> Chaque écran s'ouvre sur sa file d'attente : incidents, puis mises à jour, puis le reste.</li>
+<li><b>Un seul langage d'état.</b> Quatre niveaux (ok, attention, critique, inconnu), une seule forme (chip avec point), les mêmes mots partout.</li>
+<li><b>Le site est une page, pas un tiroir.</b> Adresse partageable, onglets, historique complet, actions groupées par intention.</li>
+<li><b>Le risque se lit avant de cliquer.</b> Les actions qui modifient un site sont visuellement distinctes de celles qui lisent, et la confirmation dit ce qui va se passer.</li>
+<li><b>Rien ne bloque.</b> Tout ce qui dure plus de deux secondes tourne en tâche de fond, visible dans la barre de progression, reprenable après rechargement.</li>
+<li><b>Zéro build.</b> Le code déployé est le code écrit : modules ES natifs, CSS natif, un fichier de version pour le cache.</li>
+</ol>
+
+<h2 id="ds">3. Design system</h2>
+
+<h3>Couleur</h3>
+<p>Neutres froids à légère dominante bleue, deux fonds (page et surface), un accent unique pour l'action et le focus, et une gamme d'état indépendante de l'accent. Le thème sombre est dessiné, pas inversé : les fonds d'état y sont assombris, les textes d'état éclaircis.</p>
+<div class="swatches">
+  <div class="sw"><div class="c" style="background:#F2F4F7"></div><div class="t"><b>Page</b>#F2F4F7 · sombre #0F1418</div></div>
+  <div class="sw"><div class="c" style="background:#FFFFFF;border-bottom:1px solid #D9DFE6"></div><div class="t"><b>Surface</b>#FFFFFF · sombre #161C22</div></div>
+  <div class="sw"><div class="c" style="background:#18232D"></div><div class="t"><b>Encre</b>#18232D · sombre #E7ECF1</div></div>
+  <div class="sw"><div class="c" style="background:#1F5FA3"></div><div class="t"><b>Accent</b>#1F5FA3 · sombre #6FA8DE</div></div>
+  <div class="sw"><div class="c" style="background:#1E7F5C"></div><div class="t"><b>OK</b>#1E7F5C · sombre #5CC29A</div></div>
+  <div class="sw"><div class="c" style="background:#9A6A0B"></div><div class="t"><b>Attention</b>#9A6A0B · sombre #E0B24C</div></div>
+  <div class="sw"><div class="c" style="background:#B23B36"></div><div class="t"><b>Critique</b>#B23B36 · sombre #EF8580</div></div>
+</div>
+<p>Règle de contraste : texte courant ≥ 7:1, texte secondaire ≥ 4.5:1, chips ≥ 4.5:1 sur leur fond, dans les deux thèmes. Vérifié par script à chaque modification des jetons (voir §8).</p>
+
+<h3>Typographie</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Rôle</th><th>Face</th><th>Usage</th></tr></thead>
+<tbody>
+<tr><td>Titres et navigation</td><td><span style="font-family:var(--f-display);font-weight:600">Archivo</span> 600</td><td>Nom de site, titres d'écran, onglets. Semi-condensée : gagne de la place dans les en-têtes sans perdre en lisibilité</td></tr>
+<tr><td>Texte et interface</td><td><span style="font-family:var(--f-body)">IBM Plex Sans</span> 400 / 500</td><td>Tout le reste. Chiffres en <code>tabular-nums</code> dans les colonnes</td></tr>
+<tr><td>Données et code</td><td><span class="mono">IBM Plex Mono</span> 400</td><td>Versions, chemins, identifiants, sorties wp-cli, labels de colonnes en capitales espacées</td></tr>
+</tbody></table></div>
+<p>Échelle : 12 / 13 / 14 / 16 / 20 / 26 px. Le corps de l'interface est à 14 px (13 en mode compact), le corps des textes explicatifs à 16. Les polices sont servies localement depuis <code>public/fonts/</code> (pas d'appel à Google Fonts depuis une console d'administration).</p>
+
+<h3>Espace, formes, élévation</h3>
+<ul>
+<li>Espacements sur une base de 4 : 4, 8, 12, 16, 24, 32, 48.</li>
+<li>Rayons : 4 px pour les contrôles, 6 px pour les surfaces, pilule pour les chips. Pas d'arrondi généreux.</li>
+<li>Élévation par bordure, pas par ombre : la seule ombre est celle des couches flottantes (menu, panneau latéral, notification).</li>
+<li>Une surface n'est une carte que si elle est manipulable seule (un site dans la liste mobile, un job en cours). Les groupes de valeurs sont des listes label/valeur, pas des cartes.</li>
+</ul>
+
+<h3>Iconographie</h3>
+<p>Un sprite SVG unique de 24 icônes à trait de 1,5 px (Lucide, licence ISC), 16 px dans les lignes, 20 px dans les barres. Remplace tous les emoji. Chaque icône d'action est accompagnée d'un libellé ou d'un <code>aria-label</code> ; aucune icône seule dans une colonne de tableau.</p>
+
+<h3>Langage d'état</h3>
+<div class="grid2">
+  <div class="panel"><h4><span class="chip ok">● à jour</span></h4><p>Rien à faire. Vert réservé à cet état, jamais aux valeurs neutres comme un délai.</p></div>
+  <div class="panel"><h4><span class="chip warn">● 4 MAJ</span></h4><p>Action recommandée, sans urgence : mises à jour disponibles, sauvegarde de plus de 48 h, PHP en fin de support.</p></div>
+  <div class="panel"><h4><span class="chip err">● down</span></h4><p>Action requise : site injoignable, vulnérabilité critique corrigeable, checksums modifiés, admin inconnu.</p></div>
+  <div class="panel"><h4><span class="chip">○ inconnu</span></h4><p>Donnée absente ou périmée (serveur injoignable, agent muet). Gris, jamais vert par défaut.</p></div>
+</div>
+
+<h2 id="ia">4. Architecture d'écrans</h2>
+<p>Quatre onglets et vingt-cinq sections deviennent cinq destinations dans une barre latérale, plus une page par site. Les sous-onglets disparaissent : chaque destination est une seule page qui commence par ce qui demande une action.</p>
+
+<figure>
+<svg class="wire" viewBox="0 0 900 420" role="img" aria-label="Maquette filaire de la coque : barre latérale, en-tête, file d'attente et liste des sites">
+  <rect class="box" x="0" y="0" width="900" height="420" rx="6"/>
+  <rect class="sf" x="0" y="0" width="168" height="420"/>
+  <text x="16" y="30" style="font-weight:600;fill:var(--ink)">Parc WordPress</text>
+  <rect class="acc" x="10" y="52" width="148" height="26" rx="4"/><text x="20" y="69">Parc</text>
+  <text x="20" y="101">Incidents</text><rect class="ste" x="118" y="90" width="30" height="16" rx="8"/><text x="126" y="102" style="font-size:10px">3</text>
+  <text x="20" y="133">Sécurité</text><rect class="stw" x="118" y="122" width="30" height="16" rx="8"/><text x="124" y="134" style="font-size:10px">11</text>
+  <text x="20" y="165">Changements</text>
+  <text x="20" y="197">Gestion</text>
+  <line x1="10" y1="360" x2="158" y2="360"/>
+  <text x="20" y="384" class="lbl">Réglages · Journal · Thème</text>
+  <text x="20" y="404" class="lbl">tommy · déconnexion</text>
+  <rect class="sf" x="168" y="0" width="732" height="52"/>
+  <text x="188" y="31" style="font-weight:600;fill:var(--ink);font-size:14px">Parc</text>
+  <text x="228" y="31" class="lbl">20 sites · collecté il y a 4 min</text>
+  <rect class="sf" x="560" y="14" width="200" height="24" rx="4"/><text x="570" y="30" class="lbl">Rechercher un site, une extension…  ⌘K</text>
+  <rect class="acc" x="776" y="14" width="108" height="24" rx="4"/><text x="792" y="30" style="fill:var(--accent-ink)">↻ Collecter</text>
+  <text x="188" y="80" class="lbl" style="letter-spacing:.08em">À TRAITER</text>
+  <rect class="sf" x="188" y="90" width="696" height="34" rx="4"/><rect class="ste" x="196" y="99" width="6" height="16" rx="3"/><text x="212" y="111">by-maximilian.fr</text><text x="330" y="111" class="lbl">down depuis 9 j · Kuma</text><text x="800" y="111" style="fill:var(--accent)">Ouvrir</text>
+  <rect class="sf" x="188" y="128" width="696" height="34" rx="4"/><rect class="ste" x="196" y="137" width="6" height="16" rx="3"/><text x="212" y="149">ffhbi.fr</text><text x="330" y="149" class="lbl">ml-slider 3.100.1 · CVE critique corrigeable</text><text x="780" y="149" style="fill:var(--accent)">MAJ sûre</text>
+  <rect class="sf" x="188" y="166" width="696" height="34" rx="4"/><rect class="stw" x="196" y="175" width="6" height="16" rx="3"/><text x="212" y="187">plesk-legacy</text><text x="330" y="187" class="lbl">PHP 7.0 en fin de support sur 9 sites</text><text x="812" y="187" style="fill:var(--accent)">Voir</text>
+  <text x="188" y="228" class="lbl" style="letter-spacing:.08em">TOUS LES SITES</text>
+  <text x="640" y="228" class="lbl">Filtres ▾   Groupes ▾   Colonnes ▾</text>
+  <line x1="188" y1="238" x2="884" y2="238"/>
+  <text x="196" y="256" class="lbl">SITE</text><text x="420" y="256" class="lbl">ÉTAT</text><text x="520" y="256" class="lbl">WORDPRESS</text><text x="630" y="256" class="lbl">EXTENSIONS</text><text x="740" y="256" class="lbl">SAUVEGARDE</text><text x="840" y="256" class="lbl">VIZPROOF</text>
+  <line x1="188" y1="264" x2="884" y2="264"/>
+  <text x="196" y="286">alizes-locations.com</text><rect class="st" x="420" y="274" width="56" height="16" rx="8"/><text x="428" y="286" style="font-size:10px">● en ligne</text><text x="520" y="286">7.1</text><text x="630" y="286">25/30</text><text x="740" y="286" class="lbl">—</text><text x="840" y="286" class="lbl">absent</text>
+  <line x1="188" y1="296" x2="884" y2="296"/>
+  <text x="196" y="318">clinicvoltaire.com</text><rect class="st" x="420" y="306" width="56" height="16" rx="8"/><text x="428" y="318" style="font-size:10px">● en ligne</text><rect class="stw" x="520" y="306" width="70" height="16" rx="8"/><text x="526" y="318" style="font-size:10px">6.8.8 → 7.1</text><rect class="stw" x="630" y="306" width="46" height="16" rx="8"/><text x="636" y="318" style="font-size:10px">4 MAJ</text><text x="740" y="318">il y a 9 h</text><rect class="stw" x="840" y="306" width="44" height="16" rx="8"/><text x="846" y="318" style="font-size:10px">1.0.3</text>
+  <line x1="188" y1="328" x2="884" y2="328"/>
+  <text x="196" y="350">elwave.fr</text><rect class="st" x="420" y="338" width="56" height="16" rx="8"/><text x="428" y="350" style="font-size:10px">● en ligne</text><text x="520" y="350">7.1</text><rect class="stw" x="630" y="338" width="46" height="16" rx="8"/><text x="636" y="350" style="font-size:10px">2 MAJ</text><text x="740" y="350">il y a 9 h</text><rect class="st" x="840" y="338" width="44" height="16" rx="8"/><text x="846" y="350" style="font-size:10px">relié</text>
+  <line x1="188" y1="360" x2="884" y2="360"/>
+  <text x="196" y="382" class="lbl">… 17 autres</text>
+</svg>
+<figcaption>Coque : barre latérale avec compteurs, en-tête d'écran avec recherche globale, file « à traiter » avant la liste. Les chips d'état suivent le même code partout.</figcaption>
+</figure>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Destination</th><th>Question à laquelle elle répond</th><th>Ce qu'elle absorbe de l'existant</th></tr></thead>
+<tbody>
+<tr><td><b>Parc</b></td><td>Où en est le parc, qu'est-ce qui attend ?</td><td>Tableau de bord, tuiles, filtres, vues, export, actions groupées</td></tr>
+<tr><td><b>Incidents</b></td><td>Qu'est-ce qui est cassé ou périmé maintenant ?</td><td>Sites down (Kuma), erreurs PHP fatales, serveurs injoignables, checksums modifiés, certificats &lt; 21 j</td></tr>
+<tr><td><b>Sécurité</b></td><td>Qu'est-ce qui est exposé ?</td><td>Vulnérabilités (par site / par extension), administrateurs et référence, plugins à risque, PHP obsolète</td></tr>
+<tr><td><b>Changements</b></td><td>Qu'est-ce qui a bougé, et qui l'a fait ?</td><td>Historique des changements, journal des actions, événements des agents, tendance</td></tr>
+<tr><td><b>Gestion</b></td><td>Comment le parc est-il branché ?</td><td>Installs découverts, sites REST, moniteurs Kuma, serveurs, docroots, clés SSH, appairage d'agent</td></tr>
+<tr><td><b>Site</b> <span class="mono">#site/elwave.fr</span></td><td>Tout sur ce site, et agir dessus</td><td>Le tiroir entier, devenu une page à cinq onglets</td></tr>
+</tbody></table></div>
+
+<h3>La page site</h3>
+<p>En-tête : nom, client, serveur, état Kuma, chemin, dernier relevé, et <b>une</b> action principale déterminée par l'état (« MAJ sûre — 4 ext. » s'il y a des mises à jour, « Re-scan » sinon). Le reste des actions vit dans un menu « Actions » groupé par intention : mettre à jour, vérifier, sauvegarder, connecter. Cinq onglets : Vue d'ensemble, Extensions, Sécurité, Sauvegardes et restauration, Historique.</p>
+
+<figure>
+<svg class="wire" viewBox="0 0 900 300" role="img" aria-label="Maquette filaire de la page site : en-tête avec action principale, bandeau d'indicateurs, onglets, tableau des extensions">
+  <rect class="box" x="0" y="0" width="900" height="300" rx="6"/>
+  <text x="20" y="24" class="lbl">Parc › elwave.fr</text>
+  <text x="20" y="56" style="font-size:20px;font-weight:600;fill:var(--ink);font-family:var(--f-display)">elwave.fr</text>
+  <rect class="st" x="118" y="43" width="60" height="16" rx="8"/><text x="126" y="55" style="font-size:10px">● en ligne</text>
+  <text x="20" y="78" class="lbl">Sumotori · plesk-mutu · /var/www/vhosts/elwave.fr/httpdocs · relevé il y a 4 min</text>
+  <rect class="acc" x="672" y="40" width="128" height="26" rx="4"/><text x="684" y="57" style="fill:var(--accent-ink)">MAJ sûre — 2 ext.</text>
+  <rect class="sf" x="808" y="40" width="72" height="26" rx="4"/><text x="820" y="57">Actions ▾</text>
+  <rect class="sf" x="20" y="96" width="160" height="46" rx="4"/><text x="30" y="113" class="lbl">WORDPRESS</text><text x="30" y="132">7.1 · à jour</text>
+  <rect class="sf" x="192" y="96" width="160" height="46" rx="4"/><text x="202" y="113" class="lbl">EXTENSIONS</text><text x="202" y="132">2 MAJ sur 22</text>
+  <rect class="sf" x="364" y="96" width="160" height="46" rx="4"/><text x="374" y="113" class="lbl">PHP</text><text x="374" y="132">8.4.7</text>
+  <rect class="sf" x="536" y="96" width="160" height="46" rx="4"/><text x="546" y="113" class="lbl">SAUVEGARDE</text><text x="546" y="132">il y a 9 h · sftp</text>
+  <rect class="sf" x="708" y="96" width="172" height="46" rx="4"/><text x="718" y="113" class="lbl">VIZPROOF</text><text x="718" y="132">relié · 2 pages · 0 anomalie</text>
+  <text x="20" y="176" style="fill:var(--accent);font-weight:600">Vue d'ensemble</text><rect class="acc" x="20" y="182" width="100" height="2"/>
+  <text x="140" y="176">Extensions</text><text x="230" y="176">Sécurité</text><text x="300" y="176">Sauvegardes</text><text x="400" y="176">Historique</text>
+  <line x1="20" y1="184" x2="880" y2="184"/>
+  <text x="20" y="212" class="lbl" style="letter-spacing:.08em">À METTRE À JOUR</text>
+  <line x1="20" y1="222" x2="880" y2="222"/>
+  <text x="28" y="242">elementor</text><text x="220" y="242" class="mono">4.2.3 → 4.2.4</text><rect class="stw" x="360" y="230" width="90" height="16" rx="8"/><text x="366" y="242" style="font-size:10px">1 CVE moyenne</text><text x="700" y="242" style="fill:var(--accent)">MAJ</text><text x="740" y="242" class="lbl">Geler</text><text x="790" y="242" class="lbl">Rétablir ▾</text>
+  <line x1="20" y1="252" x2="880" y2="252"/>
+  <text x="28" y="272">wordpress-seo</text><text x="220" y="272" class="mono">28.3 → 28.4</text><text x="700" y="272" style="fill:var(--accent)">MAJ</text><text x="740" y="272" class="lbl">Geler</text><text x="790" y="272" class="lbl">Rétablir ▾</text>
+  <line x1="20" y1="282" x2="880" y2="282"/>
+</svg>
+<figcaption>Page site : une action principale déduite de l'état, le reste dans un menu. Les extensions à mettre à jour portent leur risque (CVE) sur la même ligne que le bouton.</figcaption>
+</figure>
+
+<h3>Mobile</h3>
+<p>Sous 720 px : la barre latérale devient une barre d'onglets en bas (Parc, Incidents, Sécurité, Plus), la liste des sites devient une liste de cartes (nom, état, deux chiffres), la page site garde ses onglets en défilement horizontal, et les actions passent dans une feuille qui monte du bas avec confirmation par bouton plein largeur. Les tableaux larges restent défilables mais ne sont plus le seul moyen de lire.</p>
+
+<h2 id="composants">5. Composants clés</h2>
+<div class="grid2">
+  <div class="panel"><h4>Chip d'état</h4><p>Point + libellé, quatre niveaux, une seule classe. Remplace les textes colorés des colonnes WordPress, Extensions, Backup, Vizproof.</p></div>
+  <div class="panel"><h4>Ligne de site</h4><p>Un composant pour le tableau bureau et la carte mobile, alimenté par le même objet. Clic = page site ; les cases à cocher restent pour le groupé.</p></div>
+  <div class="panel"><h4>Menu d'actions</h4><p>Groupes « Mettre à jour / Vérifier / Sauvegarder / Connecter », les actions qui modifient marquées d'un trait d'attention, désactivées avec la raison en infobulle (site REST, extension gelée, job en cours).</p></div>
+  <div class="panel"><h4>Confirmation</h4><p>Une seule modale pour tout : titre = l'action, corps = ce qui va se passer (site, cible, garde-fous actifs, base de données touchée ou non), bouton = le verbe.</p></div>
+  <div class="panel"><h4>Suivi de job</h4><p>Le même composant dans la barre de progression, dans la page site et dans la modale groupée : étapes, état, durée, verdict, lien rapport. Reprend la barre livrée le 2 septembre.</p></div>
+  <div class="panel"><h4>Recherche globale ⌘K</h4><p>Sites, extensions (à jour ou non), administrateurs, actions (« collecter », « réglages »). Remplace le champ de filtre comme point d'entrée principal.</p></div>
+  <div class="panel"><h4>Tableau</h4><p>En-tête collant, tri par colonne avec <code>aria-sort</code>, colonnes masquables et mémorisées, chiffres tabulaires, densité normale / compacte.</p></div>
+  <div class="panel"><h4>Courbe de tendance</h4><p>Aire + ligne + point final, grille faible, axe lisible, couleurs par jetons. Reprend le composant existant, sans changement de comportement.</p></div>
+</div>
+
+<h2 id="code">6. Architecture du code</h2>
+<p>Le principe : découper sans outil. Les navigateurs chargent des modules ES nativement, nginx sert des fichiers ; il n'y a rien à compiler.</p>
+<pre><code>public/
+  index.html            coque : &lt;nav&gt;, &lt;main&gt;, &lt;div id="jobs"&gt;, un seul &lt;script type="module" src="app.js?v=…"&gt;
+  app.js                démarrage, routeur par fragment, chargement de la flotte
+  version.js            export const V = "2026-09-12-1" ; suffixe ?v= posé par un script de déploiement
+  css/
+    tokens.css          jetons (couleur × 2 thèmes, type, espace, rayons, élévation)
+    base.css            reset, typographie, focus, reduced-motion
+    components.css      chip, bouton, tableau, menu, modale, feuille mobile, job
+    screens.css         mises en page des six écrans
+  lib/
+    api.js              fetch, session, X-Dash, gestion 401, erreurs typées
+    state.js            flotte, sélection, filtres ; abonnements (EventTarget)
+    poll.js             sondage borné (existant)
+    dom.js              h(), esc(), mount(), délégation
+    format.js           dates relatives, versions, tailles, pluriels
+    icons.js            sprite SVG inliné une fois
+  components/
+    chip.js  actions-menu.js  confirm.js  job.js  table.js  search.js  toast.js  sheet.js
+  screens/
+    parc.js  incidents.js  securite.js  changements.js  gestion.js  site.js  reglages.js
+  fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2)</code></pre>
+<ul>
+<li><b>Rendu</b> : une petite fonction <code>h(tag, attrs, children)</code> qui construit du DOM (pas de chaînes HTML), donc plus d'échappement à la main ; les 193 <code>innerHTML</code> disparaissent avec les écrans qu'ils rendaient.</li>
+<li><b>État</b> : un module <code>state.js</code> qui détient la flotte et émet des événements ; les écrans s'y abonnent et se rerendent seuls. Fin des variables globales partagées.</li>
+<li><b>Routage</b> : <code>#parc</code>, <code>#incidents</code>, <code>#site/elwave.fr/extensions</code>… même mécanisme qu'aujourd'hui, avec un vrai historique (déjà en place).</li>
+<li><b>Cache</b> : nginx garde <code>no-store</code> sur l'API et <code>index.html</code>, mais peut mettre en cache <code>css/</code>, <code>lib/</code>, <code>components/</code>, <code>screens/</code> un an grâce au <code>?v=</code> ; la page se charge plus vite et le déploiement reste un <code>scp</code>.</li>
+<li><b>Backend</b> : inchangé. Les 51 routes existantes suffisent ; deux ajouts seulement, listés en §9.</li>
+</ul>
+
+<h2 id="phases">7. Phases</h2>
+<p>Chaque phase se termine par un déploiement en production. L'ancien écran reste disponible tant que le nouveau n'a pas remplacé exactement ses fonctions : la migration se fait écran par écran, pas en bascule unique.</p>
+
+<div class="phase">
+<header><h3>Phase 1 — Fondations</h3><span class="dur">3 jours</span></header>
+<ul>
+<li>Jetons et CSS de base (deux thèmes), polices locales, sprite d'icônes, chip d'état, boutons, tableau.</li>
+<li>Coque : barre latérale, en-tête d'écran, zone de jobs. Les écrans existants sont montés dedans tels quels, chargés à la demande.</li>
+<li>Découpage mécanique du fichier unique en modules, sans changer le comportement : <code>lib/</code>, <code>components/poll.js</code>, <code>components/job.js</code>, écrans dans <code>screens/</code>.</li>
+<li>Script de déploiement qui pose le <code>?v=</code> et la règle de cache nginx.</li>
+</ul>
+<div class="accept"><b>Livré quand</b> : tous les écrans actuels fonctionnent dans la nouvelle coque, avec les nouveaux jetons et sans emoji ; zéro erreur console ; les 21 routes GET sondées après déploiement ; la page se charge en moins de 300 ms hors fleet.json.</div>
+</div>
+
+<div class="phase">
+<header><h3>Phase 2 — Parc et page site</h3><span class="dur">4 à 5 jours</span></header>
+<ul>
+<li>Écran Parc : file « à traiter » (règles explicites : down, CVE critique corrigeable, sauvegarde &gt; 48 h, serveur injoignable, admin inconnu), liste des sites avec chips, colonnes masquables, vues sauvegardées reprises.</li>
+<li>Page site à cinq onglets, action principale déduite de l'état, menu d'actions groupé, confirmation unique. Le tiroir est retiré.</li>
+<li>Recherche globale ⌘K.</li>
+<li>Actions groupées reprises dans une barre contextuelle en bas de liste, avec le composant job.</li>
+</ul>
+<div class="accept"><b>Livré quand</b> : chaque bouton du tiroir actuel a son équivalent dans la page site (vérifié par le croisement <code>data-act</code> ↔ <code>ACTIONS</code> déjà scripté) ; MAJ sûre, retour arrière, gel, connexion VizProof testés sur elwave.fr.</div>
+</div>
+
+<div class="phase">
+<header><h3>Phase 3 — Incidents, Sécurité, Changements</h3><span class="dur">3 à 4 jours</span></header>
+<ul>
+<li>Incidents : nouvel écran, agrégat des sources existantes, tri par gravité puis ancienneté, action en ligne.</li>
+<li>Sécurité : vulnérabilités par site / par extension (reprise), administrateurs et référence, plugins à risque, PHP obsolète, dans une seule page à ancres.</li>
+<li>Changements : historique, journal, événements agents et tendance fusionnés dans une chronologie filtrable par site, type et gravité.</li>
+</ul>
+<div class="accept"><b>Livré quand</b> : les 8 sous-onglets Sécurité et les 2 d'Historique n'existent plus et rien de ce qu'ils montraient n'a disparu (liste de contrôle par section) ; les pastilles de compteur de la barre latérale correspondent aux règles de la file « à traiter ».</div>
+</div>
+
+<div class="phase">
+<header><h3>Phase 4 — Gestion et Réglages</h3><span class="dur">2 jours</span></header>
+<ul>
+<li>Gestion : installs découverts, sites REST, moniteurs, serveurs, docroots, clés SSH, agent — en formulaires structurés à la place de l'éditeur JSON (validation côté serveur déjà en place).</li>
+<li>Réglages : une page au lieu d'une modale ; sections cadence, alertes, VizProof, contrôle visuel, clés.</li>
+</ul>
+<div class="accept"><b>Livré quand</b> : un serveur peut être ajouté sans toucher au JSON ; un refus de validation s'affiche champ par champ.</div>
+</div>
+
+<div class="phase">
+<header><h3>Phase 5 — Mobile et finition</h3><span class="dur">2 à 3 jours</span></header>
+<ul>
+<li>Barre d'onglets basse, liste de cartes, feuille d'actions, page site en défilement d'onglets.</li>
+<li>Passe d'accessibilité : navigation clavier complète, focus visible, rôles, contrastes vérifiés, <code>prefers-reduced-motion</code>.</li>
+<li>Suppression de l'ancien code, README et captures à jour.</li>
+</ul>
+<div class="accept"><b>Livré quand</b> : à 390 px, on peut lire l'état du parc, ouvrir un incident, lancer un re-scan et une MAJ sûre sans zoom ni défilement horizontal ; rapport d'accessibilité sans critique.</div>
+</div>
+
+<h2 id="tests">8. Vérification</h2>
+<ul>
+<li><b>Page bouchonnée</b> : la méthode déjà utilisée (index servi localement, <code>fetch</code> remplacé par des fixtures réelles) devient un script versionné, <code>tools/preview.py</code>, avec des scénarios (job lent, serveur stale, anomalie visuelle, 0 site, 200 sites).</li>
+<li><b>Contrôles automatiques à chaque phase</b> : <code>node --check</code> sur chaque module, contraste des jetons calculé par script (seuils du §3), croisement des appels d'API avec les routes du backend, croisement des actions avec <code>ACTIONS</code>, absence d'<code>innerHTML</code> sur des données distantes.</li>
+<li><b>Parcours réels</b> : sur elwave.fr, à chaque phase qui touche une action : re-scan, MAJ unitaire sous contrôle visuel, MAJ sûre en simulation, gel et rétablissement.</li>
+<li><b>Revue visuelle</b> : deux thèmes × trois largeurs (1440, 1024, 390) sur les six écrans, captures archivées dans le dépôt pour comparer d'une phase à l'autre.</li>
+</ul>
+
+<h2 id="risques">9. Risques et décisions</h2>
+<div class="note">Le dashboard est en production et sert à intervenir sur des sites clients. Aucune phase ne doit laisser une action sans équivalent, même une journée. C'est la contrainte qui impose la migration écran par écran plutôt qu'une réécriture parallèle.</div>
+
+<h3>Risques</h3>
+<ul>
+<li><b>Régression silencieuse d'une action</b> : couverte par le croisement automatique actions ↔ backend et par les parcours réels sur elwave.</li>
+<li><b>Dérive du design system pendant le chantier</b> : les jetons sont figés en phase 1 ; toute nouvelle valeur passe par une modification de <code>tokens.css</code>, jamais par un style en ligne (contrôle par script).</li>
+<li><b>Cache navigateur après déploiement</b> : le <code>?v=</code> le règle pour les modules ; <code>index.html</code> reste <code>no-store</code>.</li>
+<li><b>Polices locales</b> : trois familles en woff2, environ 180 Ko, chargées avec <code>font-display: swap</code> et un repli système déclaré.</li>
+</ul>
+
+<h3>Décisions à prendre avant la phase 1</h3>
+<ol class="decisions">
+<li><b>Règles de la file « à traiter »</b> : la liste proposée en phase 2 est un point de départ ; à valider, car elle pilote aussi les compteurs de la barre latérale et, plus tard, les alertes.</li>
+<li><b>Nom et logo</b> : « Parc WordPress » reste-t-il le nom, ou le dashboard prend-il une identité Sumotori (favicon, marque dans la barre latérale) ? Le style choisi n'en dépend pas, le libellé si.</li>
+<li><b>Deux ajouts backend</b> à confirmer : une route <code>GET /api/incidents</code> qui agrège les sources (sinon l'écran Incidents recalcule côté client, ce qui marche mais coûte cinq requêtes), et un champ <code>columns</code> dans les vues sauvegardées.</li>
+<li><b>Ordre des phases 3 et 4</b> : interchangeables ; la 3 apporte plus à l'usage quotidien, la 4 ferme plus vite l'éditeur JSON.</li>
+</ol>
+</main>
+</div>

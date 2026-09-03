@@ -1,0 +1,173 @@
+/* ============================================================================
+   Jetons de la console Parc WordPress
+   ----------------------------------------------------------------------------
+   SEULE source de vérité pour la couleur, la typographie, l'espace et les
+   rayons. Aucune valeur brute ne doit apparaître ailleurs : un style en ligne
+   est refusé par tools/check_front.py, et les contrastes sont vérifiés par
+   tools/check_tokens.py (encre ≥ 7:1, texte secondaire ≥ 4.5:1, chips ≥ 4.5:1
+   sur leur fond, DANS LES DEUX THÈMES).
+
+   Thème : motif à trois états.
+     :root                                  → clair, palette complète
+     @media (prefers-color-scheme: dark)
+       :root:not([data-theme="light"])      → sombre suivi du système
+     :root[data-theme="dark"]               → sombre forcé par l'utilisateur
+   Le bouton de thème écrit `data-theme` (clair/sombre) ou le retire (auto).
+   ========================================================================== */
+
+/* ---- polices locales (Google Fonts, SIL OFL 1.1 — voir README) ------------
+   Servies depuis public/fonts/ : une console d'administration n'appelle pas un
+   CDN tiers à chaque chargement. `swap` : le texte s'affiche tout de suite
+   dans la pile système, la police prend le relais dès qu'elle est là. */
+@font-face{font-family:Archivo;font-style:normal;font-weight:500;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:Archivo;font-style:normal;font-weight:500;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:Archivo;font-style:normal;font-weight:600;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:Archivo;font-style:normal;font-weight:600;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:Archivo;font-style:normal;font-weight:700;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:Archivo;font-style:normal;font-weight:700;font-stretch:100%;font-display:swap;
+  src:url(../fonts/archivo-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-sans-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-sans-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;
+  src:url(../fonts/plex-sans-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;
+  src:url(../fonts/plex-sans-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;
+  src:url(../fonts/plex-sans-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;
+  src:url(../fonts/plex-sans-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'IBM Plex Sans';font-style:italic;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-sans-italic-400-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Sans';font-style:italic;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-sans-italic-400-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-mono-400-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url(../fonts/plex-mono-400-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;
+  src:url(../fonts/plex-mono-500-latin.woff2) format('woff2');
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;
+  src:url(../fonts/plex-mono-500-latin-ext.woff2) format('woff2');
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+
+/* ---- thème clair (référence) --------------------------------------------- */
+:root{
+  color-scheme:light;
+
+  /* couleur — neutres froids, un seul accent, une gamme d'état indépendante */
+  --page:#F2F4F7;          /* fond de page */
+  --surface:#FFFFFF;       /* fond d'une surface posée sur la page */
+  --surface-2:#F7F9FB;     /* surface secondaire : en-tête de tableau, encart */
+  --ink:#18232D;           /* texte courant       — ≥ 7:1 sur --page */
+  --ink-2:#3E4C59;         /* texte appuyé        — ≥ 4.5:1 */
+  --muted:#5C6A77;         /* texte secondaire    — ≥ 4.5:1 */
+  --line:#D9DFE6;          /* bordure structurante (l'élévation, c'est elle) */
+  --line-2:#E9EDF1;        /* bordure discrète : séparateurs internes */
+
+  --accent:#1F5FA3;        /* action principale et focus, rien d'autre */
+  --accent-ink:#173F6B;    /* texte d'accent sur --accent-bg */
+  --accent-bg:#E3ECF7;
+  --on-accent:#FFFFFF;     /* texte sur aplat d'accent */
+
+  --ok:#1A7454;      --ok-bg:#E1F3EA;
+  --warn:#8E6109;    --warn-bg:#FBF0D3;
+  --err:#B23B36;     --err-bg:#F9E2E0;
+  --neutral-bg:#EEF1F4;    /* fond des chips « inconnu » et du code */
+  --code-bg:#EEF1F4;
+
+  --overlay:rgba(10,15,20,.45);
+  --shadow-1:0 6px 20px rgba(15,30,50,.14);
+  --shadow-2:0 12px 36px rgba(15,30,50,.18);
+
+  /* typographie — Archivo pour les titres, Plex Sans pour l'interface,
+     Plex Mono pour les données. Les replis sont déclarés, pas devinés. */
+  --f-display:Archivo,"Helvetica Neue",Arial,system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  /* échelle : 12 / 13 / 14 / 16 / 20 / 26 */
+  --t-12:12px; --t-13:13px; --t-14:14px; --t-16:16px; --t-20:20px; --t-26:26px;
+
+  /* espacements, base 4 */
+  --s-4:4px; --s-8:8px; --s-12:12px; --s-16:16px; --s-24:24px; --s-32:32px; --s-48:48px;
+
+  /* rayons : contrôles, surfaces, pilule. Pas d'arrondi généreux. */
+  --r-ctl:4px; --r-surf:6px; --r-pill:999px;
+
+  /* mesures de la coque */
+  --nav-w:200px; --nav-w-mini:56px; --rowh:1;
+
+  /* ---- alias hérités ----------------------------------------------------
+     Les écrans repris tels quels en phase 1 (parc, gestion, sécurité,
+     changements) utilisent encore ces noms. Ils pointent vers les jetons
+     ci-dessus : aucune valeur en double, une seule chose à changer. */
+  --bg:var(--page); --card:var(--surface); --fg:var(--ink);
+  --chip:var(--neutral-bg); --shadow:none;
+  --f-xs:var(--t-12); --f-sm:var(--t-12); --f-md:var(--t-13);
+  --f-lg:var(--t-16); --f-xl:var(--t-20);
+  --r-sm:var(--r-ctl); --r-md:var(--r-ctl); --r-lg:var(--r-surf);
+  --s1:var(--s-4); --s2:var(--s-8); --s3:var(--s-12); --s4:var(--s-16); --s5:var(--s-24);
+}
+
+/* ---- thème sombre suivi du système ---------------------------------------
+   Dessiné, pas inversé : les fonds d'état sont assombris, les textes d'état
+   éclaircis. La garde `:not([data-theme="light"])` laisse le choix explicite
+   « clair » l'emporter sur la préférence du système. */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --page:#0F1418; --surface:#161C22; --surface-2:#1B222A;
+    --ink:#E7ECF1; --ink-2:#C4CDD6; --muted:#8E9CAA;
+    --line:#2A343E; --line-2:#222B34;
+    --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B; --on-accent:#0F1418;
+    --ok:#5CC29A;   --ok-bg:#15302A;
+    --warn:#E0B24C; --warn-bg:#3A2E12;
+    --err:#EF8580;  --err-bg:#3D1F1E;
+    --neutral-bg:#1D252D; --code-bg:#1D252D;
+    --overlay:rgba(0,0,0,.6);
+    --shadow-1:0 6px 20px rgba(0,0,0,.5);
+    --shadow-2:0 12px 36px rgba(0,0,0,.6);
+  }
+}
+
+/* ---- thème sombre forcé par l'utilisateur -------------------------------- */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --page:#0F1418; --surface:#161C22; --surface-2:#1B222A;
+  --ink:#E7ECF1; --ink-2:#C4CDD6; --muted:#8E9CAA;
+  --line:#2A343E; --line-2:#222B34;
+  --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B; --on-accent:#0F1418;
+  --ok:#5CC29A;   --ok-bg:#15302A;
+  --warn:#E0B24C; --warn-bg:#3A2E12;
+  --err:#EF8580;  --err-bg:#3D1F1E;
+  --neutral-bg:#1D252D; --code-bg:#1D252D;
+  --overlay:rgba(0,0,0,.6);
+  --shadow-1:0 6px 20px rgba(0,0,0,.5);
+  --shadow-2:0 12px 36px rgba(0,0,0,.6);
+}

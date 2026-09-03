@@ -4,46 +4,54 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connexion — Parc WordPress</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%A9%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.svg">
+<!-- Cette page est servie AVANT la session : elle ne peut dépendre que des
+     ressources laissées publiques par le vhost (css/ et fonts/, qui ne
+     contiennent aucun secret — voir deploy/nginx-static-cache.conf). Elle
+     n'utilise ni module ES, ni sprite d'icônes, ni appel d'API authentifié. -->
+<link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-0942">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-0942">
 <style>
-:root{ --bg:#f4f6f8; --card:#fff; --fg:#16212b; --line:#e2e8ee; --muted:#64748b; --accent:#2563eb; --err:#dc2626; --err-bg:#fdeaea; --shadow:0 4px 24px rgba(15,30,50,.12);
-  /* Meme echelle de jetons que l'application : 5 crans de taille, 4 de rayon. */
-  --f-xs:11px; --f-sm:12.5px; --f-md:13.5px; --f-lg:16px; --f-xl:21px;
-  --r-sm:6px; --r-md:9px; --r-lg:12px; }
-@media (prefers-color-scheme: dark){ :root{ --bg:#0e1419; --card:#161d24; --fg:#dce5ed; --line:#232d37; --muted:#8494a3; --accent:#60a5fa; --err:#f87171; --err-bg:#301717; --shadow:0 4px 24px rgba(0,0,0,.5); } }
-*{box-sizing:border-box}
-body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif}
-.box{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);padding:32px 30px;width:340px;max-width:92vw}
-h1{font-size:var(--f-xl);margin:0 0 4px;text-align:center}
-p.sub{color:var(--muted);text-align:center;margin:0 0 22px;font-size:var(--f-md)}
-label{display:block;font-size:var(--f-sm);color:var(--muted);margin:12px 0 4px}
-input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--bg);color:var(--fg);font:inherit}
-input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-input:focus{border-color:var(--accent)}
-button{width:100%;margin-top:20px;padding:11px;border:none;border-radius:var(--r-md);background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
-button:disabled{opacity:.6;cursor:default}
-.err{background:var(--err-bg);color:var(--err);border-radius:var(--r-sm);padding:9px 12px;font-size:var(--f-md);margin-top:14px;display:none}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--s-24)}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  box-shadow:var(--shadow-1);padding:var(--s-32) var(--s-24);width:340px;max-width:100%}
+.box h1{font-size:var(--t-20);margin:0 0 var(--s-4);text-align:center}
+.box p.sub{color:var(--muted);text-align:center;margin:0 0 var(--s-24);font-size:var(--t-13)}
+.box label{display:block;font-size:var(--t-12);color:var(--muted);margin:var(--s-12) 0 var(--s-4)}
+.box input{width:100%;padding:9px var(--s-12);border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--page);color:var(--ink);font:inherit}
+.box input:focus{border-color:var(--accent)}
+.box button{width:100%;margin-top:var(--s-24);padding:10px;border:1px solid var(--accent);
+  border-radius:var(--r-ctl);background:var(--accent);color:var(--on-accent);
+  font:inherit;font-weight:600;cursor:pointer}
+.box button:hover{background:var(--accent-ink);border-color:var(--accent-ink)}
+.box button:disabled{opacity:.6;cursor:default}
+.err{background:var(--err-bg);color:var(--err);border-radius:var(--r-ctl);
+  padding:9px var(--s-12);font-size:var(--t-13);margin-top:var(--s-12)}
+.err[hidden]{display:none}
 </style>
 </head>
 <body>
 <form class="box" id="f">
-  <h1>🧩 Parc WordPress</h1>
+  <h1>Parc WordPress</h1>
   <p class="sub">Connexion au tableau de bord</p>
   <label for="u">Utilisateur</label>
   <input id="u" autocomplete="username" autofocus>
   <label for="p">Mot de passe</label>
   <input id="p" type="password" autocomplete="current-password">
   <button id="b" type="submit">Se connecter</button>
-  <div class="err" id="e" role="alert" aria-live="polite"></div>
+  <div class="err" id="e" role="alert" aria-live="polite" hidden></div>
 </form>
 <script>
 const f=document.getElementById('f'), b=document.getElementById('b'), e=document.getElementById('e');
-f.onsubmit=async ev=>{ ev.preventDefault(); b.disabled=true; b.textContent='…'; e.style.display='none';
+f.onsubmit=async ev=>{ ev.preventDefault(); b.disabled=true; b.textContent='…'; e.hidden=true;
   try{ const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json','X-Dash':'1'},
       body:JSON.stringify({user:document.getElementById('u').value,password:document.getElementById('p').value})});
     if(r.ok){ location.href='/'; return; }
-    const j=await r.json().catch(()=>({})); e.textContent=j.error||'Échec de la connexion'; e.style.display='block';
-  }catch(err){ e.textContent='Erreur réseau'; e.style.display='block'; }
+    const j=await r.json().catch(()=>({})); e.textContent=j.error||'Échec de la connexion'; e.hidden=false;
+  }catch(err){ e.textContent='Erreur réseau'; e.hidden=false; }
   b.disabled=false; b.textContent='Se connecter'; };
 </script>
 </body>

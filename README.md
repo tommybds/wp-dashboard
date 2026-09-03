@@ -32,6 +32,7 @@ sur les sites sans accès SSH.
 ## Sommaire
 
 - [Architecture](#architecture)
+- [Frontend](#frontend)
 - [Prérequis](#prérequis)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -53,7 +54,7 @@ Trois composants, tous dans `/opt/wp-dashboard/` :
 |---|---|---|
 | **Collecteur** | `collect.py` | Interroge chaque serveur en SSH (wp-cli) et les sites sans SSH via l'agent, produit `data/fleet.json`. Lancé par cron toutes les 30 min. |
 | **API** | `actions_server.py` | Service HTTP local (127.0.0.1:8090) : authentification, actions de maintenance sur liste blanche, endpoints de l'interface. Exposé en HTTPS par nginx. |
-| **Interface** | `public/index.html` | Application monopage (aucun build) servie par nginx. |
+| **Interface** | `public/` | Application monopage en modules ES, servie telle quelle par nginx — **aucun build**. Voir [Frontend](#frontend). |
 
 Et les tâches périodiques, toutes lancées par cron :
 
@@ -80,13 +81,190 @@ Et les tâches périodiques, toutes lancées par cron :
 
 ```
                     ┌────────────── nginx (HTTPS, auth_request) ──────────────┐
-   navigateur ──────┤  /            → public/index.html                        │
+   navigateur ──────┤  /            → public/ (HTML, CSS, modules ES, polices) │
                     │  /api/actions,mgmt,sec,site,auth → 127.0.0.1:8090 (API)  │
                     │  /api/         → 127.0.0.1:3001 (Uptime Kuma, statut)     │
                     └──────────────────────────────────────────────────────────┘
    cron ── collect.py ──SSH (wp-cli)──▶ serveurs du parc
                       └──HTTPS signé HMAC──▶ sites sans SSH (agent)
 ```
+
+---
+
+## Frontend
+
+Le front est un ensemble de fichiers servis tels quels : **le code déployé est
+le code écrit**. Pas de bundler, pas de transpilation, aucune dépendance npm —
+les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
+
+### Arborescence
+
+```
+public/
+  index.html            coque : barre latérale, en-tête d'écran, gabarits des écrans,
+                        table d'imports, un seul <script type="module" src="app.js?v=…">
+  login.html            page de connexion, autonome (ni module, ni sprite, ni API)
+  app.js                démarrage, routeur par fragment, abonnement au store
+  version.js            export const V = "AAAA-MM-JJ-hhmm" — posé par tools/deploy.sh
+  icons.svg             sprite Lucide (34 icônes), injecté une fois par lib/icons.js
+  css/
+    tokens.css          couleur (2 thèmes), typo, espace, rayons, @font-face
+    base.css            remise à zéro, typographie, focus, utilitaires
+    components.css      bouton, chip, tableau, modale, tiroir, notification, bulle
+    screens.css         coque et mises en page propres aux écrans
+  lib/
+    api.js              fetch, session, X-Dash, redirection sur 401
+    state.js            store (flotte, statut Kuma, sélection, filtres, réglages)
+                        + abonnements + cache court par chargeur
+    poll.js             sondage borné : s'arrête sur erreurs, sur `until`, à la demande
+    dom.js              h(), esc(), mount(), delegate()
+    format.js           dates relatives, durées, URL, cadences UpdraftPlus, bruit PHP
+    icons.js            icon() / iconEl() + injection du sprite
+  components/
+    button.js  chip.js  confirm.js  job.js  shell.js  table.js  tip.js  toast.js
+  screens/
+    parc.js  incidents.js  securite.js  changements → historique.js
+    gestion.js  reglages.js
+  fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2, latin + latin-ext)
+```
+
+### Versions et cache : la table d'imports
+
+nginx garde `no-store` sur l'API et sur `index.html`, mais met `css/`, `lib/`,
+`components/`, `screens/` et `fonts/` en cache **un an** (voir
+`deploy/nginx-static-cache.conf`). Ce qui invalide le cache, c'est le suffixe
+`?v=<horodatage>`.
+
+Le piège : `<script type="module" src="app.js?v=…">` ne versionne **que**
+app.js. Les `import '../lib/api.js'` qu'il déclenche, eux, partent sans
+suffixe — et resteraient en cache après un déploiement. D'où la **table
+d'imports** déclarée dans `index.html` :
+
+```html
+<script type="importmap">
+{"imports":{
+  "./lib/api.js":"./lib/api.js?v=2026-09-12-1430",
+  …
+}}
+</script>
+```
+
+Une entrée par module. `tools/deploy.sh` la régénère à partir des fichiers
+réellement présents : **ajouter un module ne demande rien de plus**. Les
+polices, elles, ne portent pas de `?v=` — leur URL doit être identique à celle
+du `@font-face`, sinon le navigateur télécharge deux fois.
+
+### Jetons
+
+`css/tokens.css` est la seule source de vérité pour la couleur, la
+typographie, l'espace et les rayons. Une valeur brute ailleurs est un bug :
+`tools/check_front.py` refuse tout `style="…"` en ligne.
+
+- **Couleur** — neutres froids, deux fonds (`--page`, `--surface`), un accent
+  unique (`--accent`, réservé à l'action principale et au focus) et une gamme
+  d'état indépendante de l'accent (`--ok`, `--warn`, `--err`, `--muted`).
+- **Thème** — motif à trois états : `:root` porte le thème clair complet,
+  `@media (prefers-color-scheme: dark)` guardé par
+  `:root:not([data-theme="light"])` porte le sombre suivi du système, et
+  `:root[data-theme="dark"]` porte le sombre forcé. Le bouton de la barre
+  latérale écrit `localStorage.dashTheme` et pose (ou retire) `data-theme`.
+- **Typographie** — 12 / 13 / 14 / 16 / 20 / 26 px. Interface à 14, textes
+  explicatifs à 16, chiffres en `tabular-nums`.
+- **Espace** — 4 / 8 / 12 / 16 / 24 / 32 / 48. **Rayons** — 4 px pour les
+  contrôles, 6 px pour les surfaces, pilule pour les chips.
+- **Élévation par bordure**, pas par ombre : la seule ombre est celle des
+  couches flottantes (modale, tiroir, notification).
+
+`tools/check_tokens.py` calcule les contrastes dans les **deux** thèmes et
+échoue si un seuil n'est pas tenu : encre ≥ 7:1, texte secondaire ≥ 4.5:1,
+chips ≥ 4.5:1 sur leur fond. À lancer après toute modification de `tokens.css`.
+
+### Polices
+
+Trois familles servies **localement** depuis `public/fonts/` — une console
+d'administration n'appelle pas un CDN tiers à chaque chargement. Archivo pour
+les titres et la navigation, IBM Plex Sans pour l'interface, IBM Plex Mono pour
+les versions, chemins, identifiants et sorties wp-cli. `font-display: swap` et
+un repli système déclaré dans `--f-body` / `--f-display` / `--f-mono`.
+
+Dix fichiers woff2 (latin + latin-ext), **198 Ko au total**, dont ~75 Ko
+seulement pour le premier affichage (les deux faces latines). Licence SIL OFL
+1.1, voir [Licence](#licence).
+
+### Icônes
+
+Un sprite unique, `public/icons.svg` (34 icônes Lucide, trait 1,5 px, 7 Ko).
+`lib/icons.js` l'injecte une fois dans le document — `<use href="#i-…">` ne
+fonctionne de façon fiable qu'en référence **interne**, pas vers un autre
+fichier. `app.js` attend cette injection avant le premier rendu.
+
+```js
+import { icon, iconEl } from './lib/icons.js';
+icon('refresh-cw')                       // chaîne HTML, pour les gabarits
+icon('x', { label: 'Fermer' })           // icône seule : aria-label obligatoire
+iconEl('shield-check', { size: 20 })     // nœud DOM, pour les composants
+```
+
+Sans `label`, l'icône est décorative (`aria-hidden`) : le texte voisin porte le
+sens. **Aucune icône seule dans une colonne de tableau.** Plus aucun emoji dans
+l'interface — `tools/check_front.py` le vérifie.
+
+### Ajouter un écran
+
+1. Créer `public/screens/<nom>.js` — il exporte au moins une fonction de
+   chargement/rendu, et importe ce dont il a besoin de `lib/` et `components/`.
+2. Ajouter son gabarit dans `index.html` : `<div class="page" id="page-<nom>">`.
+3. Dans `app.js`, ajouter une entrée à `DESTINATIONS`
+   (`{route, page, titre, legacy?}`), l'importer, et l'appeler dans `showDest`.
+4. Ajouter le lien dans la barre latérale d'`index.html`
+   (`<a class="nav-i" href="#<route>" data-dest="<route>">`) avec son icône —
+   et l'icône au sprite si elle manque (voir l'entête de `tools/preview.py`
+   pour régénérer).
+5. Lancer `python3 tools/check_front.py` : il vérifie que les routes d'API
+   existent, que les identifiants visés existent, et que les imports résolvent.
+
+Rien à déclarer ailleurs : `tools/deploy.sh` découvre le nouveau module et
+l'ajoute à la table d'imports.
+
+### Vérifier sans toucher à la production
+
+```bash
+python3 tools/preview.py                  # page bouchonnée, 20 sites, port 8787
+python3 tools/preview.py --scenario gros  # 200 sites
+python3 tools/preview.py --scenario vide  # aucun site
+python3 tools/preview.py --scenario stale # un serveur injoignable
+python3 tools/preview.py --scenario joblent   # collecte en cours
+python3 tools/preview.py --scenario anomalie  # anomalie visuelle VizProof
+```
+
+`window.fetch` y est remplacé par des fixtures : aucune requête ne sort. Les
+vraies réponses déposées dans `scratchpad/fixture/<route>.json` (le `/` du
+chemin devenant `_`) sont utilisées en priorité.
+
+Contrôles automatiques, à passer avant chaque déploiement :
+
+```bash
+python3 tools/check_tokens.py                     # contrastes, deux thèmes
+python3 tools/check_front.py -v                   # routes, actions, ids, icônes, styles, imports
+for f in $(find public -name '*.js'); do node --input-type=module --check < "$f" || echo "$f"; done
+```
+
+`node --check <fichier>` seul **ne vérifie pas** un module ES : Node le détecte
+comme tel et rend la main sans erreur. Il faut le lui passer sur l'entrée
+standard avec `--input-type=module`.
+
+### Déployer
+
+```bash
+tools/deploy.sh --dry-run     # estampille la version, ne copie rien
+tools/deploy.sh               # estampille + rsync de public/ vers le VPS
+tools/deploy.sh --nginx       # + reload nginx (seulement si le vhost a changé)
+```
+
+Le script lance d'abord les trois contrôles ci-dessus, écrit `version.js`,
+régénère la table d'imports et les `?v=`, puis copie. La règle de cache nginx
+est dans `deploy/nginx-static-cache.conf`, à inclure une fois dans le bloc
+`server{}` du vhost.
 
 ---
 
@@ -274,18 +452,30 @@ l'URL du dashboard est saisie à l'appairage.
 
 ## Exploitation
 
-### Les onglets
+### Les destinations
 
-| Onglet | Contenu |
+La barre latérale porte cinq destinations. L'adresse est partageable :
+`#parc`, `#incidents`, `#securite/<section>`, `#changements/<section>`,
+`#gestion/<section>`. Les anciens fragments (`#dash`, `#sec/…`, `#hist/…`,
+`#mgmt/…`) redirigent automatiquement — les liens déjà partagés continuent de
+tomber au bon endroit.
+
+| Destination | Contenu |
 |---|---|
-| **Tableau de bord** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées. |
-| **Gestion** | Ajout d'un site par URL, sites supervisés non gérés, serveurs, clés SSH, moniteurs Kuma. |
+| **Parc** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées, fiche site. |
+| **Incidents** | Écran de la phase 3 : sites down, erreurs PHP fatales, serveurs injoignables, checksums en anomalie, certificats proches de l'expiration. Le compteur de la barre latérale (sites injoignables) est déjà juste. |
 | **Sécurité** | Vulnérabilités, erreurs PHP, comptes administrateurs, recherche transversale d'extension, PHP obsolète, certificats, extensions à risque, intégrité du cœur. |
-| **Historique** | Tendance du parc (courbes) et journal des changements d'état. |
+| **Changements** | Tendance du parc (courbes) et journal des changements d'état. |
+| **Gestion** | Ajout d'un site par URL, sites supervisés non gérés, serveurs, clés SSH, moniteurs Kuma, docroots. |
+
+En bas de la barre : **Réglages** (aussi accessible par `#reglages`),
+**Journal** des actions, bascule de **thème** (auto / clair / sombre) et
+déconnexion. Sous 1000 px la barre se replie en icônes, sous 720 px elle
+s'ouvre par le bouton menu.
 
 ### Mettre à jour un site
 
-Le bouton **🛡 MAJ sûre** du tiroir enchaîne : contrôle avant → sauvegarde
+Le bouton **MAJ sûre** de la fiche site enchaîne : contrôle avant → sauvegarde
 UpdraftPlus → **archivage des fichiers et dump de la base** → mise à jour →
 contrôles (page servie, poids non effondré, WordPress fonctionnel, et scan
 visuel VizProof si la commande est disponible) → **retour arrière automatique**
@@ -327,6 +517,78 @@ MAJ sûre, action groupée, collecte, vérification des checksums.
 Corollaire : fermer la modale d'une action groupée n'arrête plus son suivi — le
 job continuait déjà côté serveur, il reste maintenant visible.
 
+### Incidents
+
+La **file « à traiter »** rassemble en une seule liste ce qui est cassé ou périmé
+*maintenant*, toutes sources confondues. Elle est calculée côté serveur pour que
+l'écran Incidents et les **pastilles de la barre latérale** ne puissent pas dire
+deux choses différentes.
+
+```bash
+curl -s ... /api/incidents   # → {"generated_at","counts":{"critical","warning"},"incidents":[…],"errors":[…]}
+curl -s ... /api/mgmt/counts # → {"incidents":{…},"securite":{…},"parc":{…}}
+```
+
+Chaque incident a la même forme :
+
+```json
+{"id": "vuln_critical_fixable:ffhbi.fr:ml-slider", "severity": "critical",
+ "kind": "vuln_critical_fixable", "site": "ffhbi.fr", "server": "vps1",
+ "title": "ml-slider 3.100.1 · critical corrigeable",
+ "detail": "Stored XSS (CVE-2026-1) — correctif en 3.100.2",
+ "since": "2026-09-02T18:05:00", "age_h": 14.6,
+ "action": {"label": "MAJ ml-slider → 3.100.2", "act": "plugin_update", "arg": "ml-slider"},
+ "link": {"tab": "securite", "sub": "vulns"}}
+```
+
+`id` vaut `kind:cible:arg` — la cible est la clé du site (clé Kuma ou domaine),
+ou le **nom du serveur** pour les incidents qui portent sur un serveur. Il est
+**stable** d'un appel à l'autre : c'est lui qui dédoublonne (un domaine présent
+sur deux serveurs ne produit qu'une ligne). `action` est `null` quand il n'y a
+rien à lancer — notamment sur un **site REST**, où aucune commande wp-cli n'est
+disponible : l'incident reste, le bouton disparaît. `since` vaut `null` (et
+`age_h` 0) quand la source ne date pas son constat.
+
+| `kind` | Gravité | Déclenchement | Action proposée |
+|---|---|---|---|
+| `down` | critique | Dernier battement Kuma en `status 0`, sur un site visible. `since` = heure du battement | `rescan` |
+| `php_fatal` | critique | `Fatal error` / `Parse error` dans la fenêtre courante de `data/php_errors.json` | — |
+| `vuln_critical_fixable` | critique | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, composant) | `plugin_update` / `core_update` |
+| `checksums_modified` | critique | Dernier `wp core verify-checksums` en échec (`data/checksums.json`) | — |
+| `admin_unknown` | critique | Administrateur absent de `data/admins_baseline.json`. Un site **sans référence** est ignoré | — |
+| `server_stale` | avertissement | Serveur `stale` dans `fleet.json` (injoignable à la dernière collecte) | — |
+| `backup_late` | avertissement | Sauvegarde UpdraftPlus plus vieille que le seuil, ou jamais faite. Un site **sans UpdraftPlus** est ignoré | `updraft_backup` |
+| `cert_expiring` | avert. / critique | Jours restants sous le seuil (critique sous le second seuil, ou déjà expiré) | — |
+| `php_eol` | avertissement | Version PHP hors support : **une entrée par serveur et par version**, sites regroupés dans le détail | — |
+
+Tri : **critique avant avertissement**, puis `age_h` décroissant — le plus ancien
+d'abord. Chaque source est lue isolément : celle qui échoue laisse une ligne dans
+`errors` (`{"source": "kuma", "error": "…"}`) sans empêcher les autres de
+remonter. Une source jamais lancée (fichier absent) n'est **pas** une erreur.
+
+La route ne fait **aucun appel réseau ni ssh** : elle relit les fichiers de
+`data/` et interroge la base SQLite de Kuma (`docker exec`, comme
+`/api/sec/certs`). `/api/incidents` recalcule à chaque appel ;
+`/api/mgmt/counts` sert le **même** agrégat, mis en cache **30 s**.
+
+Les seuils vivent dans `data/settings.json`, sous la clé `incident_rules` :
+
+| Seuil | Défaut | Effet |
+|---|---|---|
+| `backup_max_age_h` | `48` | Âge au-delà duquel une sauvegarde UpdraftPlus est « en retard » |
+| `cert_warn_days` | `21` | Jours restants sous lesquels un certificat est signalé |
+| `cert_critical_days` | `7` | …et sous lesquels il devient **critique** |
+| `vuln_high_is_incident` | `false` | Compter aussi les vulnérabilités `high` corrigeables comme des incidents critiques |
+| `php_eol_versions` | `["7.0","7.1","7.2","7.3","7.4","8.0"]` | Versions PHP majeure.mineure considérées hors support |
+
+```bash
+curl -s ... -d '{"settings":{"incident_rules":{"backup_max_age_h":24}}}' ... /api/mgmt/settings
+```
+
+Une écriture **partielle** conserve les autres seuils, les clés inconnues sont
+ignorées et une valeur d'un autre type est ramenée au type attendu — mêmes règles
+qu'au premier niveau des [Réglages](#réglages).
+
 ### Réglages
 
 **Réglages ⚙** regroupe la cadence de collecte, les clés SSH, les alertes
@@ -339,6 +601,7 @@ Telegram, le jeton VizProof et deux réglages de comportement, stockés dans
 | **Contrôle visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis le tiroir (cœur, extensions, thèmes), le dashboard récupère **en arrière-plan** le verdict visuel des sites reliés : il **attend le scan que le plugin lance lui-même** et ne scanne qu'en repli. Il **informe seulement**. Voir [Contrôle visuel après une mise à jour unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire). |
 | **Baseline VizProof avant chaque mise à jour unitaire** (`viz_baseline_before_update`) | **coché** | Sur un site relié, la mise à jour lancée depuis le tiroir passe par un **job suivi** : baseline → mise à jour → verdict visuel → inventaire. Sans baseline, le verdict d'après compare au dernier état connu de VizProof. Voir [Baseline avant, verdict après](#baseline-avant-verdict-après--le-job-viz_update). |
 | **Exiger la baseline** (`viz_baseline_required`) | décoché | Décoché : une baseline ratée est un **avertissement**, la mise à jour se fait quand même. Coché : la mise à jour est **annulée** tant qu'aucun témoin d'avant n'a pu être pris. |
+| **Seuils de la file d'incidents** (`incident_rules`) | voir le tableau | Sous-dictionnaire : âge maximal d'une sauvegarde, seuils de certificat, prise en compte des vulnérabilités `high`, versions PHP hors support. Voir [Incidents](#incidents). |
 
 Ils se lisent et s'écrivent aussi en direct ; les clés inconnues sont ignorées et
 une valeur d'un autre type est ramenée au type attendu :
@@ -731,6 +994,18 @@ signaler.
 ---
 
 ## Licence
+
+Ressources tierces embarquées dans `public/` :
+
+| Ressource | Fichiers | Licence |
+| --- | --- | --- |
+| **Archivo** (titres) | `public/fonts/archivo-*.woff2` | SIL Open Font License 1.1 |
+| **IBM Plex Sans** (interface) | `public/fonts/plex-sans-*.woff2` | SIL Open Font License 1.1 |
+| **IBM Plex Mono** (données, code) | `public/fonts/plex-mono-*.woff2` | SIL Open Font License 1.1 |
+| **Lucide** (34 icônes, sprite) | `public/icons.svg` | ISC |
+
+L'OFL et l'ISC autorisent toutes deux la redistribution avec le logiciel, y
+compris commerciale ; l'OFL interdit seulement la vente des polices seules.
 
 À définir par le mainteneur. L'agent compagnon est publié sous **GPLv2+**
 (exigence de l'écosystème WordPress) ; la même licence pour l'ensemble est le

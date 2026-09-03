@@ -1,0 +1,98 @@
+/* ============================================================================
+   Base : remise à zéro, typographie, focus, utilitaires d'espacement.
+   Rien d'ici ne connaît un écran en particulier.
+   ========================================================================== */
+
+*,*::before,*::after{box-sizing:border-box}
+
+html{-webkit-text-size-adjust:100%}
+
+body{
+  margin:0;
+  background:var(--page);
+  color:var(--ink);
+  font:400 var(--t-14)/1.5 var(--f-body);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* Titres et navigation : Archivo semi-condensée, elle gagne de la place dans
+   les en-têtes sans perdre en lisibilité. */
+h1,h2,h3,h4{font-family:var(--f-display);font-weight:600;margin:0;line-height:1.25}
+h1{font-size:var(--t-20)}
+h2{font-size:var(--t-16)}
+h3{font-size:var(--t-13)}
+p{margin:0 0 var(--s-8)}
+
+a{color:var(--accent);text-underline-offset:3px}
+a:hover{text-decoration:underline}
+
+button,select,input,textarea{font:inherit;color:inherit}
+
+code,kbd,samp,pre,.mono{font-family:var(--f-mono)}
+code{background:var(--code-bg);border-radius:var(--r-ctl);padding:.1em .35em;font-size:.9em}
+pre{margin:0}
+
+/* Chiffres alignés en colonne : sans cela, une colonne de versions ou de
+   compteurs « danse » d'une ligne à l'autre. */
+table,.tabular,.num{font-variant-numeric:tabular-nums}
+
+/* Indicateur de focus clavier : `:focus-visible` ne se déclenche pas au clic
+   souris, il ne change donc rien pour la navigation au pointeur. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-ctl)}
+
+::selection{background:var(--accent-bg);color:var(--accent-ink)}
+
+/* Le mouvement n'est jamais porteur d'information ici : on peut tout couper. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;scroll-behavior:auto !important;
+  }
+}
+
+/* ---- utilitaires ---------------------------------------------------------
+   Ils remplacent les `style="…"` en ligne : toute valeur vient de l'échelle. */
+.muted{color:var(--muted)}
+.small{font-size:var(--t-12)}
+.mono{font-family:var(--f-mono)}
+.spacer{flex:1}
+.fr{float:right}
+.w100{width:100%}
+.wrapline{white-space:pre-wrap}
+.jend{justify-content:flex-end}
+.nowrap{white-space:nowrap}
+.hidden{display:none !important}
+
+.mt0{margin-top:0}
+.mt1{margin-top:var(--s-4)}
+.mt2{margin-top:var(--s-8)}
+.mt3{margin-top:var(--s-12)}
+.mt4{margin-top:var(--s-16)}
+.mb0{margin-bottom:0}
+.mb1{margin-bottom:var(--s-4)}
+.mb2{margin-bottom:var(--s-8)}
+
+.scroll-md{max-height:440px;overflow:auto}
+.scroll-lg{max-height:520px;overflow:auto}
+
+/* Largeurs de champ, sur trois crans : un `style="width:280px"` de moins. */
+.w-xs{width:150px;max-width:100%}
+.w-sm{width:220px;max-width:100%}
+.w-md{width:280px;max-width:100%}
+.w-lg{width:340px;max-width:100%}
+
+/* Repli d'accessibilité : visible seulement au lecteur d'écran. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* Marges ponctuelles nommées : elles remplacent les derniers `style="margin:…"`
+   des gabarits repris en phase 1. */
+.mb-6{margin-bottom:6px}
+.ml-8{margin-left:var(--s-8)}
+.mhead{margin:var(--s-8) 0 6px}
+.codebox{margin:var(--s-12) 0 var(--s-4)}
+.w-num{width:90px}
+/* Largeurs de colonne du tableau du parc (case à cocher, pastille d'état). */
+.col-chk{width:30px}
+.col-dot{width:32px}

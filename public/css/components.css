@@ -1,0 +1,290 @@
+/* ============================================================================
+   Composants génériques : icône, bouton, chip, tableau, modale, tiroir,
+   notification, bulle, progression, formulaires.
+   Aucune règle ici ne dépend d'un écran.
+   ========================================================================== */
+
+/* ---- icônes ---------------------------------------------------------------
+   Sprite Lucide (ISC) injecté une fois dans le document par lib/icons.js.
+   Trait de 1,5 px, 16 px dans les lignes, 20 px dans les barres. Une icône
+   n'est jamais seule dans une colonne : elle porte un libellé ou un aria-label. */
+.ic{
+  width:16px;height:16px;flex:0 0 auto;vertical-align:-3px;
+  fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;
+}
+.ic-20{width:20px;height:20px;vertical-align:-4px}
+.ic-14{width:14px;height:14px;vertical-align:-2px}
+.ic-ok{color:var(--ok)} .ic-warn{color:var(--warn)} .ic-err{color:var(--err)}
+.ic-spin{animation:spin 1s linear infinite;transform-origin:50% 50%}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---- boutons --------------------------------------------------------------
+   Quatre formes : secondaire (défaut), primaire, danger, icône seule.
+   L'élévation est une bordure, jamais une ombre. */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--line);border-radius:var(--r-ctl);
+  padding:5px 10px;font-size:var(--t-13);font-weight:500;line-height:1.4;
+  cursor:pointer;white-space:nowrap;
+  transition:border-color .12s ease,background .12s ease,color .12s ease;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink);color:var(--on-accent)}
+.btn.danger{color:var(--err);border-color:var(--err)}
+.btn.danger:hover{background:var(--err-bg);color:var(--err);border-color:var(--err)}
+.btn.danger-hover:hover{border-color:var(--err);color:var(--err)}
+.btn:disabled,.btn[aria-disabled="true"]{opacity:.5;cursor:default;border-color:var(--line);color:var(--muted)}
+.btn:disabled:hover{border-color:var(--line);color:var(--muted);background:var(--surface)}
+.btn.primary:disabled:hover{background:var(--accent);color:var(--on-accent)}
+.btn.sm{padding:2px 8px;font-size:var(--t-12)}
+.btn.icon{padding:5px 8px}
+.btn.is-busy{cursor:progress}
+a.btn{text-decoration:none;color:var(--ink)}
+a.btn:hover{text-decoration:none}
+
+/* Un groupe de boutons d'icônes se lit comme un seul bloc : sans lui, le
+   flex-wrap les renvoyait à la ligne un par un. */
+.btngroup{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-ctl);overflow:hidden;background:var(--surface)}
+.btngroup .btn{border:none;border-radius:0;border-right:1px solid var(--line)}
+.btngroup .btn:last-child{border-right:none}
+
+/* ---- chips d'état ---------------------------------------------------------
+   Quatre niveaux, une seule forme. `.pill` est le nom historique porté par les
+   écrans repris en phase 1 ; `.chip` est le nom de la refonte : même règle. */
+.pill,.chip{
+  display:inline-flex;align-items:center;gap:5px;
+  border-radius:var(--r-pill);padding:1px 9px;
+  font-size:var(--t-12);font-weight:500;line-height:1.5;white-space:nowrap;
+  background:var(--neutral-bg);color:var(--muted);
+}
+.pill.ok,.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.warn,.chip.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.err,.chip.err{background:var(--err-bg);color:var(--err)}
+.pill.mut,.chip.mut{background:var(--neutral-bg);color:var(--muted)}
+.pill.acc,.chip.acc{background:var(--accent-bg);color:var(--accent-ink)}
+/* Le point qui ouvre la chip : la couleur seule ne suffit pas, la forme non
+   plus — c'est le couple point + libellé qui porte l'information. */
+.chip>.pt{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.pill[data-tip]{cursor:pointer}
+.pill[data-tip].open{outline:2px solid var(--accent);outline-offset:1px}
+
+/* Pastille d'état seule (colonne « en ligne / down » du tableau). */
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);vertical-align:middle}
+.dot.up{background:var(--ok);box-shadow:0 0 0 3px var(--ok-bg)}
+.dot.down{background:var(--err);box-shadow:0 0 0 3px var(--err-bg)}
+.dot.pending{background:var(--warn);box-shadow:0 0 0 3px var(--warn-bg)}
+
+.tag{display:inline-block;background:var(--neutral-bg);border-radius:var(--r-ctl);
+  padding:1px 7px;font-size:var(--t-12);margin:1px}
+.new-admin{color:var(--err);font-weight:600}
+
+/* ---- tableau --------------------------------------------------------------
+   `.wrap{overflow-x:auto}` est le référentiel du collage : `top:0` place donc
+   l'en-tête à sa position naturelle dans ce conteneur, pas sous la fenêtre. */
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-surf);background:var(--surface)}
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface)}
+th,td{text-align:left;padding:calc(8px * var(--rowh)) var(--s-12);
+  border-bottom:1px solid var(--line-2);white-space:nowrap}
+th{
+  position:sticky;top:0;z-index:1;
+  background:var(--surface-2);color:var(--muted);
+  font-family:var(--f-mono);font-size:var(--t-12);font-weight:500;
+  letter-spacing:.04em;text-transform:uppercase;
+  cursor:pointer;user-select:none;border-bottom:1px solid var(--line);
+}
+th:hover{color:var(--ink-2)}
+tr:last-child td{border-bottom:none}
+tbody tr{cursor:pointer}
+tbody tr:hover td{background:var(--surface-2)}
+td.site b{font-weight:600}
+td .sub{color:var(--muted);font-size:var(--t-12);max-width:340px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.grouprow td{background:var(--neutral-bg);font-weight:600;color:var(--ink);
+  font-size:var(--t-12);letter-spacing:.03em}
+.ptable{width:100%;font-size:var(--t-12);border:0}
+.ptable td{padding:5px 4px;border-bottom:1px solid var(--line-2)}
+.ptable tr:last-child td{border-bottom:0}
+.ptable tr{cursor:default}
+.ptable tr:hover td{background:transparent}
+.row-frozen{opacity:.55}
+
+/* Indicateur de tri : deux triangles CSS, aucun glyphe. */
+th[aria-sort]{padding-right:24px;position:sticky}
+th[aria-sort]::after{content:"";position:absolute;right:10px;top:50%;
+  width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;opacity:0}
+th[aria-sort="ascending"]::after{opacity:.8;border-bottom:5px solid currentColor;margin-top:-3px}
+th[aria-sort="descending"]::after{opacity:.8;border-top:5px solid currentColor;margin-top:-2px}
+
+/* Le bouton de re-scan d'une ligne n'apparaît qu'au survol — mais au clavier
+   la ligne n'est jamais survolée : `:focus-within` le rend atteignable. */
+.rowscan{display:inline-flex;align-items:center;margin-left:6px;padding:1px 4px;
+  border:1px solid transparent;border-radius:var(--r-ctl);background:none;
+  color:var(--muted);cursor:pointer;line-height:1;opacity:0;transition:opacity .12s}
+tbody tr:hover .rowscan,tbody tr:focus-within .rowscan,.rowscan:focus-visible,.rowscan[data-busy]{opacity:1}
+.rowscan:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ---- formulaires ---------------------------------------------------------- */
+input[type=search],select,input.inp,textarea.code{
+  background:var(--surface);color:var(--ink);
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:5px 9px;
+  font-size:var(--t-13);
+}
+input[type=search]:hover,select:hover,input.inp:hover{border-color:var(--ink-2)}
+input[type=search]{width:230px;max-width:100%}
+input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+textarea.code{width:100%;min-height:150px;font-family:var(--f-mono);font-size:var(--t-12);
+  padding:var(--s-8);background:var(--page)}
+label{cursor:default}
+.filters{display:flex;gap:var(--s-8);flex-wrap:wrap;align-items:center;margin-bottom:var(--s-12)}
+.filters label.small{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
+.fld{display:inline-flex;align-items:center;gap:6px;margin:0 var(--s-12) var(--s-8) 0;font-size:var(--t-12)}
+/* `display` de classe l'emporte sur la règle [hidden] du navigateur : sans
+   ceci, un `.fld` masqué par l'attribut hidden resterait affiché. */
+.fld[hidden]{display:none}
+.filters-baseline{align-items:flex-end}
+.filters-flat{margin:0}
+
+/* ---- surfaces ------------------------------------------------------------- */
+.section{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  padding:var(--s-16) var(--s-16) var(--s-16);margin-bottom:var(--s-16)}
+.section h2{margin:0 0 var(--s-4)}
+.section p.hint,.box p.hint{color:var(--muted);margin:0 0 var(--s-12);font-size:var(--t-12);line-height:1.55}
+p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
+.hint-tight{margin:0 0 6px}
+.hint-loose{margin:6px 0 0}
+.box h3,.dbody h3,.section h3{font-size:var(--t-12);text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);font-family:var(--f-mono);font-weight:500;margin:var(--s-16) 0 var(--s-8)}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:var(--s-4) var(--s-12);font-size:var(--t-13)}
+.kv .k{color:var(--muted)}
+.logline{border-bottom:1px solid var(--line-2);padding:6px 0;font-size:var(--t-12)}
+.logline:last-child{border-bottom:0}
+.logline code{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted)}
+.actions{display:flex;flex-wrap:wrap;gap:var(--s-8)}
+.errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-ctl);padding:9px 12px;
+  font-family:var(--f-mono);font-size:var(--t-12);line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.warnbox{background:var(--warn-bg);color:var(--warn);border-radius:var(--r-ctl);padding:9px 12px;line-height:1.5}
+.warnbox code{font-family:var(--f-mono);font-size:var(--t-12);word-break:break-all}
+.warnbox ul{margin:6px 0 0;padding-left:18px}
+.steps ol{margin:var(--s-8) 0 0 20px;padding:0;line-height:2}
+.codebig{font:600 var(--t-20)/1.3 var(--f-mono);letter-spacing:.09em;user-select:all;color:var(--ink)}
+.glbl-sep{margin:var(--s-12) 0 var(--s-8);display:block}
+
+/* Console de sortie wp-cli : fond fixe, hors thème — c'est un terminal. */
+/* Masquée par l'attribut `hidden`, pas par une classe : le code JS bascule
+   `box.hidden`, et une règle `display:none` de classe l'emporterait dessus. */
+.console{background:#0D1117;color:#C9D1D9;border-radius:var(--r-surf);padding:10px 12px;
+  font-family:var(--f-mono);font-size:var(--t-12);line-height:1.5;white-space:pre-wrap;
+  max-height:240px;overflow:auto;margin-top:var(--s-8)}
+.console b.ok{color:#5CC29A} .console b.warn{color:#E0B24C} .console b.err{color:#EF8580}
+.console .pill{background:rgba(255,255,255,.09);color:#C9D1D9}
+.console .pill.ok{color:#5CC29A} .console .pill.warn{color:#E0B24C} .console .pill.err{color:#EF8580}
+.console .logline{border-bottom-color:rgba(255,255,255,.08)}
+.console .muted{color:#8B949E}
+
+/* ---- progression ---------------------------------------------------------- */
+.bar{height:6px;background:var(--neutral-bg);border-radius:var(--r-pill);overflow:hidden;margin:var(--s-8) 0}
+.bar>div{height:100%;background:var(--accent);border-radius:var(--r-pill);width:0;transition:width .4s ease}
+.bar.indet{display:inline-block;vertical-align:middle;width:60px;margin:0}
+.bar.indet>div{width:40%;transition:none;animation:indet 1.1s linear infinite}
+@keyframes indet{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
+
+/* ---- bulle d'information --------------------------------------------------
+   Elle s'ouvre au CLIC (l'attribut `title` natif ne répond qu'au survol) et
+   vit dans <body> en position:fixed : ancrée dans le tiroir elle passerait
+   sous les modales, et `.dbody{overflow-y:auto}` la rognerait. */
+.info{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;border-radius:50%;background:var(--neutral-bg);color:var(--muted);
+  font-size:var(--t-12);font-weight:600;cursor:pointer;vertical-align:1px;user-select:none}
+.info:hover,.info.open{background:var(--accent);color:var(--on-accent)}
+[data-tip]{cursor:pointer}
+.tipbox{position:fixed;top:0;left:0;z-index:40;width:min(300px,72vw);
+  background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:var(--r-surf);
+  padding:9px 11px;box-shadow:var(--shadow-1);font-size:var(--t-12);font-weight:400;
+  line-height:1.45;text-align:left;white-space:normal;cursor:auto}
+.tipbox::before{content:"";position:absolute;top:-5px;left:var(--tipx,9px);width:9px;height:9px;
+  background:var(--surface);border-left:1px solid var(--line);border-top:1px solid var(--line);
+  transform:rotate(45deg)}
+.tipbox.up::before{top:auto;bottom:-5px;border:0;
+  border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+
+/* ---- modales --------------------------------------------------------------
+   Elles passent AU-DESSUS du tiroir : elles s'ouvrent souvent depuis lui. */
+.modal{position:fixed;inset:0;background:var(--overlay);z-index:20;display:none}
+.modal.open{display:flex;align-items:flex-start;justify-content:center;padding:6vh var(--s-16)}
+.modal .box{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  max-width:900px;width:100%;max-height:82vh;overflow:auto;padding:var(--s-16) var(--s-24);
+  box-shadow:var(--shadow-2)}
+.modal .box.narrow{max-width:520px}
+.modal .box.medium{max-width:620px}
+.modal .box.wide{max-width:560px}
+
+/* ---- tiroir ---------------------------------------------------------------
+   Conservé tel quel en phase 1 : la page site le remplacera en phase 2. */
+.drawer-back{position:fixed;inset:0;background:var(--overlay);z-index:8;display:none}
+.drawer-back.open{display:block}
+.drawer{position:fixed;top:0;right:-600px;width:580px;max-width:96vw;height:100vh;
+  background:var(--surface);border-left:1px solid var(--line);z-index:9;
+  transition:right .18s ease;display:flex;flex-direction:column;box-shadow:var(--shadow-2)}
+.drawer.open{right:0}
+.dhead{padding:var(--s-12) var(--s-16);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:var(--s-8)}
+.dhead h2{margin:0;font-size:var(--t-16)}
+.dbody{padding:var(--s-16);overflow-y:auto;flex:1}
+.dsec{border-top:1px solid var(--line-2);margin-top:var(--s-16);padding-top:var(--s-12)}
+.dsec>h3{margin:0 0 var(--s-8)}
+.agroup{margin-top:var(--s-12)}
+.agroup>.glbl{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
+
+/* ---- barre de notifications ----------------------------------------------
+   z-index 1000 : elle vit dans <body>, hors de tout contexte d'empilement
+   local, donc au-dessus du tiroir (9), des modales (20) et de la bulle (40).
+   Le conteneur laisse passer les clics, seules les lignes les captent. */
+#notifbar{position:fixed;top:10px;right:12px;z-index:1000;width:min(390px,calc(100vw - 24px));
+  display:flex;flex-direction:column;gap:6px;pointer-events:none}
+#notifbar:empty{display:none}
+.ntf{pointer-events:auto;display:flex;align-items:flex-start;gap:var(--s-8);
+  background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:var(--r-surf);padding:var(--s-8) 10px;box-shadow:var(--shadow-1);
+  font-size:var(--t-12);animation:ntfin .18s ease}
+@keyframes ntfin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.ntf.ok{border-left-color:var(--ok)}
+.ntf.warn{border-left-color:var(--warn)}
+.ntf.err{border-left-color:var(--err)}
+.ntf.clic{cursor:pointer}
+.ntf-ic{flex:0 0 auto;display:inline-flex;color:var(--muted);margin-top:2px}
+.ntf.ok .ntf-ic{color:var(--ok)} .ntf.warn .ntf-ic{color:var(--warn)} .ntf.err .ntf-ic{color:var(--err)}
+.ntf-main{flex:1;min-width:0}
+.ntf-lbl{font-weight:600;line-height:1.35;word-break:break-word}
+.ntf-det{color:var(--muted);font-size:var(--t-12);margin-top:1px;word-break:break-word}
+.ntf .bar{margin:6px 0 0;height:4px}
+.ntf .bar.wait>div{width:40%;transition:none;animation:indet 1.1s linear infinite}
+.ntf-t{flex:0 0 auto;color:var(--muted);font-size:var(--t-12);margin-top:2px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.ntf-x{flex:0 0 auto;background:none;border:0;color:var(--muted);cursor:pointer;
+  padding:1px 2px;display:inline-flex;line-height:1}
+.ntf-x:hover{color:var(--ink)}
+#notif-clear{pointer-events:auto;align-self:flex-end}
+@media(max-width:560px){
+  #notifbar{left:0;right:0;width:auto;gap:0}
+  .ntf{border-radius:0;border-top:0;border-right:0;border-left-width:4px;padding:6px 10px}
+  #notif-clear{margin:var(--s-4) var(--s-8) 0 0}
+}
+
+/* ---- bandeau d'erreur JavaScript (filet de diagnostic) -------------------- */
+#jserr{position:fixed;left:0;right:0;bottom:0;z-index:99;background:#7F1D1D;color:#FFF;
+  font:var(--t-13)/1.4 var(--f-body);padding:var(--s-8) var(--s-12);
+  white-space:pre-wrap;word-break:break-word;box-shadow:0 -2px 8px rgba(0,0,0,.3)}
+#jserr button{float:right;background:none;border:0;color:#FFF;cursor:pointer;
+  margin-left:10px;display:inline-flex;padding:0}
+
+/* `[hidden]` doit l'emporter sur le `display` porté par la classe : sans cette
+   règle, un bouton masqué par l'attribut resterait affiché. */
+.btn[hidden],.pill[hidden],.chip[hidden],.ic[hidden]{display:none !important}
+
+/* Champ de code court (clé publique SSH). */
+textarea.code.short{min-height:70px}
+/* Ligne mise en évidence à l'arrivée depuis l'assistant d'ajout. */
+.flash{outline:2px solid var(--accent);outline-offset:-2px}

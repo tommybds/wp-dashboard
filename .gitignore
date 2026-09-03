@@ -67,3 +67,6 @@ __pycache__/
 
 # Script de diagnostic personnel (hardcode chemins + slug) — hors produit.
 check_filter.py
+
+# Bac à sable local : fixtures de la page bouchonnée, sauvegardes de travail.
+scratchpad/
