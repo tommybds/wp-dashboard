@@ -240,6 +240,18 @@ chips ≥ 4.5:1 sur leur fond. À lancer après toute modification de `tokens.cs
 | `shell.js` | Barre latérale, barre d'onglets basse, compteurs, thème, collecte. |
 | `viz.js` · `rollback.js` · `add-site.js` · `wpauth.js` · `log.js` · `tip.js` | VizProof, rétablissement de version, assistant d'ajout, autorisation WordPress, journal des actions, infobulles. |
 
+**La console d'exécution** (`#site-console`, classe `.console`) prend sa hauteur
+**naturelle** jusqu'à `min(60vh, 720px)` — plafonnée à 240 px, une mise à jour
+sous contrôle visuel se lisait par trois lignes dans une boîte à ascenseur, au
+milieu d'une page vide. Le défilement ne commence qu'au-delà, et il **suit** les
+étapes qui arrivent : `auBas()` mesure *avant* l'écriture, `collerEnBas()` ne
+recolle **que** si l'on y était déjà (à 40 px près). Quelqu'un qui a remonté pour
+relire une erreur garde sa place, y compris au travers d'un rafraîchissement de
+fond — `refreshSite()` restitue le contenu **et** la position. Même règle pour la
+sortie brute d'une action (`.tldet`) : `min(45vh, 480px)`. Sous 720 px les deux
+plafonds redescendent (200 px) : l'écran est court, et pousser le reste de la
+page hors de vue coûte plus que ça ne rapporte.
+
 ### Mobile
 
 « Bureau d'abord, mobile correct » : sous 720 px on doit pouvoir consulter
@@ -365,6 +377,13 @@ python3 tools/preview.py --scenario anomalie  # anomalie visuelle VizProof
 `window.fetch` y est remplacé par des fixtures : aucune requête ne sort. Les
 vraies réponses déposées dans `scratchpad/fixture/<route>.json` (le `/` du
 chemin devenant `_`) sont utilisées en priorité.
+
+Les trois formes du [détail des anomalies](#détail-des-anomalies) sont
+bouchonnées par site : **site-12** rend un rapport de 4 lignes dont 2 en
+avertissement, **site-08** un run **baseline**, **site-16** un plugin trop ancien
+(repli). En `--scenario joblent`, le job `viz_update` **avance à chaque
+interrogation** et se termine sur ce verdict : c'est ce qui permet de voir la
+console suivre les étapes qui arrivent.
 
 Les routes d'**écriture** et les routes de Gestion / Réglages ne répondent pas
 un `{"ok":true}` figé : le serveur bouchonné tient un état (serveurs, docroots,
@@ -1285,6 +1304,7 @@ curl -s ... '/api/actions/viz_last?domain=elwave.fr'
 | `run_id` | identifiant du run VizProof, quand il est connu |
 | `anomalies_count` | nombre d'anomalies (0 si aucune ou inconnu) |
 | `phase` | pendant l'attente : `attente du scan du plugin`, `scan en cours`, `scan dashboard` ; `null` une fois le verdict rendu |
+| `report` | le **détail** du run (voir [Détail des anomalies](#détail-des-anomalies)), ou `null` |
 
 - `rc 2` = **anomalies visuelles** : `viz.anomalies` passe à `true` et l'alerte
   Telegram `viz_anomaly` part, quel que soit l'auteur du scan.
@@ -1307,6 +1327,77 @@ plugin VizProof scanne… », remplacée au fil des phases puis par le verdict �
 dashboard)* » — avec le lien du rapport ; la
 [barre de notifications](#la-barre-de-notifications) suit les mêmes étapes, en
 **orange** s'il y a des anomalies.
+
+#### Détail des anomalies
+
+« Terminée avec avertissement · anomalies détectées (2) » ne dit rien de
+*quoi* : combien de pages ont été regardées, laquelle a bougé, de combien. Le
+plugin, lui, le sait — c'est ce que montre son écran wp-admin (FAIL 0 · WARN 2 ·
+OK 2, 2 pages scannées, 1 page avec différence, page la plus impactée). Depuis
+la **1.3.9** il le rend aussi en ligne de commande :
+
+```bash
+wp vizproof report [--run=<id>] [--limit=<n>] [--status=<fail|warn|ok>] --format=json
+# → {"run_id":"r_42","status":"completed","created_at":"…","report_url":"…",
+#    "is_baseline":false,
+#    "totals":{"fail":0,"warn":2,"ok":2,"other":0},"total_items":4,
+#    "summary":{"pages_scanned":2,"pages_changed":1,"top_page":"Applications"},
+#    "items":[{"page":"Applications","url":"…","viewport":"Desktop",
+#              "status":"warn","diff_percent":0.0042,"label":"À vérifier"}, …],
+#    "has_more":false,"message":""}
+```
+
+Codes de sortie : **0** (aucun échec), **2** (`totals.fail > 0`), **1** (run
+introuvable, site non configuré, API muette). Le **2 n'est pas une panne**, et le
+**1 non plus** : c'est une réponse, et elle porte son `message`.
+`wp vizproof scan --format=json` a gagné le même bloc sous la clé `report`
+(items bornés à 20) — le scan de repli du dashboard n'a donc **aucun appel
+supplémentaire** à faire.
+
+**Deux chemins** mènent à ce détail :
+
+| chemin | quand |
+| --- | --- |
+| `GET /api/actions/viz_report?server=&domain=[&run=]` | à la demande de l'interface (onglet **Aperçu**, modale VizProof). Session exigée. Répond le JSON du plugin tel quel sous `report`, plus `source` (`plugin` \| `indisponible`), `rc`, `ok` et un `message`. |
+| le champ `report` du **verdict** | posé par `viz_verdict_after_update` sur le run qu'il vient d'attendre, donc présent dans `viz_last`, dans `viz_update_status.result.viz` et dans le bloc `viz` de `/api/actions/run`. |
+
+Le verdict ne paie **qu'un seul appel**, borné à **60 s** : un rapport qui
+n'arrive pas laisse `report: null` et **rien d'autre ne change** — le compte
+d'anomalies et le lien restent affichés comme avant. Cet échec-là est journalisé
+sous l'action **`viz_report`** ; le succès ne l'est pas, il n'apprendrait rien à
+l'historique du site. Aucun rapport n'est demandé quand le scan n'a pas rendu de
+verdict (run encore en file) : il porterait sur un run **antérieur**.
+
+`--run=` n'est ajouté que si l'identifiant tient dans `VIZ_RUN_ID_RE`
+(`[A-Za-z0-9_.:-]{1,80}`). Le corps passé à `remote_bash` part **littéralement**
+au shell distant : un identifiant hors moule est **abandonné**, jamais échappé —
+la commande rend alors le dernier run. La route, elle, refuse en **400**.
+
+Réponses douces de la route (200 avec `ok:false`, l'interface sait quoi en
+dire) : `rc 1` (run introuvable), `rc 97` (site sans SSH), `rc 99` (plugin
+antérieur à la 1.3.9 : `'report' is not a registered subcommand`). Tout le reste
+est un **500**.
+
+Côté interface, partout où l'on lisait « anomalies détectées (N) » on lit
+maintenant, quand le détail existe :
+
+- une ligne de résumé — « 2 pages scannées · 1 avec différence · 0 échec, 2 à
+  vérifier », avec le lien **voir le rapport** ;
+- un tableau des pages concernées (page, écran, écart en %, statut), trié par
+  **gravité** puis par écart décroissant ; **replié** au-delà de 6 lignes, et
+  toujours replié derrière **« Voir le détail »** dans l'onglet Aperçu ;
+- un run **baseline** (`is_baseline`) n'a rien à comparer : il le dit —
+  « baseline de référence — rien à comparer » — au lieu d'aligner des zéros qui
+  se lisent comme « tout va bien ».
+
+Les quatre endroits : l'étape **Contrôle visuel** de la console d'exécution, le
+bloc **VizProof** de l'onglet Aperçu (chargé à l'ouverture de l'onglet, en tâche
+de fond, une requête, sans bloquer le rendu), la **modale VizProof** d'un site
+déjà relié, et la **barre de notifications** — qui n'affiche que du texte, donc
+le résumé seul, suivi de la page la plus impactée.
+
+Sur un plugin plus ancien, rien ne change : compte d'anomalies et lien, comme
+avant.
 
 ### Tâches périodiques
 

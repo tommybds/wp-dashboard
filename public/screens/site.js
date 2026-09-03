@@ -16,7 +16,7 @@
      serveur : rouvrir la page s'y raccroche, la quitter ne les arrête pas. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h, mount } from '../lib/dom.js';
+import { auBas, collerEnBas, esc as H, h, mount } from '../lib/dom.js';
 import {
   absTime, detailEvenement, relTime, safeUrl, stripPhpNoise, tsMs,
   udIntervalFr, udHorizon, udRulesFr,
@@ -34,9 +34,8 @@ import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '..
 import { NOTIF } from '../components/toast.js';
 import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
-  vizEtatTexte, vizInstall, vizPhrase, vizState, setVizConsole, setVizRefresh,
-  VIZ_PHASES, suivreVizLast,
-} from '../components/viz.js';
+  vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
+  VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml} from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -152,14 +151,21 @@ function refreshSite() {
   if (!s) return;
   CUR = s;
   store.cur = s;
+  /* La console est reconstruite par `dessiner()` : on garde son contenu ET sa
+     position. Sans la position, un rafraîchissement de fond ramenait la vue en
+     haut du journal — et le verdict qu'on attendait sortait de l'écran. */
   const box = document.getElementById('site-console');
   const garde = (box && !box.hidden) ? box.innerHTML : null;
+  const gardeTop = box ? box.scrollTop : 0;
   // Une action a pu changer l'autorisation WordPress : on la relit plutôt que
   // de laisser le menu affirmer un état périmé.
   WPETAT.delete(s.domain);
   dessiner();
   chargerWpEtat(s).catch(() => {});
-  if (garde !== null) { const b2 = document.getElementById('site-console'); if (b2) { b2.hidden = false; b2.innerHTML = garde; } }
+  if (garde !== null) {
+    const b2 = document.getElementById('site-console');
+    if (b2) { b2.hidden = false; b2.innerHTML = garde; b2.scrollTop = gardeTop; }
+  }
   renderPolicy();
   renderVulnsSite();
 }
@@ -616,6 +622,10 @@ function ongletApercu(s) {
   if (viz) {
     blocs.push(h('section', { class: 'sitesec' }, viz));
     viz.querySelectorAll('[data-act]').forEach(b => { b.onclick = () => confirmRun(b); });
+    /* Le détail du dernier rapport arrive APRÈS le rendu : une requête, en
+       tâche de fond, dont l'échec ne se voit pas (le bloc reste tel quel). */
+    const slot = viz.querySelector('.vzr-slot');
+    if (slot) chargerVizRapport(s, slot).catch(() => {});
   }
 
   if (s.via === 'rest') {
@@ -1250,9 +1260,11 @@ function renderSafe(stt, dom) {
   const lignes = (stt.steps || []).map(x =>
     `<div class="logline"><span class="pill ${x.warn ? 'warn' : x.ok ? 'ok' : 'err'}">${x.warn ? 'attention' : x.ok ? 'ok' : 'échec'}</span>
       <b>${H(x.label)}</b> <span class="muted small">${H(x.ts)}</span>
-      ${x.detail ? `<div class="muted small wrapline ml-8">${H(stripPhpNoise(x.detail))}</div>` : ''}</div>`).join('');
+      ${x.detail ? `<div class="muted small wrapline ml-8">${H(stripPhpNoise(x.detail))}</div>` : ''}
+      ${x.report ? `<div class="ml-8">${vizReportHtml(x.report, { replie: true })}</div>` : ''}</div>`).join('');
+  const bas = auBas(box);          // mesuré AVANT l'écriture, cf. lib/dom.js
   box.innerHTML = `<div class="mb-6"><b>${icon('shield-check')} Mise à jour sûre</b> ${stt.running ? '<span class="pill mut">en cours…</span>' : safeVerdictPill(stt.verdict)}</div>${lignes}`;
-  box.scrollTop = box.scrollHeight;
+  collerEnBas(box, bas);
 }
 /* Suivi d'une MAJ sûre : le bouton et la console sont retrouvés à chaque tour
    (la page a pu être quittée puis rouverte), et le sondage s'arrête tout seul
@@ -1401,10 +1413,14 @@ function renderVizUp(job, dom) {
   const v = (job.result && job.result.viz) || null;
   const tete = job.running ? '<span class="pill mut">en cours…</span>'
     : `<span class="pill ${vizupFin(job)}">${H(vizupVerdict(job))}</span>`;
+  /* Le défilement suit les étapes qui arrivent, mais ne le fait PAS si l'on a
+     remonté soi-même : sur un job de plusieurs minutes, relire l'étape d'avant
+     est exactement ce qu'on vient faire. */
+  const bas = auBas(box);
   box.innerHTML = `<div class="mb-6"><b>${icon('scan-eye')} Mise à jour sous contrôle visuel</b> ${tete}</div>`
     + ((job.steps || []).map(vizupLigne).join(''))
     + (v ? vizConsoleLigne(v) : '');
-  box.scrollTop = box.scrollHeight;
+  collerEnBas(box, bas);
 }
 /* Pendant le job, les boutons de mise à jour du site sont hors service : deux
    mises à jour de front sur le même WordPress, c'est un site cassé sans
@@ -1430,7 +1446,7 @@ function suivreVizUp(srv, dom, nid) {
     }
     const v = (job.result && job.result.viz) || null, f = vizupFin(job);
     NOTIF.update(nid, { progress: 1 });
-    NOTIF.done(nid, { ok: f !== 'err', warn: f === 'warn', message: vizupVerdict(job) + (v ? ' · ' + vizPhrase(v) : '') });
+    NOTIF.done(nid, { ok: f !== 'err', warn: f === 'warn', message: vizupVerdict(job) + (v ? ' · ' + vizPhraseLongue(v) : '') });
     // L'inventaire a été re-scanné côté serveur : on recharge, puis on remet la
     // console du job (le rendu la réinitialise).
     loadFleet().then(() => { if (CUR && CUR.domain === dom) { refreshSite(); renderVizUp(job, dom); } }).catch(() => {});
@@ -1516,13 +1532,17 @@ async function runAction(btn) {
           : `<b class="err">${icon('circle-x')} rc ${H(j.rc ?? '?')}</b>`;
     const v = (j.viz && typeof j.viz === 'object') ? j.viz : null;
     const c1 = consoleDe(s.domain);
-    if (c1) c1.innerHTML = H(head + (j.output || '') + '\n\n') + verdict + (v ? '\n' + vizConsoleLigne(v) : '');
+    if (c1) {
+      const bas = auBas(c1);
+      c1.innerHTML = H(head + (j.output || '') + '\n\n') + verdict + (v ? '\n' + vizConsoleLigne(v) : '');
+      collerEnBas(c1, bas);
+    }
     if (v && v.pending) NOTIF.update(nid, { detail: 'contrôle visuel : ' + vizPhrase(v), progress: null });
     else {
       NOTIF.done(nid, {
         ok: !!(j.ok || anom), warn: anom || !!refus || (v ? vizEtat(v) === 'warn' : false),
         message: anom ? 'anomalies visuelles détectées'
-          : refus || (j.ok ? (v ? 'contrôle visuel : ' + vizPhrase(v) : '')
+          : refus || (j.ok ? (v ? 'contrôle visuel : ' + vizPhraseLongue(v) : '')
             : stripPhpNoise(String(j.output || j.error || '')).slice(-160) || ('rc ' + (j.rc ?? '?'))),
       });
     }

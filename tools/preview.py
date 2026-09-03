@@ -436,16 +436,105 @@ def safe_update_status():
             ]}
 
 
+# ---- détail des anomalies VizProof (wp vizproof report, plugin >= 1.3.9) ----
+# Trois formes à éprouver côté interface : un rapport DÉTAILLÉ (4 lignes dont 2
+# en avertissement), un run BASELINE (rien à comparer, surtout pas des zéros
+# rassurants), et un site dont l'extension est trop ancienne pour la commande
+# (repli : compte d'anomalies + lien, comme avant).
+VIZ_REPORT = {
+    "run_id": "run-9182", "status": "completed", "created_at": now(0),
+    "report_url": "https://vizproof.example/r/9182", "is_baseline": False,
+    "totals": {"fail": 0, "warn": 2, "ok": 2, "other": 0}, "total_items": 4,
+    "summary": {"pages_scanned": 2, "pages_changed": 1, "top_page": "Applications"},
+    "items": [
+        {"page": "Applications", "url": "https://site-12.exemple.fr/applications/",
+         "viewport": "Desktop", "status": "warn", "diff_percent": 0.0042, "label": "À vérifier"},
+        {"page": "Applications", "url": "https://site-12.exemple.fr/applications/",
+         "viewport": "Mobile", "status": "warn", "diff_percent": 0.0009, "label": "Mineur"},
+        {"page": "Accueil", "url": "https://site-12.exemple.fr/",
+         "viewport": "Desktop", "status": "ok", "diff_percent": 0.0, "label": "Identique"},
+        {"page": "Accueil", "url": "https://site-12.exemple.fr/",
+         "viewport": "Mobile", "status": "ok", "diff_percent": 0.0, "label": "Identique"},
+    ],
+    "has_more": False, "message": "",
+}
+VIZ_REPORT_BASELINE = {
+    "run_id": "run-9100", "status": "completed", "created_at": now(6),
+    "report_url": "https://vizproof.example/r/9100", "is_baseline": True,
+    "totals": {"fail": 0, "warn": 0, "ok": 0, "other": 4}, "total_items": 0,
+    "summary": {"pages_scanned": 4, "pages_changed": 0, "top_page": ""},
+    "items": [], "has_more": False, "message": "run de référence",
+}
+# Verdict complet, tel que le rend /api/actions/viz_last une fois le scan fini.
+VIZ_VERDICT = {
+    "ran": True, "pending": False, "source": "plugin", "run_id": "run-9182", "rc": 2,
+    "anomalies": True, "anomalies_count": 2, "phase": None,
+    "report_url": "https://vizproof.example/r/9182",
+    "message": "anomalies visuelles détectées (2)", "report": VIZ_REPORT,
+}
+
+
+def copie(x):
+    return json.loads(json.dumps(x))
+
+
+def viz_report_etat(domain=""):
+    """GET /api/actions/viz_report — le détail, la baseline, ou le repli.
+
+    site-08 rend un run BASELINE (rien à comparer), site-16 un plugin trop
+    ancien (repli : compte d'anomalies + lien), tout autre site relié le
+    rapport détaillé. Un site sans SSH répond rc 97, comme en vrai.
+    """
+    if any(x["domain"] == domain for x in REST_SITES):
+        return {"ok": False, "rc": 97, "source": "indisponible", "report": None,
+                "message": "action indisponible : site géré sans SSH (l'agent est en lecture seule)"}
+    if domain == "site-08.exemple.fr":
+        return {"ok": True, "rc": 0, "source": "plugin", "message": "",
+                "report": copie(VIZ_REPORT_BASELINE)}
+    if domain == "site-16.exemple.fr":
+        return {"ok": False, "rc": 99, "source": "indisponible", "report": None,
+                "message": "extension VizProof trop ancienne pour détailler les "
+                           "anomalies (wp vizproof report, 1.3.9)"}
+    return {"ok": True, "rc": 2, "source": "plugin", "message": "", "report": copie(VIZ_REPORT)}
+
+
+def viz_last_etat():
+    """GET /api/actions/viz_last — un verdict rendu, avec son détail."""
+    return {"viz": copie(VIZ_VERDICT)} if SCENARIO == "anomalie" else {"viz": None}
+
+
+# Le job avance à CHAQUE interrogation : c'est ce qui permet de voir, dans la
+# console, des étapes qui arrivent — et le défilement automatique avec.
+VIZUP_TOUR = {"n": 0}
+VIZUP_SORTIE = "\n".join("Plugin plugin-%d mis à jour (1.%d.0 -> 1.%d.1)." % (i, i, i)
+                         for i in range(1, 15))
+
+
 def viz_update_status():
     if SCENARIO != "joblent":
         return {"running": False, "steps": []}
-    return {"running": True, "result": None, "steps": [
-        {"key": "baseline", "label": "Baseline VizProof", "status": "ok", "ts": now(0), "detail": ""},
-        {"key": "update", "label": "Mise à jour des extensions", "status": "en cours",
-         "ts": now(0), "detail": ""},
-        {"key": "viz", "label": "Contrôle visuel", "status": "attente", "ts": "", "detail": ""},
-        {"key": "rescan", "label": "Inventaire", "status": "attente", "ts": "", "detail": ""},
-    ]}
+    VIZUP_TOUR["n"] += 1
+    n = VIZUP_TOUR["n"]
+    phase = "attente du scan du plugin" if n < 5 else "scan en cours"
+    fini = n >= 7
+    etat = lambda seuil: ("ok" if n > seuil else "en cours" if n == seuil else "attente")
+    steps = [
+        {"key": "baseline", "label": "Baseline VizProof", "status": etat(1),
+         "ts": now(0), "detail": "baseline capturée" if n > 1 else ""},
+        {"key": "update", "label": "Mise à jour", "status": etat(2),
+         "ts": now(0) if n >= 2 else "", "detail": VIZUP_SORTIE if n > 2 else ""},
+        {"key": "viz", "label": "Contrôle visuel",
+         "status": "warn" if fini else ("en cours" if n >= 3 else "attente"),
+         "ts": now(0) if n >= 3 else "",
+         "detail": "anomalies visuelles détectées (2)" if fini else (phase if n >= 3 else "")},
+        {"key": "rescan", "label": "Inventaire à jour", "status": "ok" if fini else "attente",
+         "ts": now(0) if fini else "", "detail": ""},
+    ]
+    return {"running": not fini, "domain": "site-12.exemple.fr", "server": "plesk-mutu",
+            "action": "plugins_update_all", "arg": None, "started": now(0),
+            "finished": now(0) if fini else None, "steps": steps,
+            "result": ({"rc": 0, "output": VIZUP_SORTIE, "viz": copie(VIZ_VERDICT),
+                        "duration_s": 128.4} if fini else None)}
 
 
 # État mutable de la page bouchonnée : sans lui, un POST répondait toujours
@@ -668,7 +757,8 @@ ROUTES = {
     "/api/actions/policy": lambda: dict(POLICY),
     "/api/actions/rollback_points": rollback_points,
     "/api/actions/plugin_versions": lambda: {"versions": ["1.1.0", "1.0.9"], "current": "1.1.0"},
-    "/api/actions/viz_last": lambda: {"viz": None},
+    "/api/actions/viz_last": viz_last_etat,
+    "/api/actions/viz_report": lambda: viz_report_etat("site-12.exemple.fr"),
     "/api/site/timeline": lambda: {"events": [
         {"kind": "action", "label": "plugin_update akismet", "status": "ok", "ts": now(1),
          "detail": "Success: Updated 1 of 1 plugins."},
@@ -738,6 +828,9 @@ STUB = """
   const DIRECT = ['/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
     '/api/mgmt/sshkeys', '/api/mgmt/settings', '/api/mgmt/alerts', '/api/mgmt/schedule',
     '/api/mgmt/candidates', '/api/mgmt/events', '/api/actions/viz_pages',
+    // le détail des anomalies dépend du site, et le job comme le verdict
+    // ÉVOLUENT d'une interrogation à l'autre : un paquet figé les gèlerait.
+    '/api/actions/viz_report', '/api/actions/viz_update_status', '/api/actions/viz_last',
     // la file dépend des acquittements posés depuis l'interface, et sa réponse
     // dépend de `?include=acked` : elle ne peut pas venir du paquet figé.
     '/api/incidents', '/api/mgmt/counts'];
@@ -794,6 +887,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
             return self._json(200, viz_pages_etat(dom))
+        if chemin == "/api/actions/viz_report":
+            import urllib.parse as up
+            dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
+            return self._json(200, viz_report_etat(dom))
         if chemin == "/api/mgmt/wp_credentials":
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]

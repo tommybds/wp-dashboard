@@ -77,3 +77,20 @@ export function occupe(cible, on) {
 export function activeAuClavier(e, fn) {
   if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); fn(); }
 }
+
+/* ---- suivi d'un flux qui s'allonge (console d'exécution) -------------------
+   Une nouvelle étape doit faire descendre la vue… SAUF si la personne a
+   elle-même remonté pour relire une erreur : la lui arracher est le défaut
+   classique des consoles. D'où le couple : on MESURE avant d'écrire, on ne
+   recolle qu'à cette condition. La marge absorbe les hauteurs fractionnaires
+   (zoom du navigateur, densité d'écran) qui font qu'un « tout en bas » n'est
+   presque jamais un zéro exact. */
+const MARGE_BAS = 40;
+export function auBas(el, marge = MARGE_BAS) {
+  if (!el) return false;
+  return (el.scrollHeight - el.scrollTop - el.clientHeight) <= marge;
+}
+/** Recolle `el` en bas — à n'appeler qu'avec ce que `auBas` disait AVANT l'écriture. */
+export function collerEnBas(el, oui) {
+  if (el && oui) el.scrollTop = el.scrollHeight;
+}

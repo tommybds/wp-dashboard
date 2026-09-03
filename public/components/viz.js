@@ -6,7 +6,7 @@
    `vizState()` fait foi, la colonne et le bloc en découlent. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h, mount } from '../lib/dom.js';
+import { auBas, collerEnBas, esc as H, h, mount } from '../lib/dom.js';
 import { absTime, debounce, relTime, safeUrl, stripPhpNoise } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
@@ -175,6 +175,90 @@ export function vizCellEl(s) {
     vizRunBadgeEl(s));
 }
 
+/* ---- détail des anomalies (bloc `report` du verdict, plugin ≥ 1.3.9) -------
+   Le dashboard n'affichait qu'un compte : « anomalies détectées (2) ». Le
+   plugin, lui, sait DE QUOI il parle — pages scannées, pages qui ont bougé, et
+   pour chacune l'écran, l'écart et son libellé. Un seul rendu (chaîne HTML)
+   sert les quatre endroits qui montraient ce compte : la console d'exécution
+   (fond sombre, écrite en innerHTML), le bloc de l'onglet Aperçu, la modale et
+   — en texte seul — la barre de notifications. */
+const VZ_ST = { fail: ['err', 'échec'], warn: ['warn', 'à vérifier'], ok: ['ok', 'inchangée'] };
+const VZ_ORDRE = { fail: 0, warn: 1, other: 2, ok: 3 };
+const VZ_REPLI = 6;            // au-delà, le tableau s'ouvre sur demande
+
+function vzNb(n) { return Number(n) || 0; }
+
+/** Le verdict porte-t-il un détail exploitable ? */
+function vizReport(v) {
+  const r = v && typeof v === 'object' ? v.report : null;
+  return (r && typeof r === 'object') ? r : null;
+}
+
+/* « 2 pages scannées · 1 avec différence · 0 échec, 2 à vérifier ». Un run
+   BASELINE n'a rien à comparer : le dire, plutôt qu'aligner des zéros qui se
+   lisent comme « tout va bien ». */
+function vizReportResume(rep) {
+  if (!rep) return '';
+  if (rep.is_baseline) return 'baseline de référence — rien à comparer';
+  const s = rep.summary || {}, t = rep.totals || {};
+  const n = vzNb(s.pages_scanned), c = vzNb(s.pages_changed);
+  return [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
+    c + ' avec différence',
+    vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + vzNb(t.warn) + ' à vérifier',
+  ].join(' · ');
+}
+
+/* Écart en pour cent. Quatre décimales sous le centième : c'est là que se
+   jouent les écarts que VizProof appelle « mineurs », et « 0,00 % » les
+   effacerait tous. */
+function vzPct(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  return n.toFixed(n && Math.abs(n) < 0.01 ? 4 : 2).replace('.', ',') + ' %';
+}
+
+/* Trié par GRAVITÉ d'abord (échec, à vérifier, reste, inchangée), puis par
+   écart décroissant : la première ligne est celle qu'il faut regarder. */
+function vizReportLignes(rep) {
+  const it = (Array.isArray(rep && rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
+  return it.slice().sort((a, b) =>
+    ((VZ_ORDRE[a.status] ?? 9) - (VZ_ORDRE[b.status] ?? 9))
+    || (Number(b.diff_percent) || 0) - (Number(a.diff_percent) || 0));
+}
+
+function vzLigneHtml(x) {
+  const [c, l] = VZ_ST[x.status] || ['mut', String(x.status || '?')];
+  const u = safeUrl(x.url), nom = String(x.page || '') || u || '—';
+  const page = u ? `<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(nom)}</a>` : H(nom);
+  const lib = String(x.label || '');
+  return `<tr><td>${page}</td><td>${H(x.viewport || '—')}</td>`
+    + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
+    + `<td><span class="pill ${c}">${H(l)}</span>`
+    + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '') + '</td></tr>';
+}
+
+/** Détail d'un rapport, en HTML. `opts.replie` force le repli (onglet Aperçu). */
+export function vizReportHtml(rep, opts) {
+  if (!rep) return '';
+  const o = opts || {};
+  const u = safeUrl(rep.report_url);
+  const lien = u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>` : '';
+  const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`;
+  const lignes = vizReportLignes(rep);
+  // Une baseline n'a aucune ligne à comparer : le tableau n'aurait rien à dire.
+  if (rep.is_baseline || !lignes.length) return `<div class="vzr">${resume}</div>`;
+  const top = String((rep.summary || {}).top_page || '');
+  const tab = '<div class="vzr-w"><table class="vzr-t">'
+    + '<thead><tr><th>Page</th><th>Écran</th><th>Écart</th><th>Statut</th></tr></thead>'
+    + '<tbody>' + lignes.map(vzLigneHtml).join('') + '</tbody></table></div>'
+    + (rep.has_more ? `<div class="vzr-s muted">liste tronquée — ${H(String(vzNb(rep.total_items)))} lignes au total, voir le rapport.</div>` : '')
+    + (top ? `<div class="vzr-s muted">Page la plus impactée : <b>${H(top)}</b></div>` : '');
+  if (!o.replie && lignes.length <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
+  // Repli natif : ouverture au clavier, aucun état à tenir dans le module.
+  return `<div class="vzr">${resume}<details class="vzr-d"><summary>Voir le détail`
+    + ` (${H(String(lignes.length))} ligne${lignes.length > 1 ? 's' : ''})</summary>${tab}</details></div>`;
+}
+
 /* ---- bloc VizProof de la page site --------------------------------------- */
 function vizLastRunEl(s) {
   const r = vizRun(s);
@@ -247,7 +331,28 @@ export function vizBlocEl(s) {
     h('span', { class: 'glbl', text: 'VizProof' }),
     txt,
     e === 'connecte' ? vizLastRunEl(s) : null,
+    // Réceptacle du résumé du dernier rapport : rempli APRÈS coup par
+    // `chargerVizRapport`, pour que le bloc s'affiche sans attendre le réseau.
+    e === 'connecte' ? h('div', { class: 'vzr-slot' }) : null,
     btns.children.length ? btns : null);
+}
+
+/* Résumé du dernier rapport, sous « Dernier scan il y a X ». Chargé à
+   l'ouverture de l'onglet, EN TÂCHE DE FOND et en une seule requête : le bloc
+   est déjà à l'écran quand la réponse arrive. Un échec ne dit rien — le compte
+   d'anomalies et le lien restent la vérité affichée. */
+export async function chargerVizRapport(s, slot) {
+  if (!slot || !s || s.via === 'rest' || vizState(s) !== 'connecte') return;
+  // Le réceptacle de la modale, lui, SURVIT à sa fermeture : sans ce marquage,
+  // la réponse d'un site rouvert sur un autre s'y afficherait quand même.
+  slot.dataset.domain = s.domain;
+  let j = null;
+  try {
+    j = await api('/api/actions/viz_report?server=' + encodeURIComponent(s.srv)
+      + '&domain=' + encodeURIComponent(s.domain));
+  } catch (e) { return; }                 // site injoignable : on n'affiche rien de plus
+  if (!slot.isConnected || slot.dataset.domain !== s.domain || !j || !j.report) return;
+  slot.innerHTML = vizReportHtml(j.report, { replie: true });
 }
 
 /* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ----
@@ -284,19 +389,32 @@ export function vizEtat(v) {
   if (v.anomalies || v.rc == null) return 'warn';
   return Number(v.rc) === 0 ? 'ok' : 'err';
 }
+/* Verdict + résumé du rapport, en TEXTE : la barre de notifications n'affiche
+   que du texte (`textContent`, coupé à 180 caractères), un tableau n'y a pas sa
+   place mais « 2 pages scannées · 1 avec différence » y tient. */
+export function vizPhraseLongue(v) {
+  const p = vizPhrase(v), r = vizReport(v);
+  if (!r) return p;
+  const top = String((r.summary || {}).top_page || '');
+  return p + ' · ' + vizReportResume(r)
+    + (top && !r.is_baseline ? ' · page la plus impactée : ' + top : '');
+}
 export function vizConsoleLigne(v) {
   if (!v) return '';
-  const u = safeUrl(v.report_url);
+  const u = safeUrl(v.report_url), rep = vizReport(v);
   // Marqueur : le verdict REMPLACE le « scan en cours… » au lieu de s'empiler.
   return `<span data-vizline><b class="${vizEtat(v)}">Contrôle visuel VizProof : ${H(vizPhrase(v))}</b>`
-    + (u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">rapport</a>` : '') + '</span>';
+    + (u && !(rep && rep.report_url) ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">rapport</a>` : '')
+    + vizReportHtml(rep) + '</span>';
 }
 function vizConsoleMaj(dom, v) {
   const c = CONSOLE_DE(dom);
   if (!c) return;
+  const bas = auBas(c);            // mesuré AVANT l'écriture, cf. lib/dom.js
   const l = c.querySelector('[data-vizline]');
   if (l) l.outerHTML = vizConsoleLigne(v);
   else c.innerHTML += '\n' + vizConsoleLigne(v);
+  collerEnBas(c, bas);
 }
 /* Le contrôle se joue côté serveur APRÈS la réponse : on interroge
    /api/actions/viz_last jusqu'au verdict, borné dans le temps. */
@@ -314,7 +432,7 @@ export function suivreVizLast(srv, dom, nid) {
       }
       return { fini: false };
     }
-    NOTIF.done(nid, { ok: vizEtat(v) !== 'err', warn: vizEtat(v) === 'warn', message: 'contrôle visuel : ' + vizPhrase(v) });
+    NOTIF.done(nid, { ok: vizEtat(v) !== 'err', warn: vizEtat(v) === 'warn', message: 'contrôle visuel : ' + vizPhraseLongue(v) });
     vizConsoleMaj(dom, v);
     loadFleet().catch(() => {});
     return { fini: true };
@@ -475,6 +593,11 @@ export async function openVizConnect(sites) {
   document.getElementById('vz-goset').hidden = VZTOK;
   document.getElementById('vz-out').innerHTML = '';
   document.getElementById('vz-apercu').innerHTML = '';
+  /* Site déjà relié : le détail du dernier rapport se charge en tâche de fond.
+     Ailleurs il n'y a pas encore de run à montrer, et la zone reste vide. */
+  const rep = document.getElementById('vz-report');
+  rep.innerHTML = '';
+  if (relie) chargerVizRapport(VZSITES[0], rep).catch(() => {});
   document.getElementById('vz-token').value = '';
   document.getElementById('vz-code').value = '';
   const go = document.getElementById('vz-go');

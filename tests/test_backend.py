@@ -1752,6 +1752,28 @@ class TestSafeUpdateViz(BaseTmp):
         self.assertNotIn("réussi", st["verdict"])
 
 
+#: Sortie type de `wp vizproof report --format=json` (plugin 1.3.9) : deux
+#: pages, un écran chacune en avertissement, aucun échec.
+REPORT_JSON = {
+    "run_id": "run-neuf", "status": "completed", "created_at": "2026-09-02T14:48:09+00:00",
+    "report_url": "https://vizproof.com/r/9", "is_baseline": False,
+    "totals": {"fail": 0, "warn": 2, "ok": 2, "other": 0}, "total_items": 4,
+    "summary": {"pages_scanned": 2, "pages_changed": 1, "top_page": "Applications"},
+    "items": [
+        {"page": "Applications", "url": "https://a.fr/applications/", "viewport": "Desktop",
+         "status": "warn", "diff_percent": 0.0042, "label": "À vérifier"},
+        {"page": "Applications", "url": "https://a.fr/applications/", "viewport": "Mobile",
+         "status": "warn", "diff_percent": 0.0009, "label": "Mineur"},
+        {"page": "Accueil", "url": "https://a.fr/", "viewport": "Desktop",
+         "status": "ok", "diff_percent": 0.0, "label": "Identique"},
+        {"page": "Accueil", "url": "https://a.fr/", "viewport": "Mobile",
+         "status": "ok", "diff_percent": 0.0, "label": "Identique"},
+    ],
+    "has_more": False, "message": "",
+}
+REPORT_VIEUX_PLUGIN = "Error: 'report' is not a registered subcommand of 'vizproof'."
+
+
 # --------------------------------------------------------------------------- #
 #  Contrôle visuel automatique après une mise à jour unitaire                   #
 #                                                                              #
@@ -1789,12 +1811,18 @@ class TestVizAfterUpdate(BaseTmp):
         self.relie_sonde = True
         self.rc_scan = 0
         self.sortie_scan = '{"anomalies":0,"report_url":"https://vizproof.com/r/1"}'
+        # `wp vizproof report` : le détail que le verdict va embarquer. rc 1 =
+        # la commande a répondu « pas de rapport », rc 99 simulé par la sortie
+        # « not a registered subcommand » d'un plugin plus ancien.
+        self.rc_report = 0
+        self.sortie_report = json.dumps(REPORT_JSON)
         # Le plugin scanne de lui-même : réponses successives de `wp vizproof
         # status` (la dernière est répétée tant qu'on interroge).
         self.statuts = [self.run_neuf(statut="queued"), self.run_neuf()]
         self.option = {"enable_update_scan_by_default": True}
         self.option_rc = 0
         self.actions = []          # (action, source) réellement exécutées
+        self.rapports = []         # corps des `wp vizproof report` envoyés
         self.alertes = []
         self.phases = []           # phases publiées pendant l'attente
         for cible, valeur in (
@@ -1829,6 +1857,9 @@ class TestVizAfterUpdate(BaseTmp):
         return 0, "ok"
 
     def _remote(self, srv, site, body, timeout=300):
+        if "vizproof report" in body:
+            self.rapports.append(body)
+            return self.rc_report, self.sortie_report
         if "vizproof status" in body:
             self.phases.append(A.viz_last_get("a.fr").get("phase"))
             st = self.statuts.pop(0) if len(self.statuts) > 1 else (self.statuts or [None])[0]
@@ -1898,6 +1929,69 @@ class TestVizAfterUpdate(BaseTmp):
             self.statuts = [self.run_neuf(statut="queued"), self.run_neuf()]
             self.assertTrue(A.viz_after_update("s1", "a.fr", act, 0, time.time())["ran"], act)
             self.assertEqual(A.viz_last_get("a.fr")["source"], A.VIZ_SRC_PLUGIN, act)
+
+    # ---- détail des anomalies (wp vizproof report) ----
+    def test_le_verdict_embarque_le_detail_du_run(self):
+        self.statuts = [self.run_neuf(statut="queued"), self.run_neuf(anomalies=2)]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        rep = fin["report"]
+        self.assertIsNotNone(rep)
+        self.assertEqual(rep["run_id"], "run-neuf")
+        self.assertEqual(rep["totals"], {"fail": 0, "warn": 2, "ok": 2, "other": 0})
+        self.assertEqual(rep["summary"]["pages_scanned"], 2)
+        self.assertEqual(rep["summary"]["pages_changed"], 1)
+        self.assertEqual(rep["summary"]["top_page"], "Applications")
+        self.assertEqual(len(rep["items"]), 4)
+        self.assertEqual(rep["items"][0]["viewport"], "Desktop")
+        self.assertAlmostEqual(rep["items"][0]["diff_percent"], 0.0042)
+        self.assertFalse(rep["is_baseline"])
+        # le rapport est demandé UNE seule fois, et sur le run qu'on vient d'attendre
+        self.assertEqual(len(self.rapports), 1)
+        self.assertIn("--run=run-neuf", self.rapports[0])
+        self.assertEqual(self.journal("viz_report"), [])     # succès : rien à journaliser
+
+    def test_report_null_quand_la_commande_echoue(self):
+        """Un rapport indisponible ne change RIEN au verdict : compte + lien."""
+        self.rc_report, self.sortie_report = 1, '{"message":"run introuvable"}'
+        self.statuts = [self.run_neuf(statut="queued"), self.run_neuf(anomalies=2)]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertIsNone(fin["report"])
+        self.assertTrue(fin["anomalies"])
+        self.assertEqual(fin["anomalies_count"], 2)
+        self.assertEqual(fin["report_url"], "https://vizproof.com/r/9")
+        entrees = self.journal("viz_report")                 # l'échec, lui, se trace
+        self.assertEqual(len(entrees), 1)
+        self.assertEqual(entrees[0]["rc"], 1)
+        self.assertEqual(entrees[0]["arg"], "run-neuf")
+
+    def test_report_null_sur_un_plugin_trop_ancien(self):
+        self.rc_report, self.sortie_report = 1, REPORT_VIEUX_PLUGIN
+        self.statuts = [self.run_neuf(statut="queued"), self.run_neuf()]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        self.assertIsNone(A.viz_last_get("a.fr")["report"])
+
+    def test_aucun_rapport_demande_sans_verdict(self):
+        """Run encore en file : le rapport porterait sur un run antérieur."""
+        self.statuts = [self.run_neuf(statut="queued")]
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        self.assertEqual(self.rapports, [])
+        self.assertIsNone(A.viz_last_get("a.fr")["report"])
+
+    def test_le_scan_du_dashboard_prend_le_rapport_de_sa_propre_sortie(self):
+        """`wp vizproof scan --format=json` porte déjà `report` : pas de 2e appel."""
+        self.statuts = []
+        self.option = {"enable_update_scan_by_default": False}
+        self.sortie_scan = json.dumps({"anomalies": 2, "run_id": "run-neuf",
+                                       "report_url": "https://vizproof.com/r/9",
+                                       "report": REPORT_JSON})
+        self.rc_scan = A.VIZ_ANOMALY_RC
+        A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertEqual(fin["source"], A.VIZ_SRC_DASHBOARD)
+        self.assertEqual(fin["report"]["run_id"], "run-neuf")
+        self.assertEqual(self.rapports, [])
 
     # ---- anomalies ----
     def test_anomalies_du_plugin_alertent(self):
@@ -2866,3 +2960,215 @@ class TestVizPagesRoute(BaseTmp):
     def test_viz_pages_n_est_pas_une_action_wp_cli(self):
         """Elle ne doit pas être atteignable par /api/actions/run."""
         self.assertNotIn("viz_pages", A.ACTIONS)
+
+
+# --------------------------------------------------------------------------- #
+#  GET /api/actions/viz_report : le détail des anomalies d'un run              #
+#                                                                             #
+#  Même dispositif que pour les pages surveillées : `run_remote_script` est    #
+#  bouché, on inspecte la commande envoyée et l'on rejoue ce que chaque        #
+#  version du plugin répondrait. Aucun ssh, aucun réseau.                     #
+# --------------------------------------------------------------------------- #
+class TestVizReportLecture(VizPagesBase):
+
+    def test_lecture_nominale(self):
+        self.reponses = [(0, json.dumps(REPORT_JSON))]
+        rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, 0)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["source"], "plugin")
+        rep = j["report"]
+        self.assertEqual(rep["run_id"], "run-neuf")
+        self.assertEqual(rep["totals"]["warn"], 2)
+        self.assertEqual(rep["summary"]["top_page"], "Applications")
+        self.assertEqual(len(rep["items"]), 4)
+        self.assertEqual(rep["report_url"], "https://vizproof.com/r/9")
+        self.assertIn("run vizproof report --format=json", self.envoyes[0])
+
+    def test_rc_2_reste_une_reponse(self):
+        """`fail > 0` sort en 2 : c'est un rapport, pas une panne."""
+        dur = dict(REPORT_JSON, totals={"fail": 1, "warn": 0, "ok": 3, "other": 0})
+        self.reponses = [(A.VIZ_ANOMALY_RC, json.dumps(dur))]
+        rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, 2)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["report"]["totals"]["fail"], 1)
+
+    def test_run_demande_passe_dans_la_commande(self):
+        self.reponses = [(0, json.dumps(REPORT_JSON))]
+        A.viz_report_read("s1", "a.fr", "run-42")
+        self.assertIn("run vizproof report --run=run-42 --format=json", self.envoyes[0])
+
+    def test_identifiant_de_run_hors_moule_est_abandonne(self):
+        """Le corps part LITTÉRALEMENT au shell distant : jamais d'échappement bancal."""
+        self.reponses = [(0, json.dumps(REPORT_JSON))]
+        A.viz_report_read("s1", "a.fr", "x; rm -rf /")
+        self.assertNotIn("rm -rf", self.envoyes[0])
+        self.assertIn("run vizproof report --format=json", self.envoyes[0])
+
+    def test_run_introuvable_rend_un_message(self):
+        self.reponses = [(1, '{"message":"aucun rapport pour ce run"}')]
+        rc, j = A.viz_report_read("s1", "a.fr", "run-inconnu")
+        self.assertEqual(rc, A.VIZ_REPORT_MISSING_RC)
+        self.assertFalse(j["ok"])
+        self.assertIsNone(j["report"])
+        self.assertIn("aucun rapport", j["message"])
+
+    def test_run_introuvable_sans_json_garde_un_message(self):
+        self.reponses = [(1, "Error: site not configured")]
+        rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, 1)
+        self.assertTrue(j["message"])
+
+    def test_repli_sur_un_plugin_plus_ancien(self):
+        self.reponses = [(1, REPORT_VIEUX_PLUGIN)]
+        rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, A.VIZ_OLD_RC)
+        self.assertEqual(rc, 99)
+        self.assertFalse(j["ok"])
+        self.assertIsNone(j["report"])
+        self.assertEqual(j["source"], "indisponible")
+        self.assertIn("trop ancienne", j["message"])
+
+    def test_sortie_illisible(self):
+        self.reponses = [(0, "PHP Notice: quelque chose")]
+        rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, 95)
+        self.assertFalse(j["ok"])
+
+    def test_json_sans_run_id_n_est_pas_un_rapport(self):
+        self.reponses = [(0, '{"totals":{"fail":0}}')]
+        rc, _j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, 95)
+
+    def test_site_sans_ssh_rend_97(self):
+        with mock.patch.object(A, "find_site", lambda s, d: (None, None)), \
+             mock.patch.object(A, "rest_target", lambda s, d: {"domain": "a.fr"}):
+            rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(rc, A.REST_UNSUPPORTED_RC)
+        self.assertEqual(rc, 97)
+        self.assertFalse(j["ok"])
+        self.assertIsNone(j["report"])
+        self.assertEqual(self.envoyes, [])
+
+    def test_items_bornes_et_has_more(self):
+        gros = dict(REPORT_JSON, items=[dict(REPORT_JSON["items"][0], page="p%d" % i)
+                                        for i in range(30)], has_more=False)
+        self.reponses = [(0, json.dumps(gros))]
+        _rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(len(j["report"]["items"]), A.VIZ_REPORT_MAX_ITEMS)
+        self.assertTrue(j["report"]["has_more"])
+
+    def test_url_non_http_ecartee(self):
+        sale = dict(REPORT_JSON, report_url="javascript:alert(1)",
+                    items=[dict(REPORT_JSON["items"][0], url="javascript:alert(2)")])
+        self.reponses = [(0, json.dumps(sale))]
+        _rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertIsNone(j["report"]["report_url"])
+        self.assertIsNone(j["report"]["items"][0]["url"])
+
+    def test_statut_inconnu_ramene_a_other(self):
+        exotique = dict(REPORT_JSON, items=[dict(REPORT_JSON["items"][0], status="weird")])
+        self.reponses = [(0, json.dumps(exotique))]
+        _rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertEqual(j["report"]["items"][0]["status"], "other")
+
+    def test_baseline_reconnue(self):
+        base = dict(REPORT_JSON, is_baseline=True, items=[], total_items=0,
+                    totals={"fail": 0, "warn": 0, "ok": 0, "other": 4})
+        self.reponses = [(0, json.dumps(base))]
+        _rc, j = A.viz_report_read("s1", "a.fr")
+        self.assertTrue(j["report"]["is_baseline"])
+        self.assertEqual(j["report"]["items"], [])
+
+
+class TestVizReportRoute(BaseTmp):
+    """Validation d'entrée et codes HTTP de la route, sans toucher au ssh."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+        self.lus = []
+        self.reponse = (0, {"ok": True, "source": "plugin", "report": {"run_id": "r1"},
+                            "message": ""})
+        p = mock.patch.object(A, "viz_report_read", self._read)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _read(self, server, domain, run=""):
+        self.lus.append((server, domain, run))
+        return self.reponse
+
+    def get(self, chemin, cookie=True):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("GET", chemin, headers={"Cookie": self.cookie} if cookie else {})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    URL = "/api/actions/viz_report?server=s1&domain=a.fr"
+
+    def test_nominal(self):
+        st, j = self.get(self.URL)
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["rc"], 0)
+        self.assertEqual(j["report"]["run_id"], "r1")
+        self.assertEqual(self.lus, [("s1", "a.fr", "")])
+
+    def test_session_exigee(self):
+        st, _j = self.get(self.URL, cookie=False)
+        self.assertEqual(st, 401)
+        self.assertEqual(self.lus, [])
+
+    def test_cible_invalide(self):
+        for mauvais in ("server=../x&domain=a.fr", "server=s1&domain=" + urllib.parse.quote("a b")):
+            st, _j = self.get("/api/actions/viz_report?" + mauvais)
+            self.assertEqual(st, 400, mauvais)
+        self.assertEqual(self.lus, [])
+
+    def test_run_transmis(self):
+        st, _j = self.get(self.URL + "&run=run-42")
+        self.assertEqual(st, 200)
+        self.assertEqual(self.lus[-1][2], "run-42")
+
+    def test_run_invalide_refuse(self):
+        st, j = self.get(self.URL + "&run=" + urllib.parse.quote("x; rm -rf /"))
+        self.assertEqual(st, 400)
+        self.assertIn("run", j["error"])
+        self.assertEqual(self.lus, [])
+
+    def test_run_introuvable_repond_200(self):
+        self.reponse = (1, {"ok": False, "source": "indisponible", "report": None,
+                            "message": "aucun rapport pour ce run"})
+        st, j = self.get(self.URL)
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["rc"], 1)
+        self.assertIn("aucun rapport", j["message"])
+
+    def test_plugin_ancien_et_site_sans_ssh_repondent_200(self):
+        for rc in (A.VIZ_OLD_RC, A.REST_UNSUPPORTED_RC):
+            self.reponse = (rc, {"ok": False, "source": "indisponible", "report": None,
+                                 "message": "indisponible"})
+            st, j = self.get(self.URL)
+            self.assertEqual(st, 200, rc)
+            self.assertEqual(j["rc"], rc)
+
+    def test_echec_dur_repond_500(self):
+        self.reponse = (7, {"ok": False, "source": "indisponible", "report": None,
+                            "message": "ssh mort"})
+        st, j = self.get(self.URL)
+        self.assertEqual(st, 500)
+        self.assertEqual(j["rc"], 7)
+
+    def test_viz_report_n_est_pas_une_action_wp_cli(self):
+        """Elle ne doit pas être atteignable par /api/actions/run."""
+        self.assertNotIn("viz_report", A.ACTIONS)

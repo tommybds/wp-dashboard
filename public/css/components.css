@@ -249,14 +249,48 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 /* Console de sortie wp-cli : fond fixe, hors thème — c'est un terminal. */
 /* Masquée par l'attribut `hidden`, pas par une classe : le code JS bascule
    `box.hidden`, et une règle `display:none` de classe l'emporterait dessus. */
+/* La hauteur est NATURELLE jusqu'à un plafond large : plafonnée à 240 px, une
+   mise à jour sous contrôle visuel se lisait par trois lignes dans une boîte à
+   ascenseur, au milieu d'une page vide. `min(60vh, 720px)` laisse la fenêtre
+   décider, sans jamais manger l'écran entier — le défilement ne commence qu'au
+   delà. Le mobile garde un plafond bas (voir ci-dessous et screens.css). */
 .console{background:#0D1117;color:#C9D1D9;border-radius:var(--r-surf);padding:10px 12px;
   font-family:var(--f-mono);font-size:var(--t-12);line-height:1.5;white-space:pre-wrap;
-  max-height:240px;overflow:auto;margin-top:var(--s-8)}
+  max-height:min(60vh,720px);overflow:auto;margin-top:var(--s-8)}
 .console b.ok{color:#5CC29A} .console b.warn{color:#E0B24C} .console b.err{color:#EF8580}
 .console .pill{background:rgba(255,255,255,.09);color:#C9D1D9}
 .console .pill.ok{color:#5CC29A} .console .pill.warn{color:#E0B24C} .console .pill.err{color:#EF8580}
 .console .logline{border-bottom-color:rgba(255,255,255,.08)}
 .console .muted{color:#8B949E}
+.console a{color:#79B8FF}
+
+/* ---- détail des anomalies VizProof -----------------------------------------
+   Le verdict ne disait qu'un nombre ; le rapport du plugin donne les pages,
+   l'écran et l'écart. Le même rendu sert la console (fond sombre), le bloc de
+   l'onglet Aperçu et la modale — d'où le `white-space:normal` : dans la console
+   en `pre-wrap`, l'indentation du gabarit s'imprimerait telle quelle. */
+.vzr{margin-top:6px;white-space:normal}
+.vzr-s{font-size:var(--t-12);line-height:1.5}
+/* Le tableau défile DANS son cadre : sur 390 px, quatre colonnes étalées
+   pousseraient la page entière vers la droite. */
+.vzr-w{overflow-x:auto;max-width:100%;margin-top:4px}
+.vzr-t{border-collapse:collapse;font-size:var(--t-12)}
+.vzr-t th,.vzr-t td{text-align:left;padding:3px var(--s-12) 3px 0;vertical-align:top;
+  border-bottom:1px solid var(--line-2);white-space:nowrap}
+.vzr-t th{color:var(--muted);font-weight:500}
+.vzr-t td:first-child{white-space:normal;word-break:break-word;max-width:34ch}
+.vzr-t tr:last-child td{border-bottom:0}
+/* Repli natif (<details>) : ouverture au clavier, aucun état à tenir en JS —
+   la console est réécrite à chaque tour de sondage. */
+.vzr-d>summary{cursor:pointer;font-size:var(--t-12);color:var(--accent);
+  list-style:none;padding:3px 0}
+.vzr-d>summary::-webkit-details-marker{display:none}
+.vzr-d>summary::marker{content:""}
+.vzr-d>summary:hover{text-decoration:underline}
+/* Dans la console, la palette de la page ne vaut pas : c'est un terminal. */
+.console .vzr-t th{color:#8B949E}
+.console .vzr-t th,.console .vzr-t td{border-bottom-color:rgba(255,255,255,.08)}
+.console .vzr-d>summary{color:#79B8FF}
 
 /* ---- progression ---------------------------------------------------------- */
 .bar{height:6px;background:var(--neutral-bg);border-radius:var(--r-pill);overflow:hidden;margin:var(--s-8) 0}
@@ -430,15 +464,22 @@ textarea.code.short{min-height:70px}
 .tltop{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
 .tlwhen{margin-left:auto;white-space:nowrap}
 .tlsub{margin-top:1px;word-break:break-word}
+/* Sortie brute d'une action, dépliée à la demande. Même règle que la console :
+   130 px n'était pas une hauteur, c'était une fente — on l'ouvre sur bureau et
+   on ne la fait défiler qu'au-delà. */
 .tldet{background:var(--neutral-bg);border-radius:var(--r-ctl);padding:6px var(--s-8);margin:4px 0 0;
   font-family:var(--f-mono);font-size:var(--t-12);line-height:1.45;
-  white-space:pre-wrap;word-break:break-word;max-height:130px;overflow:auto}
+  white-space:pre-wrap;word-break:break-word;max-height:min(45vh,480px);overflow:auto}
 .tldet[hidden]{display:none}
 .tlopenable{cursor:pointer}
 .tlopenable:hover{background:var(--surface-2);border-radius:var(--r-ctl);
   margin:0 -6px;padding-left:6px;padding-right:6px}
 .tlchev{color:var(--muted);display:inline-flex;transition:transform .15s ease}
 .tlopenable.open .tlchev{transform:rotate(90deg)}
+/* Mobile : les plafonds restent bas. L'écran est court, et une sortie brute qui
+   pousse le reste de la page hors de vue coûte plus qu'elle n'apporte. Le
+   pendant pour la console est dans screens.css (#site-console, ≤ 720 px). */
+@media(max-width:720px){ .tldet{max-height:200px} }
 
 /* ---- sommaire d'ancres -----------------------------------------------------
    Une page longue (Sécurité, Changements) s'ouvre par la liste de ses sections

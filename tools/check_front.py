@@ -250,10 +250,16 @@ def ids_dupliques(racine):
 
 
 def check_ids_uniques(pbs, verbose=False):
-    """Aucun id ne doit être déclaré par deux écrans (le second écrase le premier)."""
+    """Aucun id ne doit être déclaré par deux écrans (le second écrase le premier).
+
+    index.html déclare la coque : un module qui repose sur un id de la coque est
+    normal, on le retire de la liste des lieux. Mais on ne fait que le retirer —
+    si DEUX modules déclarent encore le même id, la collision est réelle et doit
+    être signalée, que la coque le déclare aussi ou non.
+    """
     dbl = ids_dupliques(ROOT)
-    # index.html déclare la coque ; un écran qui vise un id de la coque est normal.
-    dbl = {i: où for i, où in dbl.items() if "public/index.html" not in où}
+    dbl = {i: [l for l in où if l != "public/index.html"] for i, où in dbl.items()}
+    dbl = {i: où for i, où in dbl.items() if len(où) > 1}
     for i, où in sorted(dbl.items()):
         pbs.append(f"id « {i} » déclaré dans {', '.join(où)}")
     if verbose:

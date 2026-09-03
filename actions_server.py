@@ -1087,12 +1087,19 @@ SAFE_DISK_MARGIN_MB = 500   # marge exigée en plus du double du volume à archi
 BODY_MIN_RATIO = 0.5   # une page qui perd plus de la moitié de son poids = suspecte
 
 
-def safe_step(label, ok, detail="", warn=False):
+def safe_step(label, ok, detail="", warn=False, report=None):
     """Étape du journal de la MAJ sûre. `warn` = ni vert ni rouge : constat sans
-    conséquence (anomalie visuelle qu'on a choisi de ne pas annuler)."""
-    SAFE["steps"].append({"label": label, "ok": ok, "warn": bool(warn),
-                          "detail": str(detail or "")[:600],
-                          "ts": datetime.datetime.now().strftime("%H:%M:%S")})
+    conséquence (anomalie visuelle qu'on a choisi de ne pas annuler).
+
+    `report` porte le détail VizProof (pages, écrans, écarts) quand l'étape en a
+    un : l'interface l'affiche sous l'étape au lieu du seul compte d'anomalies.
+    """
+    etape = {"label": label, "ok": ok, "warn": bool(warn),
+             "detail": str(detail or "")[:600],
+             "ts": datetime.datetime.now().strftime("%H:%M:%S")}
+    if report:
+        etape["report"] = report
+    SAFE["steps"].append(etape)
 
 
 def viz_json_tail(out):
@@ -1179,6 +1186,135 @@ def viz_available(srv, site):
 
 
 # --------------------------------------------------------------------------- #
+#  Détail des anomalies : `wp vizproof report` (plugin ≥ 1.3.9)                #
+#                                                                             #
+#  Le verdict d'un scan ne disait qu'un NOMBRE — « anomalies détectées (2) ».  #
+#  Le plugin, lui, connaît le détail que montre son écran wp-admin : pages     #
+#  scannées, pages qui ont bougé, page la plus impactée, et pour chaque ligne  #
+#  l'écran (Desktop/Mobile), l'écart en pour cent et son libellé.              #
+#                                                                             #
+#  Codes de sortie de la commande : 0 (aucun échec), 2 (au moins un échec),    #
+#  1 (run introuvable, site non configuré, API muette). 1 n'est donc PAS une   #
+#  panne — c'est une réponse, et elle porte son `message`. Sur un plugin plus  #
+#  ancien, wp-cli répond « 'report' is not a registered subcommand » : on      #
+#  retombe alors sur l'affichage d'avant (compte d'anomalies + lien), sans     #
+#  rien casser.                                                               #
+# --------------------------------------------------------------------------- #
+VIZ_REPORT_TIMEOUT = 60      # un seul appel, court : le verdict ne doit pas attendre plus
+VIZ_REPORT_MAX_ITEMS = 20    # le plugin borne déjà `scan --format=json` à 20 lignes
+VIZ_REPORT_MISSING_RC = 1    # run introuvable / non configuré / API muette
+VIZ_REPORT_STATUTS = ("fail", "warn", "ok")
+VIZ_REPORT_OLD_MSG = ("extension VizProof trop ancienne pour détailler les anomalies "
+                      "(wp vizproof report, 1.3.9)")
+#: Identifiant de run acceptable dans une ligne de commande. Le corps passé à
+#: `remote_bash` part LITTÉRALEMENT au shell distant : un identifiant hors moule
+#: n'est pas échappé, il est ABANDONNÉ — la commande part alors sans `--run=` et
+#: le plugin rend le dernier run, ce qui est exactement ce qu'on veut voir.
+VIZ_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+
+
+def viz_int(v):
+    """Entier positif tolérant (0 si absent, illisible ou négatif)."""
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def viz_report_cmd(run=""):
+    """Commande wp-cli du rapport, avec `--run=` seulement si l'identifiant tient
+    dans VIZ_RUN_ID_RE."""
+    rid = str(run or "").strip()
+    return ("run vizproof report" + (" --run=" + rid if VIZ_RUN_ID_RE.match(rid) else "")
+            + " --format=json")
+
+
+def viz_report_item(x):
+    """Une ligne du rapport ramenée au contrat, ou None si elle est illisible."""
+    if not isinstance(x, dict):
+        return None
+    try:
+        diff = float(x.get("diff_percent") or 0)
+    except (TypeError, ValueError):
+        diff = 0.0
+    st = str(x.get("status") or "").strip().lower()
+    return {"page": str(x.get("page") or "")[:200],
+            "url": viz_http_url(x.get("url")),
+            "viewport": str(x.get("viewport") or "")[:40],
+            "status": st if st in VIZ_REPORT_STATUTS else "other",
+            "diff_percent": diff,
+            "label": str(x.get("label") or "")[:120]}
+
+
+def viz_report_payload(j):
+    """JSON de `wp vizproof report` → bloc `report` de l'interface (None si illisible).
+
+    Le contenu est rendu tel que le plugin l'a produit, aux trois réserves près
+    qui protègent l'affichage : les URL non http(s) sont écartées, les textes
+    sont bornés, et la liste est coupée à VIZ_REPORT_MAX_ITEMS (`has_more` le
+    dit). Un JSON sans `run_id` n'est pas un rapport : c'est autre chose.
+    """
+    if not isinstance(j, dict) or not str(j.get("run_id") or "").strip():
+        return None
+    tot = j.get("totals") if isinstance(j.get("totals"), dict) else {}
+    res = j.get("summary") if isinstance(j.get("summary"), dict) else {}
+    brut = j.get("items") if isinstance(j.get("items"), list) else []
+    items = [y for y in (viz_report_item(x) for x in brut[:VIZ_REPORT_MAX_ITEMS]) if y]
+    return {
+        "run_id": str(j.get("run_id") or "")[:80],
+        "status": str(j.get("status") or "")[:40],
+        "created_at": str(j.get("created_at") or "")[:40],
+        "report_url": viz_http_url(j.get("report_url")),
+        "is_baseline": bool(j.get("is_baseline")),
+        "totals": {k: viz_int(tot.get(k)) for k in ("fail", "warn", "ok", "other")},
+        "total_items": viz_int(j.get("total_items")) or len(items),
+        "summary": {"pages_scanned": viz_int(res.get("pages_scanned")),
+                    "pages_changed": viz_int(res.get("pages_changed")),
+                    "top_page": str(res.get("top_page") or "")[:200]},
+        "items": items,
+        "has_more": bool(j.get("has_more")) or len(brut) > len(items),
+        "message": str(j.get("message") or "")[:300],
+    }
+
+
+def viz_report_fetch(server, domain, srv, site, run=""):
+    """Détail du rapport pour le VERDICT de fin de mise à jour. None = indisponible.
+
+    Un seul appel, borné à VIZ_REPORT_TIMEOUT, et sans conséquence en cas
+    d'échec : le verdict garde son compte d'anomalies et son lien, exactement
+    comme avant. L'échec est journalisé sous `viz_report` — le succès ne l'est
+    pas, il n'apprendrait rien à l'historique du site.
+    """
+    t0 = time.time()
+    try:
+        rc, out = remote_bash(srv, site, viz_report_cmd(run), timeout=VIZ_REPORT_TIMEOUT)
+    except Exception as e:                    # ssh mort, timeout : on continue sans détail
+        rc, out = 94, f"erreur interne: {type(e).__name__}: {e}"
+    rep = viz_report_payload(viz_json_tail(out)) if rc in (0, VIZ_ANOMALY_RC) else None
+    if rep is None:
+        append_log({"ts": _now_s(), "source": VIZ_AFTER_SOURCE, "server": server,
+                    "domain": domain, "action": "viz_report", "arg": str(run or "") or None,
+                    "rc": rc, "duration_s": round(time.time() - t0, 1),
+                    "output_tail": str(out or "")[-800:]})
+    return rep
+
+
+def viz_report_attach(server, domain, srv, site, verdict):
+    """Range le détail du rapport dans un verdict, sous `report`.
+
+    Rien à chercher quand le scan n'a pas eu lieu ou n'a rendu aucun verdict :
+    le rapport porterait alors sur un run ANTÉRIEUR, ce qui tromperait plus
+    qu'il n'informerait. Un verdict qui porte déjà la clé (le scan du dashboard
+    la ramène dans sa propre sortie) n'est pas re-interrogé.
+    """
+    if "report" in verdict:
+        return verdict
+    verdict["report"] = (viz_report_fetch(server, domain, srv, site, verdict.get("run_id") or "")
+                         if verdict.get("ran") and verdict.get("rc") is not None else None)
+    return verdict
+
+
+# --------------------------------------------------------------------------- #
 #  Contrôle visuel automatique après une mise à jour unitaire                  #
 #                                                                             #
 #  Le scan est le plus souvent celui du PLUGIN, qui s'accroche lui-même à la   #
@@ -1202,11 +1338,11 @@ VIZ_LAST = {}                 # domaine → dernier contrôle visuel automatique
 VIZ_LAST_LOCK = threading.Lock()
 VIZ_LAST_MAX = 60             # mémoire de processus, bornée : ce n'est pas un journal
 #: squelette d'un bloc `viz` — TOUTES les clés du contrat y figurent, y compris
-#: celles qui restent vides : l'UI lit `source`, `run_id`, `anomalies_count` et
-#: `phase` sans avoir à tester leur présence.
+#: celles qui restent vides : l'UI lit `source`, `run_id`, `anomalies_count`,
+#: `phase` et `report` sans avoir à tester leur présence.
 VIZ_BASE = {"ran": False, "pending": False, "rc": None, "anomalies": False,
             "anomalies_count": 0, "report_url": None, "message": "", "reason": "",
-            "source": None, "run_id": "", "phase": None,
+            "source": None, "run_id": "", "phase": None, "report": None,
             "server": "", "domain": "", "action": "", "ts": ""}
 VIZ_AFTER_MSG = {
     "ok": "aucune anomalie visuelle",
@@ -1445,9 +1581,12 @@ def viz_verdict_dashboard(server, domain):
     rcv, out = logged_action(server, domain, "viz_scan", None, source=VIZ_AFTER_SOURCE)
     statut = viz_status(rcv, out)
     j = viz_json_tail(out) or {}
+    # `wp vizproof scan --format=json` porte lui-même le détail depuis la 1.3.9 :
+    # inutile de rappeler le site pour un rapport qu'on a déjà sous la main.
     res = {"source": VIZ_SRC_DASHBOARD, "rc": rcv, "status": statut, "phase": None,
            "anomalies": rcv == VIZ_ANOMALY_RC, "anomalies_count": viz_anomalies_count(j),
            "report_url": viz_report_url(out), "run_id": str(j.get("run_id") or j.get("id") or ""),
+           "report": viz_report_payload(j.get("report")),
            "message": VIZ_AFTER_MSG.get(statut, statut)}
     # « non configuré » : la commande a bien tourné, mais le site n'est pas
     # relié — ce n'est pas un scan, on ne le présente pas comme tel.
@@ -1458,21 +1597,26 @@ def viz_verdict_dashboard(server, domain):
 
 
 def viz_verdict_after_update(server, domain, srv, site, t0, prev_id, on_phase=None):
-    """Verdict du contrôle visuel : celui du plugin s'il a scanné, sinon le nôtre."""
+    """Verdict du contrôle visuel : celui du plugin s'il a scanné, sinon le nôtre.
+
+    Le verdict emporte le DÉTAIL du run (`report`) quand le plugin sait le
+    donner : un seul appel court, dont l'échec ne coûte rien (`report` reste
+    None et l'on garde le compte d'anomalies + le lien).
+    """
     run = viz_wait_plugin_run(srv, site, prev_id, t0, on_phase=on_phase)
     if run:
-        return viz_verdict_from_run(run)
+        return viz_report_attach(server, domain, srv, site, viz_verdict_from_run(run))
     if viz_plugin_autoscan(srv, site):
         # Le plugin DEVAIT scanner et n'a rien lancé : le site n'était pas
         # éligible (aucune page suivie, scan désactivé pour ce site…). Lancer
         # le nôtre maintenant ferait le doublon tardif qu'on cherche à éviter.
         return {"ran": False, "source": None, "rc": None, "anomalies": False,
                 "anomalies_count": 0, "report_url": None, "run_id": "", "phase": None,
-                "reason": "le plugin n'a lancé aucun scan",
+                "report": None, "reason": "le plugin n'a lancé aucun scan",
                 "message": "le plugin VizProof n'a lancé aucun scan après cette mise à jour"}
     if on_phase:
         on_phase(VIZ_PHASE_DASHBOARD)
-    return viz_verdict_dashboard(server, domain)
+    return viz_report_attach(server, domain, srv, site, viz_verdict_dashboard(server, domain))
 
 
 def viz_log_verdict(server, domain, res, duree=None):
@@ -1977,8 +2121,11 @@ def viz_pages_payload(j, source):
             "pages": pages, "message": str(j.get("message") or "")}
 
 
-def viz_pages_cible(server_name, domain):
-    """(srv, site) ou (None, réponse d'erreur) — REST compris."""
+def viz_cible(server_name, domain):
+    """(srv, site) ou (None, (rc, réponse d'erreur)) — REST compris.
+
+    Commune aux routes VizProof qui interrogent le site (pages surveillées,
+    détail du rapport) : elles refusent un site sans SSH de la même façon."""
     srv, site = find_site(server_name, domain)
     if srv and site:
         return srv, site
@@ -1989,7 +2136,7 @@ def viz_pages_cible(server_name, domain):
 
 def viz_pages_read(server_name, domain):
     """→ (rc, payload). rc 0 = lu ; 97 = site sans SSH ; autre = échec."""
-    srv, site = viz_pages_cible(server_name, domain)
+    srv, site = viz_cible(server_name, domain)
     if not srv:
         return site
     rc, out = remote_bash(srv, site, "run vizproof pages --format=json",
@@ -2070,7 +2217,7 @@ def viz_pages_write(server_name, domain, ids, scope, source="ui"):
                     "output_tail": json.dumps(payload, ensure_ascii=False)[-2000:]})
         return rc, payload
 
-    srv, site = viz_pages_cible(server_name, domain)
+    srv, site = viz_cible(server_name, domain)
     if not srv:
         return fin(site[0], site[1])
     args = ["vizproof", "pages", "set", "--scope=" + sq(scope), "--format=json"]
@@ -2107,6 +2254,41 @@ def viz_pages_write_137(srv, site, ids, scope):
     return 0, {"ok": True, "source": "repli-1.3.7", "limit": VIZ_PAGES_MAX, "scope": scope,
                "selected": list(ids), "critical": [], "pages": [],
                "message": VIZ_PAGES_137_MSG}
+
+
+def viz_report_read(server_name, domain, run=""):
+    """Détail des anomalies d'un run → (rc, payload) pour GET /api/actions/viz_report.
+
+    rc 0 / 2 = rapport lu (2 = au moins un échec ; ce n'est pas une panne) ;
+    1 = run introuvable, site non configuré ou API muette ; 95 = réponse
+    illisible ; 97 = site sans SSH ; 99 = plugin trop ancien pour la commande ;
+    tout autre code = échec de l'exécution distante.
+    """
+    def fin(rc, message, **extra):
+        return rc, dict({"ok": rc in (0, VIZ_ANOMALY_RC), "source": "indisponible",
+                         "report": None, "message": message}, **extra)
+
+    srv, site = viz_cible(server_name, domain)
+    if not srv:
+        rc, payload = site
+        return fin(rc, str(payload.get("error") or "site injoignable"))
+    rc, out = remote_bash(srv, site, viz_report_cmd(run), timeout=VIZ_REPORT_TIMEOUT)
+    if rc in (0, VIZ_ANOMALY_RC):
+        rep = viz_report_payload(viz_json_tail(out))
+        if rep:
+            return rc, {"ok": True, "source": "plugin", "report": rep,
+                        "message": rep.get("message") or ""}
+        return fin(95, "réponse illisible de « wp vizproof report »",
+                   error=str(out or "")[-800:])
+    if VIZ_OLD_RE.search(out or ""):
+        # Plugin antérieur à la 1.3.9 : repli propre — l'interface garde le
+        # compte d'anomalies et le lien du rapport, comme avant.
+        return fin(VIZ_OLD_RC, VIZ_REPORT_OLD_MSG)
+    msg = str((viz_json_tail(out) or {}).get("message") or "").strip()
+    if rc == VIZ_REPORT_MISSING_RC:
+        return fin(rc, msg or "aucun rapport pour ce run")
+    return fin(rc, msg or f"échec de « wp vizproof report » (rc {rc})",
+               error=str(out or "")[-800:])
 
 
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
@@ -2420,13 +2602,18 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             bloquant, libelle, viz_anomaly = viz_decide(rcv, viz_rollback)
             viz_ok = not bloquant
             detail = libelle or (outv or "")[-300:]
-            rapport = viz_report_url(outv)
+            # `scan` porte son propre rapport depuis la 1.3.9 du plugin : on le
+            # lit dans sa sortie plutôt que de relancer une commande.
+            rapp = viz_report_payload(viz_json_tail(outv) or {})
+            if rapp and rapp.get("message"):
+                detail += " · " + rapp["message"]
+            rapport = (rapp or {}).get("report_url") or viz_report_url(outv)
             if rapport:
                 detail += " · rapport : " + rapport
             # Une anomalie qu'on a choisi de ne pas annuler n'est ni « ok » ni
             # « échec » : elle réclame un œil, pas une alarme.
             safe_step("Contrôle visuel VizProof", viz_ok and not viz_anomaly, detail,
-                      warn=viz_anomaly and viz_ok)
+                      warn=viz_anomaly and viz_ok, report=rapp)
         elif use_viz:
             safe_step("Contrôle visuel VizProof", True,
                       "indisponible sur ce site (commande wp vizproof absente) — ignoré")
@@ -5725,6 +5912,24 @@ class Handler(BaseHTTPRequestHandler):
             rc, payload = viz_pages_read(server, dom)
             payload.setdefault("ok", rc == 0)
             doux = rc in (0, VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            self._send(200 if doux else 500, dict(payload, rc=rc))
+        elif p == "/api/actions/viz_report":
+            # Détail des anomalies d'un run VizProof (`run` absent = le dernier).
+            # rc 1 (run introuvable / site non configuré), 97 (sans SSH) et 99
+            # (plugin < 1.3.9) sont des RÉPONSES, pas des pannes : 200 avec
+            # `ok:false` et un message, l'interface retombe alors sur le compte
+            # d'anomalies et le lien du rapport.
+            server = urllib.parse.unquote(q.get("server", ""))
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            run = urllib.parse.unquote(q.get("run", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(dom):
+                return self._send(400, {"error": "cible invalide"})
+            if run and not VIZ_RUN_ID_RE.match(run):
+                return self._send(400, {"error": "identifiant de run invalide"})
+            rc, payload = viz_report_read(server, dom, run)
+            payload.setdefault("ok", rc in (0, VIZ_ANOMALY_RC))
+            doux = rc in (0, VIZ_ANOMALY_RC, VIZ_REPORT_MISSING_RC,
+                          VIZ_OLD_RC, REST_UNSUPPORTED_RC)
             self._send(200 if doux else 500, dict(payload, rc=rc))
         elif p == "/api/sec/phperrors":
             res = load_json(PHPERR_PATH, {"sites": [], "total": 0, "fatals": 0,

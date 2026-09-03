@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1734">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-1734">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-1734">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1734">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1838">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1838">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1838">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1838">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,37 +21,37 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-1734",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-1734",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1734",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-1734",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1734",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1734",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-1734",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1734",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1734",
-    "./components/button.js": "./components/button.js?v=2026-09-03-1734",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-1734",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1734",
-    "./components/incident.js": "./components/incident.js?v=2026-09-03-1734",
-    "./components/job.js": "./components/job.js?v=2026-09-03-1734",
-    "./components/log.js": "./components/log.js?v=2026-09-03-1734",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1734",
-    "./components/search.js": "./components/search.js?v=2026-09-03-1734",
-    "./components/sheet.js": "./components/sheet.js?v=2026-09-03-1734",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-1734",
-    "./components/table.js": "./components/table.js?v=2026-09-03-1734",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-1734",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-1734",
-    "./components/viz.js": "./components/viz.js?v=2026-09-03-1734",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1734",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1734",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1734",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1734",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1734",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1734",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1734",
-    "./screens/site.js": "./screens/site.js?v=2026-09-03-1734"
+    "./version.js": "./version.js?v=2026-09-03-1838",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1838",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1838",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1838",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1838",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1838",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1838",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1838",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1838",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1838",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1838",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1838",
+    "./components/incident.js": "./components/incident.js?v=2026-09-03-1838",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1838",
+    "./components/log.js": "./components/log.js?v=2026-09-03-1838",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1838",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1838",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-03-1838",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1838",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1838",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1838",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1838",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1838",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1838",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1838",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1838",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1838",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1838",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1838",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1838",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1838"
   }
 }
 </script>
@@ -247,6 +247,9 @@
   <h2 class="mt0" id="vz-title">Connecter VizProof</h2>
   <div id="vz-connect">
   <p class="hint" id="vz-intro"></p>
+  <!-- Détail du dernier rapport, sur un site DÉJÀ relié : rempli après coup
+       par openVizConnect, vide (et muet) partout ailleurs. -->
+  <div id="vz-report" class="small"></div>
   <div id="vz-rows"></div>
   <p class="hint hint-loose" id="vz-idhint" hidden>Identifiant <b>facultatif</b> — vide : le site VizProof est retrouvé ou créé d'après l'URL.</p>
   <div id="vz-apercu" class="small mt2"></div>
@@ -354,6 +357,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-1734"></script>
+<script type="module" src="app.js?v=2026-09-03-1838"></script>
 </body>
 </html>
