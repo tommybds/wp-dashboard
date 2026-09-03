@@ -1,6 +1,7 @@
 /* ---- barre de notifications : le seul endroit qui sait ce qui tourne ----
-   Une action lancée depuis le tiroir n'avait de trace que dans la console du
-   tiroir, une action groupée que dans sa modale : refermés, plus rien. Le
+   Une action lancée depuis la page d'un site n'avait de trace que dans la
+   console de cette page, une action groupée que dans sa modale : quittées,
+   plus rien. Le
    registre ci-dessous survit à tout (il vit dans <body>, z-index 1000) et
    RÉSUME ces deux affichages — il ne les remplace pas.
    `start` renvoie l'identifiant à passer à `update`/`done`. Progression :
@@ -35,7 +36,7 @@ export const NOTIF = (() => {
       el = document.createElement('div');
       el.id = 'notifbar';
       // Ce n'est pas une modale : pas de role dialog, pas de piège au clavier,
-      // et Échap continue de fermer la bulle / la modale / le tiroir.
+      // et Échap continue de fermer la bulle / le menu / la modale.
       el.setAttribute('aria-live', 'polite');
       el.setAttribute('aria-atomic', 'false');
       (document.body || document.documentElement).appendChild(el);

@@ -11,7 +11,8 @@ scratchpad/fixture/<nom>.json si elles existent, sinon des réponses fabriquées
     python3 tools/preview.py --scenario stale --port 8788
 
 Scénarios : normal · vide · gros · stale (serveur injoignable) ·
-            anomalie (anomalie visuelle VizProof) · joblent (collecte en cours)
+            anomalie (anomalie visuelle VizProof) ·
+            joblent (collecte, MAJ sûre et MAJ sous contrôle visuel en cours)
 """
 import argparse
 import http.server
@@ -153,6 +154,114 @@ def phperrors():
         "truncated": {}, "servers_failed": {}}
 
 
+def incidents():
+    """File « à traiter » : trois gravités, trois formes d'action.
+
+    Volontairement bâtie « à la main » plutôt que dérivée de fleet() : c'est le
+    rendu de la file qu'on veut éprouver (gravités, ancienneté, action en ligne,
+    lien seul, incident sans site), pas la logique du backend.
+    """
+    def iso(h):
+        return (datetime.now() - timedelta(hours=h)).replace(microsecond=0).isoformat()
+
+    inc = [
+        {"id": "down:site-00.exemple.fr:", "severity": "critical", "kind": "down",
+         "site": "site-00.exemple.fr", "server": "plesk-mutu",
+         "title": "site-00.exemple.fr injoignable",
+         "detail": "moniteur Kuma en échec — 503 Service Unavailable",
+         "since": iso(216), "age_h": 216.0,
+         "action": {"label": "Re-scan", "act": "rescan", "arg": ""},
+         "link": {"tab": "incidents", "sub": ""}},
+        {"id": "vuln_critical_fixable:site-01.exemple.fr:plugin-2", "severity": "critical",
+         "kind": "vuln_critical_fixable", "site": "site-01.exemple.fr", "server": "vps-1",
+         "title": "plugin-2 1.2.0 · critical corrigeable",
+         "detail": "RCE (CVE-2025-0002) — correctif en 1.2.1",
+         "since": iso(30), "age_h": 30.0,
+         "action": {"label": "MAJ plugin-2 → 1.2.1", "act": "plugin_update", "arg": "plugin-2"},
+         "link": {"tab": "securite", "sub": "vulns"}},
+        {"id": "admin_unknown:site-02.exemple.fr:wpsvc", "severity": "critical",
+         "kind": "admin_unknown", "site": "site-02.exemple.fr", "server": "vps-2",
+         "title": "Administrateur inconnu sur site-02.exemple.fr",
+         "detail": "compte « wpsvc_fkmdmu » absent de la référence (inscrit le 2026-08-11)",
+         "since": iso(72), "age_h": 72.0, "action": None,
+         "link": {"tab": "securite", "sub": "admins"}},
+        {"id": "backup_late:site-03.exemple.fr:", "severity": "warning", "kind": "backup_late",
+         "site": "site-03.exemple.fr", "server": "plesk-mutu",
+         "title": "Sauvegarde en retard sur site-03.exemple.fr",
+         "detail": "dernière sauvegarde il y a 56 h — seuil 48 h",
+         "since": iso(56), "age_h": 56.0,
+         "action": {"label": "Sauvegarder", "act": "updraft_backup", "arg": ""},
+         "link": {"tab": "parc", "sub": ""}},
+        {"id": "php_eol:vps-1:7.4", "severity": "warning", "kind": "php_eol",
+         "site": "", "server": "vps-1",
+         "title": "PHP 7.4 en fin de support sur vps-1",
+         "detail": "3 site(s) : site-04.exemple.fr, site-07.exemple.fr, site-10.exemple.fr",
+         "since": None, "age_h": 0.0, "action": None,
+         "link": {"tab": "securite", "sub": "php"}},
+    ]
+    if SCENARIO == "stale":
+        inc.append({"id": "server_stale:vps-1:", "severity": "warning", "kind": "server_stale",
+                    "site": "", "server": "vps-1", "title": "Serveur vps-1 injoignable",
+                    "detail": "ssh: connect timeout — dernière tentative il y a 3 h",
+                    "since": iso(3), "age_h": 3.0, "action": None,
+                    "link": {"tab": "gestion", "sub": "serveurs"}})
+    if SCENARIO == "vide":
+        inc = []
+    return {"generated_at": now(0),
+            "counts": {"critical": sum(1 for i in inc if i["severity"] == "critical"),
+                       "warning": sum(1 for i in inc if i["severity"] == "warning")},
+            "incidents": inc, "errors": []}
+
+
+def sidebar_counts():
+    p = incidents()
+    return {"incidents": dict(p["counts"]),
+            "securite": {"vulns_fixable": 6, "admins_unknown": 1},
+            "parc": {"updates_sites": 12}}
+
+
+def safe_update_status():
+    """Scénario « joblent » : une MAJ sûre en cours sur le premier site SSH."""
+    if SCENARIO != "joblent":
+        return {"running": False, "domain": "", "steps": [], "verdict": ""}
+    return {"running": True, "domain": "site-00.exemple.fr", "verdict": "",
+            "steps": [
+                {"label": "Contrôle avant", "ok": True, "ts": now(0), "detail": ""},
+                {"label": "Liste des mises à jour", "ok": True, "ts": now(0), "detail": "4 extensions"},
+                {"label": "Sauvegarde UpdraftPlus", "ok": True, "ts": now(0), "detail": ""},
+                {"label": "Archivage des fichiers", "ok": True, "ts": now(0),
+                 "detail": "wp-content/plugins/plugin-1, plugin-2"},
+                {"label": "Mise à jour", "ok": True, "ts": now(0), "detail": "en cours…"},
+            ]}
+
+
+def viz_update_status():
+    if SCENARIO != "joblent":
+        return {"running": False, "steps": []}
+    return {"running": True, "result": None, "steps": [
+        {"key": "baseline", "label": "Baseline VizProof", "status": "ok", "ts": now(0), "detail": ""},
+        {"key": "update", "label": "Mise à jour des extensions", "status": "en cours",
+         "ts": now(0), "detail": ""},
+        {"key": "viz", "label": "Contrôle visuel", "status": "attente", "ts": "", "detail": ""},
+        {"key": "rescan", "label": "Inventaire", "status": "attente", "ts": "", "detail": ""},
+    ]}
+
+
+# État mutable de la page bouchonnée : sans lui, un POST répondait toujours
+# `{"ok":true}` et l'interface ne pouvait pas montrer l'effet d'une action
+# (geler/dégeler une extension, sortie d'une commande, tâche groupée).
+POLICY = {"frozen": ["plugin-4"]}
+BULK = {"tasks": [], "done": 0, "total": 0, "running": False}
+
+
+def rollback_points():
+    return {"points": [
+        {"ts": "20260901-1042", "dir": "/var/backups/dash/20260901-1042",
+         "plugins": ["plugin-1", "plugin-2"],
+         "versions": {"plugin-1": "1.1.0", "plugin-2": "1.2.0"}},
+    ]}
+
+
 def collect_status():
     if SCENARIO == "joblent":
         return {"running": True, "rc": None, "done": 1, "total": 3,
@@ -182,11 +291,11 @@ ROUTES = {
     "/api/actions/log": lambda: {"log": [
         {"domain": "site-01.exemple.fr", "action": "plugin_update", "arg": "akismet", "rc": 0,
          "source": "dashboard", "ts": now(1), "duration_s": 12.4, "output_tail": "Success: Updated 1 of 1 plugins."}]},
-    "/api/actions/bulk_status": lambda: {"tasks": [], "done": 0, "total": 0, "running": False},
-    "/api/actions/safe_update_status": lambda: {"running": False, "domain": "", "steps": [], "verdict": ""},
-    "/api/actions/viz_update_status": lambda: {"running": False, "steps": []},
-    "/api/actions/policy": lambda: {"frozen": []},
-    "/api/actions/rollback_points": lambda: {"points": []},
+    "/api/actions/bulk_status": lambda: dict(BULK),
+    "/api/actions/safe_update_status": safe_update_status,
+    "/api/actions/viz_update_status": viz_update_status,
+    "/api/actions/policy": lambda: dict(POLICY),
+    "/api/actions/rollback_points": rollback_points,
     "/api/actions/plugin_versions": lambda: {"versions": ["1.1.0", "1.0.9"], "current": "1.1.0"},
     "/api/actions/viz_last": lambda: {"viz": None},
     "/api/site/timeline": lambda: {"events": [
@@ -217,11 +326,16 @@ ROUTES = {
         "viz_anomaly_rollback": False, "viz_scan_after_update": True,
         "viz_baseline_before_update": True, "viz_baseline_required": False,
         "vizproof_token_set": True, "vizproof_token_tail": "9f2c",
-        "vizproof_api_base": "https://vizproof.com"}},
+        "vizproof_api_base": "https://vizproof.com",
+        "incident_rules": {"backup_max_age_h": 48, "cert_warn_days": 21,
+                           "cert_critical_days": 7, "vuln_high_is_incident": False,
+                           "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]}}},
     "/api/mgmt/alerts": lambda: {"enabled": True, "token_set": True, "token_tail": "…42",
                                  "chat_id": "-100123", "rules": {"new_admin": True, "site_down": True,
                                                                  "backup_stale_h": 48, "cert_days": 21,
                                                                  "collect_dead_h": 6}},
+    "/api/incidents": incidents,
+    "/api/mgmt/counts": sidebar_counts,
     "/api/sec/vulns": vulns,
     "/api/sec/phperrors": phperrors,
     "/api/sec/baseline": lambda: {"baseline": {"site-00.exemple.fr": {"logins": ["admin"]}}},
@@ -257,6 +371,10 @@ STUB = """
     const u = String(url);
     // Ressources statiques (sprite, polices, CSS) : vrai chargement.
     if(!/^\\/api\\/|fleet\\.json/.test(u.replace(location.origin,''))) return vrai(url, opts);
+    // Les ÉCRITURES passent au serveur local, qui tient un peu d'état (gel
+    // d'une extension, sortie d'une commande, tâches d'un job groupé) : une
+    // réponse figée ne permettrait pas de voir l'effet d'un bouton.
+    if(opts && String(opts.method||'GET').toUpperCase() !== 'GET') return vrai(url, opts);
     const cle = Object.keys(DATA).find(k => u.split('?')[0].endsWith(k) || u.startsWith(k));
     const corps = cle ? DATA[cle] : {ok:true, preview:'route non bouchonnée : '+u};
     return Promise.resolve(new Response(JSON.stringify(corps),
@@ -297,10 +415,53 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        """Réponses d'écriture : quelques routes ont un EFFET, les autres disent OK.
+
+        Une page bouchonnée qui répond invariablement `{"ok":true}` ne permet pas
+        de voir ce que fait un bouton : le gel d'une extension ne bascule pas, la
+        console reste vide, la barre de progression n'a rien à montrer.
+        """
+        chemin = self.path.split("?")[0]
+        taille = int(self.headers.get("Content-Length") or 0)
+        try:
+            corps = json.loads(self.rfile.read(taille) or b"{}") if taille else {}
+        except ValueError:
+            corps = {}
+        rep = {"ok": True}
+        if chemin.endswith("/api/actions/policy"):
+            gel = set(POLICY["frozen"])
+            slug = str(corps.get("slug") or "")
+            if corps.get("frozen"):
+                gel.add(slug)
+            else:
+                gel.discard(slug)
+            POLICY["frozen"] = sorted(x for x in gel if x)
+            rep = {"ok": True, "frozen": POLICY["frozen"]}
+        elif chemin.endswith("/api/actions/run"):
+            rep = {"ok": True, "rc": 0,
+                   "output": f"Success: {corps.get('action', '?')} sur "
+                             f"{corps.get('domain', '?')} (page bouchonnée)"}
+        elif chemin.endswith("/api/actions/bulk"):
+            taches = corps.get("tasks") or []
+            BULK.update({
+                "running": False, "done": len(taches), "total": len(taches),
+                "tasks": [{"domain": t.get("domain"), "status": "ok", "rc": 0,
+                           "output_tail": "Success: (page bouchonnée)",
+                           "viz": "ok" if corps.get("viz_verify") else None,
+                           "backup": "ok" if corps.get("backup_first") else None}
+                          for t in taches],
+            })
+            rep = {"job": "apercu", "ok": True}
+        elif chemin.endswith("/api/actions/safe_update"):
+            rep = {"ok": True, "running": True}
+        elif chemin.endswith("/api/sec/verify"):
+            rep = {"ok": True, "output": "Success: WordPress installation verifies against checksums."}
+        corps_rep = json.dumps(rep, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(corps_rep)))
         self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+        self.wfile.write(corps_rep)
 
 
 def main():

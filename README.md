@@ -97,12 +97,23 @@ Le front est un ensemble de fichiers servis tels quels : **le code déployé est
 le code écrit**. Pas de bundler, pas de transpilation, aucune dépendance npm —
 les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
 
+> **Phase 2 de la refonte (septembre 2026).** Le **tiroir** de fiche site a été
+> retiré : il est remplacé par une **page site** à part entière,
+> `#site/<clé>[/<onglet>]`, avec cinq onglets (Aperçu, Extensions, Sécurité,
+> Sauvegardes, Historique). Les passages ci-dessous qui disent encore « tiroir »
+> décrivent le même contenu, désormais dans cette page ; la console
+> d'exécution y vit en bas, et les boutons de la colonne ont les mêmes effets.
+> L'écran Parc s'ouvre en plus sur une file **« À traiter »** alimentée par
+> `GET /api/incidents`, et la recherche globale se déclenche par ⌘K / Ctrl+K.
+
 ### Arborescence
 
 ```
 public/
-  index.html            coque : barre latérale, en-tête d'écran, gabarits des écrans,
+  index.html            coque : barre latérale, en-tête d'écran, modales partagées,
                         table d'imports, un seul <script type="module" src="app.js?v=…">
+                        (Parc et page site n'y ont plus de gabarit : ils sont
+                        construits par leur module avec h())
   login.html            page de connexion, autonome (ni module, ni sprite, ni API)
   app.js                démarrage, routeur par fragment, abonnement au store
   version.js            export const V = "AAAA-MM-JJ-hhmm" — posé par tools/deploy.sh
@@ -110,7 +121,8 @@ public/
   css/
     tokens.css          couleur (2 thèmes), typo, espace, rayons, @font-face
     base.css            remise à zéro, typographie, focus, utilitaires
-    components.css      bouton, chip, tableau, modale, tiroir, notification, bulle
+    components.css      bouton, chip, tableau, menu, modale, notification, bulle,
+                        palette de recherche
     screens.css         coque et mises en page propres aux écrans
   lib/
     api.js              fetch, session, X-Dash, redirection sur 401
@@ -121,9 +133,10 @@ public/
     format.js           dates relatives, durées, URL, cadences UpdraftPlus, bruit PHP
     icons.js            icon() / iconEl() + injection du sprite
   components/
-    button.js  chip.js  confirm.js  job.js  shell.js  table.js  tip.js  toast.js
+    actions-menu.js  button.js  chip.js  confirm.js  job.js  rollback.js
+    search.js  shell.js  table.js  tip.js  toast.js  viz.js
   screens/
-    parc.js  incidents.js  securite.js  changements → historique.js
+    parc.js  site.js  incidents.js  securite.js  changements → historique.js
     gestion.js  reglages.js
   fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2, latin + latin-ext)
 ```
@@ -173,7 +186,7 @@ typographie, l'espace et les rayons. Une valeur brute ailleurs est un bug :
 - **Espace** — 4 / 8 / 12 / 16 / 24 / 32 / 48. **Rayons** — 4 px pour les
   contrôles, 6 px pour les surfaces, pilule pour les chips.
 - **Élévation par bordure**, pas par ombre : la seule ombre est celle des
-  couches flottantes (modale, tiroir, notification).
+  couches flottantes (menu, modale, notification).
 
 `tools/check_tokens.py` calcule les contrastes dans les **deux** thèmes et
 échoue si un seuil n'est pas tenu : encre ≥ 7:1, texte secondaire ≥ 4.5:1,

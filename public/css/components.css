@@ -1,6 +1,6 @@
 /* ============================================================================
-   Composants génériques : icône, bouton, chip, tableau, modale, tiroir,
-   notification, bulle, progression, formulaires.
+   Composants génériques : icône, bouton, chip, tableau, menu, modale,
+   notification, bulle, progression, formulaires, palette de recherche.
    Aucune règle ici ne dépend d'un écran.
    ========================================================================== */
 
@@ -36,6 +36,10 @@
 .btn.danger:hover{background:var(--err-bg);color:var(--err);border-color:var(--err)}
 .btn.danger-hover:hover{border-color:var(--err);color:var(--err)}
 .btn:disabled,.btn[aria-disabled="true"]{opacity:.5;cursor:default;border-color:var(--line);color:var(--muted)}
+/* Un bouton principal désactivé garde SON texte : repris par la règle
+   ci-dessus il devenait gris sur aplat d'accent, donc illisible. */
+.btn.primary:disabled,.btn.primary[aria-disabled="true"]{
+  background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn:disabled:hover{border-color:var(--line);color:var(--muted);background:var(--surface)}
 .btn.primary:disabled:hover{background:var(--accent);color:var(--on-accent)}
 .btn.sm{padding:2px 8px;font-size:var(--t-12)}
@@ -140,9 +144,8 @@ label{cursor:default}
 .filters{display:flex;gap:var(--s-8);flex-wrap:wrap;align-items:center;margin-bottom:var(--s-12)}
 .filters label.small{display:inline-flex;align-items:center;gap:5px;color:var(--muted)}
 .fld{display:inline-flex;align-items:center;gap:6px;margin:0 var(--s-12) var(--s-8) 0;font-size:var(--t-12)}
-/* `display` de classe l'emporte sur la règle [hidden] du navigateur : sans
-   ceci, un `.fld` masqué par l'attribut hidden resterait affiché. */
-.fld[hidden]{display:none}
+/* Voir la règle générale `[hidden]` en fin de fichier : c'est elle qui masque
+   les champs de ce bloc (`#vz-codewrap`, `#vz-tokwrap`). */
 .filters-baseline{align-items:flex-end}
 .filters-flat{margin:0}
 
@@ -154,7 +157,7 @@ label{cursor:default}
 p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 .hint-tight{margin:0 0 6px}
 .hint-loose{margin:6px 0 0}
-.box h3,.dbody h3,.section h3{font-size:var(--t-12);text-transform:uppercase;letter-spacing:.05em;
+.box h3,.sitesec h3,.section h3{font-size:var(--t-12);text-transform:uppercase;letter-spacing:.05em;
   color:var(--muted);font-family:var(--f-mono);font-weight:500;margin:var(--s-16) 0 var(--s-8)}
 .kv{display:grid;grid-template-columns:150px 1fr;gap:var(--s-4) var(--s-12);font-size:var(--t-13)}
 .kv .k{color:var(--muted)}
@@ -192,8 +195,8 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 
 /* ---- bulle d'information --------------------------------------------------
    Elle s'ouvre au CLIC (l'attribut `title` natif ne répond qu'au survol) et
-   vit dans <body> en position:fixed : ancrée dans le tiroir elle passerait
-   sous les modales, et `.dbody{overflow-y:auto}` la rognerait. */
+   vit dans <body> en position:fixed : ancrée dans un panneau elle passerait
+   sous les modales, et un conteneur défilant la rognerait. */
 .info{position:relative;display:inline-flex;align-items:center;justify-content:center;
   width:16px;height:16px;border-radius:50%;background:var(--neutral-bg);color:var(--muted);
   font-size:var(--t-12);font-weight:600;cursor:pointer;vertical-align:1px;user-select:none}
@@ -210,7 +213,7 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
   border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 
 /* ---- modales --------------------------------------------------------------
-   Elles passent AU-DESSUS du tiroir : elles s'ouvrent souvent depuis lui. */
+   Elles passent au-dessus des menus déployés : ils les ouvrent souvent. */
 .modal{position:fixed;inset:0;background:var(--overlay);z-index:20;display:none}
 .modal.open{display:flex;align-items:flex-start;justify-content:center;padding:6vh var(--s-16)}
 .modal .box{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
@@ -220,27 +223,9 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 .modal .box.medium{max-width:620px}
 .modal .box.wide{max-width:560px}
 
-/* ---- tiroir ---------------------------------------------------------------
-   Conservé tel quel en phase 1 : la page site le remplacera en phase 2. */
-.drawer-back{position:fixed;inset:0;background:var(--overlay);z-index:8;display:none}
-.drawer-back.open{display:block}
-.drawer{position:fixed;top:0;right:-600px;width:580px;max-width:96vw;height:100vh;
-  background:var(--surface);border-left:1px solid var(--line);z-index:9;
-  transition:right .18s ease;display:flex;flex-direction:column;box-shadow:var(--shadow-2)}
-.drawer.open{right:0}
-.dhead{padding:var(--s-12) var(--s-16);border-bottom:1px solid var(--line);
-  display:flex;align-items:center;gap:var(--s-8)}
-.dhead h2{margin:0;font-size:var(--t-16)}
-.dbody{padding:var(--s-16);overflow-y:auto;flex:1}
-.dsec{border-top:1px solid var(--line-2);margin-top:var(--s-16);padding-top:var(--s-12)}
-.dsec>h3{margin:0 0 var(--s-8)}
-.agroup{margin-top:var(--s-12)}
-.agroup>.glbl{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
-  text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:block}
-
 /* ---- barre de notifications ----------------------------------------------
    z-index 1000 : elle vit dans <body>, hors de tout contexte d'empilement
-   local, donc au-dessus du tiroir (9), des modales (20) et de la bulle (40).
+   local, donc au-dessus des menus (21), des modales (20) et de la bulle (40).
    Le conteneur laisse passer les clics, seules les lignes les captent. */
 #notifbar{position:fixed;top:10px;right:12px;z-index:1000;width:min(390px,calc(100vw - 24px));
   display:flex;flex-direction:column;gap:6px;pointer-events:none}
@@ -280,11 +265,89 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 #jserr button{float:right;background:none;border:0;color:#FFF;cursor:pointer;
   margin-left:10px;display:inline-flex;padding:0}
 
-/* `[hidden]` doit l'emporter sur le `display` porté par la classe : sans cette
-   règle, un bouton masqué par l'attribut resterait affiché. */
-.btn[hidden],.pill[hidden],.chip[hidden],.ic[hidden]{display:none !important}
+/* `[hidden]` doit l'emporter sur TOUT `display` porté par une classe : sans
+   cette règle, un élément masqué par l'attribut restait affiché dès qu'une
+   règle plus spécifique lui donnait un display (par exemple
+   `.filters label.small`, qui laissait le champ « code » de la connexion
+   VizProof visible en mode jeton). */
+[hidden]{display:none !important}
 
 /* Champ de code court (clé publique SSH). */
 textarea.code.short{min-height:70px}
 /* Ligne mise en évidence à l'arrivée depuis l'assistant d'ajout. */
 .flash{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* ---- menus déroulants ------------------------------------------------------
+   Deux formes, une seule apparence : `menuActions()` (bouton + panneau
+   role="menu") et le menu « Colonnes » du Parc, qui est un <details> natif —
+   son ouverture au clavier et sa fermeture par Échap sont gratuites. */
+.menu{position:relative;display:inline-flex}
+.menu>summary{list-style:none;cursor:pointer}
+.menu>summary::-webkit-details-marker{display:none}
+.menu>summary::marker{content:""}
+.menu .caret{display:inline-flex;transform:rotate(90deg);opacity:.7}
+.menu[open]>summary .caret,.menu>[aria-expanded="true"] .caret{transform:rotate(-90deg)}
+.menu-p{
+  position:absolute;top:calc(100% + 4px);right:0;z-index:21;min-width:250px;max-width:340px;
+  max-height:min(70vh,520px);overflow:auto;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  box-shadow:var(--shadow-1);padding:var(--s-4);
+}
+.menu-p.start{right:auto;left:0}
+.menu-p[hidden]{display:none}
+.menu[open]>.menu-p{display:block}
+.menu-g{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;padding:6px var(--s-8) 3px}
+.menu-g.sep{border-top:1px solid var(--line-2);margin-top:var(--s-4)}
+.menu-i{
+  display:flex;align-items:center;gap:var(--s-8);width:100%;
+  padding:5px var(--s-8);border:0;border-left:2px solid transparent;border-radius:var(--r-ctl);
+  background:none;color:var(--ink);font:inherit;font-size:var(--t-13);
+  text-align:left;cursor:pointer;
+}
+.menu-i:hover,.menu-i:focus-visible{background:var(--surface-2)}
+.menu-i .ic,.menu-ic{color:var(--muted);width:16px;flex:0 0 auto}
+.menu-l{flex:1;min-width:0}
+/* Trait d'attention : cette action MODIFIE le site. */
+.menu-i.attention{border-left-color:var(--warn)}
+.menu-i.danger{color:var(--err)}
+.menu-mod{font-family:var(--f-mono);font-size:var(--t-12);color:var(--warn);
+  background:var(--warn-bg);border-radius:var(--r-pill);padding:0 6px}
+.menu-i[aria-disabled="true"]{color:var(--muted);cursor:help}
+.menu-i[aria-disabled="true"] .menu-mod{display:none}
+.menu-vide{padding:var(--s-8);color:var(--muted);font-size:var(--t-12)}
+
+/* Raccourci clavier affiché dans un bouton. */
+.kbd{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:0 4px;line-height:1.5}
+
+/* ---- groupes d'actions et sections d'une fiche ----------------------------- */
+.agroup{margin-top:var(--s-12)}
+.agroup>.glbl{display:block;margin-bottom:6px}
+.glbl{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em}
+
+/* ---- palette de recherche (⌘K) --------------------------------------------- */
+.sr-box{padding:0;max-height:76vh;display:flex;flex-direction:column}
+.sr-top{display:flex;align-items:center;gap:var(--s-8);padding:var(--s-12) var(--s-16);
+  border-bottom:1px solid var(--line)}
+.sr-top .ic{color:var(--muted)}
+.sr-top input{border:0;background:none;padding:0;font-size:var(--t-16);width:100%}
+.sr-top input:hover{border:0}
+.sr-top input:focus-visible{outline:none}
+.sr-list{overflow:auto;padding:var(--s-4);flex:1;min-height:0}
+.sr-g{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;padding:8px var(--s-8) 3px}
+.sr-i{display:flex;align-items:center;gap:var(--s-8);padding:6px var(--s-8);
+  border-radius:var(--r-ctl);cursor:pointer;font-size:var(--t-13)}
+.sr-i .ic{color:var(--muted);flex:0 0 auto}
+.sr-i.on{background:var(--accent-bg);color:var(--accent-ink)}
+.sr-i.on .ic{color:var(--accent)}
+.sr-l{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.sr-l mark{background:var(--warn-bg);color:var(--warn);border-radius:2px;padding:0 1px}
+.sr-d{color:var(--muted);font-size:var(--t-12);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr-dot{width:16px;flex:0 0 auto}
+.sr-vide{padding:var(--s-16);color:var(--muted);font-size:var(--t-13)}
+.sr-help{margin:0;padding:var(--s-8) var(--s-16);border-top:1px solid var(--line-2)}
+@media(max-width:560px){ .sr-d{display:none} }

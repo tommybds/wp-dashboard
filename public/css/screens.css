@@ -89,32 +89,102 @@
 .empty h2{color:var(--ink-2)}
 .empty p{max-width:52ch;font-size:var(--t-13)}
 
-/* ---- écran Parc ----------------------------------------------------------- */
-.cards{display:flex;gap:var(--s-8);flex-wrap:wrap;margin-bottom:var(--s-12)}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
-  padding:var(--s-8) var(--s-12);min-width:98px;cursor:pointer}
-.card:hover{border-color:var(--accent)}
-.card b{font-size:var(--t-20);display:block;font-family:var(--f-display);
-  font-variant-numeric:tabular-nums;line-height:1.2}
-.card small{color:var(--muted);font-size:var(--t-12)}
-.card.sel{border-color:var(--accent);background:var(--accent-bg)}
-.card.v-ok b{color:var(--ok)} .card.v-warn b{color:var(--warn)} .card.v-err b{color:var(--err)}
-.card:focus-visible,tbody tr:focus-visible,th:focus-visible,.vsite:focus-visible{outline-offset:-2px}
+/* ---- écran Parc -----------------------------------------------------------
+   Ordre : la file « à traiter », les compteurs, les filtres, la liste. */
+
+/* File d'attente : un trait de gravité à gauche, rien d'autre en couleur. */
+.todo{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  padding:var(--s-8) var(--s-12);margin-bottom:var(--s-12)}
+.todo-h{display:flex;align-items:center;gap:var(--s-8);width:100%;padding:2px 0;
+  background:none;border:0;color:var(--ink);cursor:pointer;text-align:left}
+.todo-chev{display:inline-flex;color:var(--muted);transition:transform .15s ease}
+.todo-chev.open{transform:rotate(90deg)}
+.inclist{display:flex;flex-direction:column}
+.inclist[hidden]{display:none}
+.inc{display:flex;align-items:center;gap:var(--s-8);padding:7px var(--s-8) 7px 10px;
+  border-top:1px solid var(--line-2);border-left:3px solid var(--line)}
+.inc:first-child{border-top:0}
+.inc.err{border-left-color:var(--err)}
+.inc.warn{border-left-color:var(--warn)}
+.inc-m{flex:1;min-width:0}
+.inc-t{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.inc-s{font-weight:600}
+.inc-h{font-size:var(--t-13)}
+.inc-d{margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:78ch}
+.inc-a{flex:0 0 auto;white-space:nowrap}
+.inc-b{flex:0 0 auto;display:flex;gap:6px}
+
+/* Compteurs cliquables : une ligne, pas six cartes. */
+.counters{display:flex;gap:var(--s-4);flex-wrap:wrap;margin-bottom:var(--s-12)}
+.cnt{display:flex;align-items:baseline;gap:6px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-pill);padding:3px 12px;cursor:pointer}
+.cnt:hover{border-color:var(--accent)}
+.cnt.sel{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink)}
+.cnt b{font-family:var(--f-display);font-size:var(--t-16);font-variant-numeric:tabular-nums}
+.cnt small{color:var(--muted);font-size:var(--t-12)}
+.cnt.sel small{color:var(--accent-ink)}
+.cnt.v-ok b{color:var(--ok)} .cnt.v-warn b{color:var(--warn)} .cnt.v-err b{color:var(--err)}
+.cnt:focus-visible,tbody tr:focus-visible,th:focus-visible,.vsite:focus-visible{outline-offset:-2px}
 
 .collectbox{margin:var(--s-12) var(--s-24) 0}
 .collectbox pre{max-height:150px;overflow:auto;margin:6px 0 0}
 
-/* Barre d'actions de masse : elle flotte au-dessus du contenu, sous les
-   notifications (1000) et sous le tiroir (9) quand celui-ci est ouvert. */
-.bulkbar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);
-  border-top:1px solid var(--line);box-shadow:var(--shadow-1);
-  padding:var(--s-8) var(--s-24);display:none;align-items:center;gap:var(--s-8);
-  flex-wrap:wrap;z-index:7}
+/* Barre d'actions groupées : elle colle en bas de la LISTE qu'elle commande,
+   pas de la fenêtre — c'est le tableau au-dessus qui lui donne son sens. */
+.bulkbar{position:sticky;bottom:0;z-index:5;background:var(--surface);
+  border:1px solid var(--line);border-top-width:2px;border-radius:0 0 var(--r-surf) var(--r-surf);
+  box-shadow:var(--shadow-1);margin-top:-1px;
+  padding:var(--s-8) var(--s-12);display:none;align-items:center;gap:6px;flex-wrap:wrap}
 .bulkbar.open{display:flex}
+.bulkbar b{margin-right:var(--s-4)}
 
-/* Bandeau de synthèse du tiroir : 6 indicateurs sur 2 rangées de 3, jamais de
-   tuile orpheline en fin de ligne. */
-.dstats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s-8);margin:2px 0 var(--s-12)}
+.vizrun{text-decoration:none;vertical-align:middle}
+.vizrun:hover{text-decoration:none}
+/* La colonne VizProof tient sur UNE ligne : la pastille de scan renvoyée
+   à la ligne suivante ressemblait à une seconde valeur. */
+.vizwrap{display:inline-flex;align-items:center;gap:6px;flex-wrap:nowrap}
+
+/* ---- page site -------------------------------------------------------------
+   En-tête, bandeau d'indicateurs (label/valeur, pas des cartes), onglets. */
+.sitehead{display:grid;grid-template-columns:1fr auto;gap:var(--s-4) var(--s-12);
+  align-items:start;margin-bottom:var(--s-12)}
+.fil{grid-column:1;font-size:var(--t-12);color:var(--muted)}
+.fil .sep{margin:0 5px;opacity:.6}
+.sitetitle{grid-column:1;display:flex;align-items:center;gap:var(--s-8);flex-wrap:wrap}
+.sitetitle h1{font-size:var(--t-26);letter-spacing:-.015em}
+.sitemeta{grid-column:1;font-size:var(--t-12);color:var(--muted);
+  display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.sitemeta .sep{opacity:.45}
+.siteact{grid-column:2;grid-row:1 / span 3;display:flex;align-items:center;gap:var(--s-8);
+  justify-content:flex-end;flex-wrap:wrap}
+
+.iband{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;
+  background:var(--line-2);border:1px solid var(--line);border-radius:var(--r-surf);
+  overflow:hidden;margin-bottom:var(--s-16)}
+.ib{background:var(--surface);padding:var(--s-8) var(--s-12);min-width:0;
+  display:flex;flex-direction:column;gap:1px}
+.ib-l{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em}
+.ib-v{font-size:var(--t-16);font-variant-numeric:tabular-nums;line-height:1.3;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib-v b{font-weight:600}
+.ib-s{font-size:var(--t-12);color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib.ok .ib-v b{color:var(--ok)}
+.ib.warn .ib-v b{color:var(--warn)}
+.ib.err .ib-v b{color:var(--err)}
+
+.sitetab{min-height:120px}
+.sitesec{border-top:1px solid var(--line-2);margin-top:var(--s-16);padding-top:var(--s-12)}
+.sitesec:first-child{border-top:0;margin-top:0;padding-top:0}
+.sitesec>h3{margin:0 0 var(--s-8)}
+.sitesec .warnbox{margin-top:var(--s-8)}
+#site-console{margin-top:var(--s-24)}
+
+/* ---- tuiles de tendance (Changements) et cartes de choix (Gestion) --------
+   Une surface n'est une carte que si elle est manipulable seule : ici une
+   tuile de chiffre et une carte de choix cliquable. */
+.dstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s-8);margin:2px 0 var(--s-12)}
 .dstat{background:var(--surface-2);border:1px solid var(--line-2);border-radius:var(--r-surf);
   padding:var(--s-8) 10px;min-width:0}
 .dstat .lbl,.dstat .val,.dstat .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -124,11 +194,14 @@
   font-variant-numeric:tabular-nums}
 .dstat.ok .val{color:var(--ok)} .dstat.warn .val{color:var(--warn)} .dstat.err .val{color:var(--err)}
 .dstat .sub{font-size:var(--t-12);color:var(--muted);margin-top:1px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
+  padding:var(--s-8) var(--s-12);min-width:98px;cursor:pointer}
+.card:hover{border-color:var(--accent)}
+.card.sel{border-color:var(--accent);background:var(--accent-bg)}
 .choice{flex:1;min-width:250px}
 .choice b{font-size:var(--t-13);margin-bottom:4px;display:block}
 .choice small{display:block;line-height:1.55;color:var(--muted)}
-.vizrun{text-decoration:none;vertical-align:middle}
-.vizrun:hover{text-decoration:none}
 
 /* ---- écran Sécurité ------------------------------------------------------- */
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
@@ -147,7 +220,7 @@
 .phe-group{margin-bottom:10px}
 .phe-loc{margin-left:6px}
 
-/* ---- journal d'un site (tiroir) ------------------------------------------- */
+/* ---- journal d'un site (onglet Historique de la page site) --------------- */
 .tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line-2)}
 .tlrow:last-child{border-bottom:0}
 .tlic{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;
@@ -170,7 +243,6 @@
 .tlopenable.open .tlchev{transform:rotate(90deg)}
 
 /* ---- écran Changements (tendance) ----------------------------------------- */
-#hist-tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
 /* Deux colonnes FIXES : `auto-fit` donnait 3 colonnes sur un large écran, donc
    une quatrième courbe orpheline sur la ligne suivante. */
 .histgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s-16);margin-top:var(--s-12)}
@@ -227,7 +299,8 @@
   .bulkbar{padding-left:var(--s-12);padding-right:var(--s-12)}
   .kv{grid-template-columns:110px 1fr}
   th,td{padding:7px var(--s-8)}
-  .drawer{width:100%}
-  .dstats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dstats,.iband{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sitehead{grid-template-columns:minmax(0,1fr)}
+  .siteact{grid-column:1;grid-row:auto;justify-content:flex-start}
   #collectbtn{flex:1}
 }

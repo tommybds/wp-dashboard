@@ -84,8 +84,17 @@ export function setScreenTitle(t) {
 }
 
 /* ---- compteurs de la barre latérale --------------------------------------
-   Phase 1 : les deux valeurs déjà calculables sans nouvelle route. Les règles
-   complètes de la file « à traiter » arrivent en phase 2. */
+   Tant que la file « à traiter » n'a pas répondu, le compteur Incidents vaut
+   les sites injoignables (calculable sans requête). Dès que `/api/incidents`
+   a parlé, c'est LUI qui fait foi : deux sources qui se contredisent sur la
+   même pastille, c'est une pastille qu'on n'ose plus croire. */
+let INCIDENTS_CONNUS = false;
+
+export function setIncidentCount(n, level) {
+  INCIDENTS_CONNUS = true;
+  setCounter('incidents', n, level);
+}
+
 export function setCounter(name, value, level) {
   const el = document.getElementById('cnt-' + name);
   if (!el) return;
@@ -98,7 +107,7 @@ export function setCounter(name, value, level) {
 
 /** Compteurs déduits de la flotte + du statut Kuma (sites injoignables). */
 export function majCompteurs() {
-  if (!store.fleet) return;
+  if (!store.fleet || INCIDENTS_CONNUS) return;
   const down = allSites().filter(s => st(s) === 0).length;
   setCounter('incidents', down, 'err');
 }

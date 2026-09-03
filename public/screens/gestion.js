@@ -9,7 +9,8 @@ import { icon } from '../lib/icons.js';
 import { store, kName, loadFleet, loadStatus, cacheFrais, cacheVider } from '../lib/state.js';
 import { askConfirm, askInfo, askChoice, registerModalCloser } from '../components/confirm.js';
 import { confirm2, setBusy, setIdle } from '../components/button.js';
-import { confirmRun, vizOf, vizInfo } from './parc.js';
+import { vizOf, vizInfo } from '../components/viz.js';
+import { confirmRun } from './site.js';
 
 /* ===== GESTION ===== */
 async function loadMgmt(force){
@@ -349,7 +350,7 @@ function wpauthBanner(){
   const M={ ok:['ok','autorisé','Site autorisé — le dashboard peut désormais installer des extensions sur '+cible+'.'],
     refuse:['warn','refusé',"Autorisation refusée sur le site : la connexion n'a pas été approuvée dans wp-admin."],
     expired:['warn','expiré',"Lien d'autorisation expiré, relancez la connexion depuis le dashboard."],
-    invalid:['err','erreur',"L'autorisation n'a pas pu être validée. Relancez la connexion depuis le tiroir du site."],
+    invalid:['err','erreur',"L'autorisation n'a pas pu être validée. Relancez la connexion depuis la page du site."],
     error:['err','erreur',"L'autorisation a échoué. Vérifiez que le site est joignable, puis relancez la connexion."] };
   const [cls,tag,txt]=M[stt]||M.error;
   const box=document.getElementById('wpauthbox'), msg=document.getElementById('wpauth-msg');
@@ -361,7 +362,7 @@ function wpauthBanner(){
   if(WPAUTHTO) clearTimeout(WPAUTHTO);
   WPAUTHTO=setTimeout(()=>{ box.hidden=true; WPAUTHTO=null; },6000); }
 
-/* état des identifiants dans le tiroir d'un site REST */
+/* état des identifiants dans la page d'un site REST */
 let WPCSEQ=0;
 async function loadWpCred(srv,dom){
   const seq=++WPCSEQ; const cell=document.getElementById('wpcred'); if(!cell) return;

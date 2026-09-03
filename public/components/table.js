@@ -43,3 +43,24 @@ export function bindSortable(root, { get, set, onChange }) {
 export function setDensity(compact) {
   document.documentElement.style.setProperty('--rowh', compact ? '.55' : '1');
 }
+
+/* ---- colonnes masquables --------------------------------------------------
+   La liste MASQUÉE est mémorisée, pas la liste visible : une colonne ajoutée
+   plus tard apparaît alors chez tout le monde au lieu de rester invisible chez
+   ceux qui avaient déjà enregistré une préférence.
+   Le stockage peut être refusé (navigation privée, réglage du navigateur) :
+   dans ce cas la préférence vaut pour la session, l'écran fonctionne pareil. */
+
+export function colonnesMasquees(cle, defaut = []) {
+  try {
+    const brut = localStorage.getItem(cle);
+    if (brut === null) return new Set(defaut);
+    const l = JSON.parse(brut);
+    return new Set(Array.isArray(l) ? l.map(String) : defaut);
+  } catch (e) { return new Set(defaut); }
+}
+
+export function enregistrerColonnes(cle, masquees) {
+  try { localStorage.setItem(cle, JSON.stringify([...masquees])); }
+  catch (e) { /* stockage refusé : la préférence vaut pour la session */ }
+}

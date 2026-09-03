@@ -408,5 +408,5 @@ export function majCompteurSec(){
   setCounter('securite',(t.critical||0)+(t.high||0),'warn');
 }
 
-export { loadSec, loadVulns, loadPhe, sevPill, SEVLABEL, SEVRANK };
+export { loadSec, loadVulns, loadPhe, sevPill, SEVLABEL, SEVRANK, grouperParExtension };
 

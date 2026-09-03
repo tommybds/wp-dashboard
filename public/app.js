@@ -1,9 +1,11 @@
 /* Démarrage de l'application : sprite d'icônes, coque, routeur par fragment,
    chargement de la flotte.
 
-   Phase 1 : la coque et le routage sont neufs, les écrans sont ceux d'avant,
-   montés tels quels. Les anciens fragments (#dash, #sec/…, #hist/…, #mgmt/…)
-   redirigent vers les nouveaux : des liens et des habitudes existent. */
+   Phase 2 : le Parc et la page site sont neufs (`#site/<clé>[/<onglet>]`), le
+   tiroir a disparu, la recherche globale ⌘K est branchée. Sécurité,
+   Changements et Gestion restent les écrans de la phase 1, montés tels quels.
+   Les anciens fragments (#dash, #sec/…, #hist/…, #mgmt/…) redirigent vers les
+   nouveaux : des liens et des habitudes existent. */
 
 import { esc as H } from './lib/dom.js';
 import { initIcons } from './lib/icons.js';
@@ -16,18 +18,22 @@ import { initTips } from './components/tip.js';
 import { initJob, setSecRefresh, reouvrirBulk } from './components/job.js';
 import { setOuvreurs } from './components/toast.js';
 import { initShell, loadSched, updMeta, setScreenTitle, majCompteurs, pollCollect } from './components/shell.js';
+import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
+import { setVizSettings } from './components/viz.js';
+import { fermerMenus } from './components/actions-menu.js';
 
-import { openDrawer, onFleetChange, loadViews } from './screens/parc.js';
+import { onFleetChange, loadViews, chargerIncidents, filtrerSurExtension } from './screens/parc.js';
+import { renderSite, quitterSite, cleDeSite, siteParCle } from './screens/site.js';
 import { loadMgmt, wpauthBanner } from './screens/gestion.js';
 import { loadSec, majCompteurSec } from './screens/securite.js';
 import { loadHist } from './screens/historique.js';
-import { ouvrirReglages } from './screens/reglages.js';
+import { ouvrirReglages, ensureSettings } from './screens/reglages.js';
 import { renderIncidents } from './screens/incidents.js';
 
 /* ---- destinations ---------------------------------------------------------
-   `page` est l'identifiant DOM historique du volet (page-dash, page-sec…) :
-   les écrans repris en phase 1 le connaissent, on ne le renomme pas ici.
-   `legacy` est l'ancien fragment, conservé en redirection. */
+   `page` est l'identifiant DOM du volet (page-dash, page-sec…). `legacy` est
+   l'ancien fragment, conservé en redirection. La page site n'est pas une
+   destination de la barre latérale : elle a sa propre branche de routage. */
 const DESTINATIONS = [
   { route: 'parc',        page: 'dash',      titre: 'Parc',        legacy: 'dash' },
   { route: 'incidents',   page: 'incidents', titre: 'Incidents' },
@@ -50,7 +56,7 @@ const SUBSLUG = {
 };
 
 let NAVLOCK = false;   // évite que l'écriture de l'URL relance la navigation
-let ROUTE = 'parc';    // destination affichée
+let ROUTE = 'parc';    // destination affichée ('site' pour la page d'un site)
 
 function currentSub(route) {
   const d = PAR_ROUTE[route];
@@ -73,20 +79,36 @@ function writeHash(route, sub, push) {
   NAVLOCK = false;
 }
 
-function showDest(route, { ecrire = true, push = false } = {}) {
-  const d = PAR_ROUTE[route];
-  if (!d) return false;
-  ROUTE = route;
+/* Quitter l'écran courant : les sondages qui n'ont de sens que sur cet écran
+   s'arrêtent, les menus déployés se referment. Les JOBS, eux, continuent côté
+   serveur — c'est tout l'intérêt de la barre de notifications. */
+function quitterEcran(suivant) {
+  fermerMenus();
+  if (ROUTE === 'site' && suivant !== 'site') quitterSite();
+  if (suivant !== 'securite') { stopPoll('vulns'); stopPoll('phe'); }
+}
+
+function masquerPages() {
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+}
+
+function marquerNav(route) {
   document.querySelectorAll('.nav-i[data-dest]').forEach(x => {
     const on = x.dataset.dest === route;
     x.classList.toggle('active', on);
     if (on) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
   });
-  document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+}
+
+function showDest(route, { ecrire = true, push = false } = {}) {
+  const d = PAR_ROUTE[route];
+  if (!d) return false;
+  quitterEcran(route);
+  ROUTE = route;
+  marquerNav(route);
+  masquerPages();
   document.getElementById('page-' + d.page).classList.add('active');
   setScreenTitle(d.titre);
-  // Sondages propres à un écran : inutile de les laisser tourner ailleurs.
-  if (route !== 'securite') { stopPoll('vulns'); stopPoll('phe'); }
   if (route === 'gestion') loadMgmt();
   if (route === 'securite') loadSec();
   if (route === 'changements') loadHist();
@@ -95,23 +117,55 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   return true;
 }
 
-function applyHash() {
-  const brut = decodeURIComponent(location.hash.replace(/^#/, ''));
-  let [tete, sub] = brut.split('/');
+/* ---- page site -------------------------------------------------------------
+   Elle n'appartient à aucune destination de la barre latérale, mais « Parc »
+   reste surligné : c'est de là qu'on y arrive, et le fil d'Ariane le dit. */
+function showSite(cle, onglet) {
+  quitterEcran('site');
+  ROUTE = 'site';
+  marquerNav('parc');
+  masquerPages();
+  document.getElementById('page-site').classList.add('active');
+  setScreenTitle(cle);
+  renderSite(cle, onglet);
+}
 
-  // Réglages : encore une modale en phase 1. On garde l'écran courant dessous
+/** Ouvre la page d'un site depuis n'importe où (barre de notifications, ⌘K). */
+function ouvrirSite(cle, onglet) {
+  location.hash = '#site/' + encodeURIComponent(cle) + (onglet ? '/' + onglet : '');
+}
+
+/* La barre de notifications ne connaît qu'un couple (serveur, domaine) ; la
+   clé d'URL, elle, est le nom Kuma quand il existe. */
+function ouvrirSiteParDomaine(srv, dom) {
+  const s = siteParCle(dom);
+  ouvrirSite(s ? cleDeSite(s) : dom);
+}
+
+function applyHash() {
+  // Découpage AVANT décodage : une clé de site pourrait porter un « / » encodé.
+  const parts = location.hash.replace(/^#/, '').split('/').map(x => {
+    try { return decodeURIComponent(x); } catch (e) { return x; }
+  });
+  let tete = parts[0], sub = parts[1];
+
+  if (tete === 'site' && parts[1]) { showSite(parts[1], parts[2] || ''); return; }
+
+  // Réglages : encore une modale en phase 2. On garde l'écran courant dessous
   // et on rend la main à l'URL précédente à la fermeture.
   if (tete === 'reglages') {
-    NAVLOCK = true; showDest(ROUTE, { ecrire: false }); NAVLOCK = false;
+    NAVLOCK = true;
+    if (ROUTE !== 'site') showDest(ROUTE, { ecrire: false });
+    NAVLOCK = false;
     ouvrirReglages();
     return;
   }
   // Compatibilité : #dash, #sec/…, #hist/…, #mgmt/… → nouvelles destinations.
   if (PAR_LEGACY[tete]) {
     const d = PAR_LEGACY[tete];
-    const h = '#' + d.route + (sub ? '/' + sub : '');
+    const cible = '#' + d.route + (sub ? '/' + sub : '');
     NAVLOCK = true;
-    try { history.replaceState(null, '', h); } catch (e) { /* historique verrouillé */ }
+    try { history.replaceState(null, '', cible); } catch (e) { /* historique verrouillé */ }
     NAVLOCK = false;
     tete = d.route;
   }
@@ -141,8 +195,8 @@ function buildSubtabs(pageId, key, shortLabels) {
     if (anchor) anchor.after(nav); else page.prepend(nav);
   }
   nav.innerHTML = secs.map((s, i) => {
-    const h = s.querySelector('h2');
-    const raw = h ? (h.childNodes[0]?.textContent || h.textContent) : 'Section ' + (i + 1);
+    const t = s.querySelector('h2');
+    const raw = t ? (t.childNodes[0]?.textContent || t.textContent) : 'Section ' + (i + 1);
     const label = (shortLabels && shortLabels[i]) || raw.trim().replace(/\s*\(.*$/, '');
     return `<button class="subtab" type="button" data-i="${i}">${H(label)}</button>`;
   }).join('');
@@ -173,11 +227,25 @@ async function boot() {
   initModals();
   initJob();
   setSecRefresh(loadSec);
-  setOuvreurs({ bulk: reouvrirBulk, site: openDrawer });
+  setOuvreurs({ bulk: reouvrirBulk, site: ouvrirSiteParDomaine });
+  // Le jeton VizProof enregistré est lu par l'écran Réglages : le composant de
+  // connexion le demande sans dépendre de cet écran.
+  setVizSettings(ensureSettings);
   initShell({ onCollect: err => askInfo('Collecte impossible', H(err)) });
 
+  initSearch({
+    ouvrirSite,
+    filtrerExtension: nom => { filtrerSurExtension(nom); location.hash = '#parc'; },
+    allerA: f => { location.hash = f; },
+  });
+  document.getElementById('searchbtn').onclick = ouvrirRecherche;
+  document.getElementById('searchkbd').textContent = raccourciLabel();
+
   // La modale Réglages rend la main à l'URL de l'écran affiché.
-  const rendreLaMain = () => { if (location.hash === '#reglages') writeHash(ROUTE); };
+  const rendreLaMain = () => {
+    if (location.hash !== '#reglages') return;
+    if (ROUTE === 'site') history.back(); else writeHash(ROUTE);
+  };
   registerModalCloser('setmodal', () => {
     document.getElementById('setmodal').classList.remove('open');
     rendreLaMain();
@@ -198,22 +266,26 @@ async function boot() {
     ['Vulnérabilités', 'Erreurs PHP', 'Administrateurs', 'Recherche plugin', 'PHP obsolète',
      'Certificats SSL', 'Plugins à risque', 'Intégrité du core']);
 
-  // Un écran se redessine quand le store change ; plus personne ne l'appelle
-  // depuis le chargeur de données.
+  /* Un écran se redessine quand le store change ; plus personne ne l'appelle
+     depuis le chargeur de données. La page site, elle, se rafraîchit sur ordre
+     (après une action) : la redessiner toutes les 60 s effacerait l'onglet
+     ouvert et relancerait ses requêtes pour rien. */
   subscribe(() => { onFleetChange(); updMeta(); majCompteurs(); majCompteurSec(); });
 
   // La destination demandée par l'URL n'est appliquée qu'une fois la flotte
-  // chargée : Gestion et Sécurité se construisent à partir de ces données.
+  // chargée : la page site, Gestion et Sécurité se construisent à partir d'elle.
   loadFleet().then(applyHash).catch(() => applyHash());
   loadSched();
   loadStatus();
   loadViews();
+  chargerIncidents();
+  ensureSettings();
   pollCollect();
   wpauthBanner();
   setInterval(loadStatus, 60000);
-  setInterval(() => { if (!store.curjob) loadFleet(); }, 15 * 60000);
+  setInterval(() => { if (!store.curjob) { loadFleet(); chargerIncidents(); } }, 15 * 60000);
 }
 
 boot();
 
-export { showDest, writeHash };
+export { showDest, writeHash, ouvrirSite };

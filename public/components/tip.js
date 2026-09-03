@@ -1,10 +1,10 @@
 /* ---- infobulles : ouverture au CLIC ----
    Délégation sur le document : les pastilles « ? » sont souvent créées à la
-   volée (tiroir, listes), un binding à l'initialisation les manquerait.
+   volée (listes, panneaux), un binding à l'initialisation les manquerait.
 
-   La bulle vit dans <body> (position:fixed) : ancrée dans le tiroir elle
-   passait sous les modales, et le défilement de `.dbody` la rognait. Elle est
-   donc positionnée à la main, et refermée dès que la page bouge. */
+   La bulle vit dans <body> (position:fixed) : ancrée dans un panneau elle
+   passait sous les modales, et le défilement de ce panneau la rognait. Elle
+   est donc positionnée à la main, et refermée dès que la page bouge. */
 
 import { activeAuClavier } from '../lib/dom.js';
 

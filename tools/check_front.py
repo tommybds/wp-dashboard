@@ -122,15 +122,13 @@ def check_actions(pbs, verbose):
     for f in FICHIERS_JS + FICHIERS_HTML:
         src = f.read_text(encoding="utf-8")
         vues |= set(re.findall(r'data-act="([a-z0-9_]+)"', src))
-        # Actions posées dynamiquement dans un corps de requête. Le motif exige
+        # Actions posées dynamiquement dans un corps de requête, ou déclarées
+        # dans une table d'entrées de menu / de barre groupée. Le motif exige
         # un « _ » (ou le cas particulier `rescan`) pour ne pas confondre avec
         # une clé `action:` d'un tout autre objet (table d'icônes, journal…).
         vues |= set(re.findall(r"""action:\s*['"]([a-z0-9]+(?:_[a-z0-9]+)+|rescan)['"]""", src))
-    # Les choix de la barre d'actions groupées sont eux aussi des actions.
-    bulk = re.search(r'<select id="bulk-act".*?</select>',
-                     (PUBLIC / 'index.html').read_text(encoding='utf-8'), re.S)
-    if bulk:
-        vues |= set(re.findall(r'<option value="([a-z0-9_]+)"', bulk.group(0)))
+        # `data-act` posé sur un nœud construit par h() : `el.dataset.act = '…'`.
+        vues |= set(re.findall(r"""dataset\.act\s*=\s*['"]([a-z0-9_]+)['"]""", src))
     for a in sorted(vues):
         if a not in connues:
             pbs.append(f"(b) action absente de ACTIONS : {a}")

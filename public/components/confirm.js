@@ -7,25 +7,24 @@
    perd sa place.
 
    La gestion d'Échap vit aussi ici : elle ferme UNE chose, la plus haute —
-   la bulle, sinon la modale du dessus, sinon le tiroir. Les fermetures
+   la bulle, sinon le menu déployé, sinon la modale du dessus. Les fermetures
    propres à chaque modale sont ENREGISTRÉES par leur écran (pas importées),
    pour que ce composant ne dépende d'aucun d'eux. */
 
 import { esc } from '../lib/dom.js';
 import { tipOuverte, fermerTips } from './tip.js';
+import { menuOuvert, fermerMenus } from './actions-menu.js';
 
 /* Ordre de fermeture : l'ordre du DOM ne dit pas laquelle est au-dessus (toutes
    les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
    viennent en tête. */
-const MODALES = ['askmodal', 'vizmodal', 'rbmodal', 'addmodal', 'bulkmodal', 'setmodal', 'logmodal'];
+const MODALES = ['searchmodal', 'askmodal', 'vizmodal', 'rbmodal', 'addmodal',
+  'bulkmodal', 'setmodal', 'logmodal'];
 
 const CLOSERS = {};
-let DRAWER_CLOSER = null;
 
 /** registerModalCloser('vizmodal', closeViz) — appelé par l'écran propriétaire. */
 export function registerModalCloser(id, fn) { CLOSERS[id] = fn; }
-/** registerDrawerCloser(closeDrawer) */
-export function registerDrawerCloser(fn) { DRAWER_CLOSER = fn; }
 
 function fermerModale(m) {
   if (!m) return;
@@ -39,10 +38,9 @@ export function initModals() {
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (tipOuverte()) { fermerTips(); return; }
+    if (menuOuvert()) { fermerMenus(); return; }
     const id = MODALES.find(x => { const m = document.getElementById(x); return m && m.classList.contains('open'); });
-    if (id) { fermerModale(document.getElementById(id)); return; }
-    const dr = document.getElementById('drawer');
-    if (dr && dr.classList.contains('open') && DRAWER_CLOSER) DRAWER_CLOSER();
+    if (id) fermerModale(document.getElementById(id));
   });
   document.getElementById('ask-cancel').onclick = askClose;
   document.getElementById('askmodal').onclick = e => {

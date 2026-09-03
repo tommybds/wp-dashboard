@@ -118,16 +118,16 @@ async function loadSettings(){ const bd=document.getElementById('mset-body');
     <label class="fld mt3"><input type="checkbox" id="set-vizscan"${store.settings.viz_scan_after_update===false?'':' checked'}>
       Contrôle visuel VizProof après chaque mise à jour (verdict du scan lancé par le plugin, sinon scan par le dashboard)</label>
     <span id="set-vizscanmsg" class="small muted"></span>
-    <p class="hint hint-loose">Coché (défaut) : après une mise à jour lancée depuis le tiroir (cœur, extensions,
+    <p class="hint hint-loose">Coché (défaut) : après une mise à jour lancée depuis la page d'un site (cœur, extensions,
       thèmes), le dashboard récupère en arrière-plan le verdict visuel des sites reliés à VizProof. L'extension
       <b>scanne d'elle-même</b> après chaque mise à jour quand son option « scan après mise à jour » est active : on attend
       donc <b>son</b> scan plutôt que d'en lancer un second, et on ne scanne nous-mêmes que si elle ne l'a pas fait. Il
       <b>informe seulement</b> — le bouton unitaire n'archive rien, il n'y a donc rien à annuler ; le résultat s'affiche dans
-      la barre de notifications, dans la console du tiroir et dans l'historique du site.</p>
+      la barre de notifications, dans la console de la page site et dans l'historique du site.</p>
     <label class="fld mt3"><input type="checkbox" id="set-vizbase"${store.settings.viz_baseline_before_update===false?'':' checked'}>
       Baseline VizProof avant chaque mise à jour unitaire (sites reliés)</label>
     <span id="set-vizbasemsg" class="small muted"></span>
-    <p class="hint hint-loose">Coché (défaut) : sur un site relié, la mise à jour lancée depuis le tiroir part
+    <p class="hint hint-loose">Coché (défaut) : sur un site relié, la mise à jour lancée depuis sa page part
       dans un <b>déroulé suivi</b> — baseline VizProof, mise à jour, verdict visuel, inventaire — au lieu d'être exécutée
       d'un bloc. Sans baseline, le contrôle d'après compare au <b>dernier état connu</b> de VizProof, qui peut dater de la
       veille et mêler d'autres changements ; avec elle, le verdict porte sur <b>cette</b> mise à jour.</p>

@@ -22,11 +22,38 @@ export const store = {
   },
   hidden: 0,            // sites masqués par la visibilité / le filtre Kuma
   curjob: null,         // identifiant du job groupé en cours
-  cur: null,            // site affiché dans le tiroir
+  cur: null,            // site affiché par la page site
   sort: { k: 'domain', dir: 1 },
   sel: new Set(),       // clés serveur|domaine cochées
-  filt: { q: '', srv: '', grp: '', st: '', todo: false, groupby: false, compact: false },
+  filt: { q: '', srv: '', grp: '', st: '', todo: false, groupby: false, compact: false, card: '' },
 };
+
+/* ---- seuils venus des réglages -------------------------------------------
+   Ils pilotent aussi la file « à traiter » côté serveur (`incident_rules`) :
+   les colonnes du tableau et le bandeau de la page site doivent dire la MÊME
+   chose, sinon un site paraît « ok » ici et en incident là. Tant que
+   `/api/mgmt/settings` n'a pas répondu, on retombe sur les valeurs par défaut
+   du backend. */
+export function incidentRules() {
+  const r = store.settings && store.settings.incident_rules;
+  return (r && typeof r === 'object') ? r : {};
+}
+
+/** Version PHP hors support ? (liste des réglages, sinon « < 8.1 »). */
+export function phpEol(v) {
+  const m = /^(\d+)\.(\d+)/.exec(String(v || ''));
+  if (!m) return false;
+  const court = m[1] + '.' + m[2];
+  const eol = incidentRules().php_eol_versions;
+  if (Array.isArray(eol) && eol.length) return eol.map(String).includes(court);
+  return parseFloat(court) < 8.1;
+}
+
+/** Âge (en heures) au-delà duquel une sauvegarde est jugée en retard. */
+export function seuilBackup() {
+  const n = Number(incidentRules().backup_max_age_h);
+  return isFinite(n) && n > 0 ? n : 48;
+}
 
 /* ---- abonnements --------------------------------------------------------- */
 const bus = new EventTarget();
@@ -126,7 +153,7 @@ export function bkAge(s) {
 /** « À traiter » : mise à jour en attente, sauvegarde en retard, erreur, down. */
 export function attn(s) {
   return !!(s.core_update || s.plugins_updates || Object.keys(s.errors || {}).length
-    || (s.updraft && (bkAge(s) === null || bkAge(s) > 48)) || st(s) === 0);
+    || (s.updraft && (bkAge(s) === null || bkAge(s) > seuilBackup())) || st(s) === 0);
 }
 
 /** Clé stable d'un site dans la sélection. */

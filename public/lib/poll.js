@@ -3,7 +3,7 @@
    indéfiniment quand le backend tombait : l'appel échouait, le garde
    `if(!st) return` rendait la main, et l'intervalle repartait — pour toujours.
    `poll` compte les échecs consécutifs, s'arrête sur `until()`, et se laisse
-   arrêter de l'extérieur (fermeture d'une modale, du tiroir, d'un onglet). */
+   arrêter de l'extérieur (fermeture d'une modale, changement d'écran). */
 
 const POLLS = {};
 

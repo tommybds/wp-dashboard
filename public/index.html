@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-0942">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-0942">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-0942">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-0942">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1033">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1033">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1033">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1033">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,27 +21,32 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-0942",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-0942",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-0942",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-0942",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-0942",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-0942",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-0942",
-    "./components/button.js": "./components/button.js?v=2026-09-03-0942",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-0942",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-0942",
-    "./components/job.js": "./components/job.js?v=2026-09-03-0942",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-0942",
-    "./components/table.js": "./components/table.js?v=2026-09-03-0942",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-0942",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-0942",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-0942",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-0942",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-0942",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-0942",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-0942",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-0942"
+    "./version.js": "./version.js?v=2026-09-03-1033",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1033",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1033",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1033",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1033",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1033",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1033",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1033",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1033",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1033",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1033",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1033",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1033",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1033",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1033",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1033",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1033",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1033",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1033",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1033",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1033",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1033",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1033",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1033",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1033",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1033"
   }
 }
 </script>
@@ -107,6 +112,9 @@
     <span class="meta" id="meta">chargement…</span>
   </div>
   <span class="spacer"></span>
+  <button class="btn" type="button" id="searchbtn" title="Recherche globale" aria-label="Recherche globale">
+    <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
+    <span class="kbd" id="searchkbd"></span></button>
   <button class="btn primary" type="button" id="collectbtn" title="Relancer une collecte complète du parc">
     <svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"></use></svg> Collecter</button>
 </header>
@@ -122,41 +130,14 @@
   <span id="wpauth-msg"></span>
 </div>
 
-<!-- ===================== PARC (tableau de bord) ===================== -->
-<div class="page active" id="page-dash">
-  <div class="cards" id="cards"></div>
-  <div class="filters">
-    <input type="search" id="q" placeholder="Filtrer un site, un plugin…" aria-label="Filtrer un site, un plugin">
-    <select id="fsrv" aria-label="Serveur"><option value="">Tous les serveurs</option></select>
-    <select id="fgrp" aria-label="Client"><option value="">Tous les clients</option></select>
-    <select id="fst" aria-label="Statut"><option value="">Tous statuts</option><option value="up">En ligne</option><option value="down">Down</option><option value="none">Sans monitoring</option></select>
-    <label class="small"><input type="checkbox" id="ftodo"> à traiter</label>
-    <label class="small"><input type="checkbox" id="fgroupby"> grouper par client</label>
-    <label class="small"><input type="checkbox" id="fcompact"> compact</label>
-    <span class="spacer"></span>
-    <select id="views" title="Vues sauvegardées" aria-label="Vues sauvegardées"><option value="">Vues…</option></select>
-    <button class="btn sm" type="button" id="saveview">
-      <svg class="ic" aria-hidden="true"><use href="#i-plus"></use></svg> Vue</button>
-    <button class="btn sm" type="button" id="csvbtn">
-      <svg class="ic" aria-hidden="true"><use href="#i-download"></use></svg> CSV</button>
-  </div>
-  <div class="wrap"><table id="tbl">
-    <thead><tr>
-      <th class="col-chk"><input type="checkbox" id="selall" title="tout sélectionner" aria-label="Tout sélectionner"></th>
-      <th data-k="status" class="col-dot"><span class="sr-only">État</span></th>
-      <th data-k="domain">Site</th>
-      <th data-k="server">Serveur</th>
-      <th data-k="core">WordPress</th>
-      <th data-k="plugins">Plugins</th>
-      <th data-k="themes">Thèmes</th>
-      <th data-k="viz">Vizproof</th>
-      <th data-k="php">PHP</th>
-      <th data-k="backup">Backup</th>
-      <th data-k="err">Erreurs</th>
-    </tr></thead>
-    <tbody id="tb"></tbody>
-  </table></div>
-</div>
+<!-- ===================== PARC =====================
+     File « à traiter », compteurs, filtres, liste et barre d'actions groupées :
+     tout est construit par screens/parc.js avec h(). -->
+<div class="page active" id="page-dash"></div>
+
+<!-- ===================== PAGE SITE =====================
+     #site/<clé> et #site/<clé>/<onglet> — construite par screens/site.js. -->
+<div class="page" id="page-site"></div>
 
 <!-- ===================== INCIDENTS (écran de la phase 3) ===================== -->
 <div class="page" id="page-incidents"></div>
@@ -322,41 +303,6 @@
 </main>
 </div>
 
-<!-- barre d'actions de masse -->
-<div class="bulkbar" id="bulkbar">
-  <b id="bulk-n">0 sélectionné</b>
-  <select id="bulk-act" aria-label="Action groupée">
-    <option value="plugins_update_all">MAJ tous les plugins</option>
-    <option value="core_update">MAJ du core</option>
-    <option value="themes_update_all">MAJ des thèmes</option>
-    <option value="updraft_backup">Backup UpdraftPlus</option>
-    <option value="autoupdate_on">Activer auto-MAJ plugins</option>
-    <option value="autoupdate_off">Désactiver auto-MAJ plugins</option>
-    <option value="verify_checksums">Vérifier checksums</option>
-    <option value="vizproof_install">Installer vizproof-timeline</option>
-    <option value="viz_scan">Scan visuel VizProof</option>
-    <option value="viz_baseline">Capturer une baseline visuelle</option>
-    <option value="rescan">Re-scanner</option>
-    <option value="dash_connect">Installer l'agent Dash (alertes temps réel)</option>
-    <option value="dash_disconnect">Dissocier l'agent Dash</option>
-  </select>
-  <label class="small"><input type="checkbox" id="bulk-backup" checked> backup avant MAJ</label>
-  <label class="small"><input type="checkbox" id="bulk-stop"> arrêt sur erreur</label>
-  <label class="small" title="Après l'action, VizProof compare le rendu du site à sa baseline et signale les régressions visuelles."><input type="checkbox" id="bulk-viz"> vérif. visuelle VizProof</label>
-  <button class="btn primary" type="button" id="bulk-run">Exécuter</button>
-  <button class="btn sm" type="button" id="bulk-vizconnect" title="Relier les sites sélectionnés à VizProof : un identifiant par site, un seul jeton de compte">Connecter VizProof…</button>
-  <button class="btn sm" type="button" id="bulk-clear">Désélectionner</button>
-</div>
-
-<!-- tiroir de fiche site — remplacé par une page à part entière en phase 2 -->
-<div class="drawer-back" id="dback"></div>
-<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle" aria-hidden="true" tabindex="-1">
-  <div class="dhead"><span class="dot" id="ddot"></span><h2 id="dtitle"></h2><span class="spacer"></span>
-    <button class="btn icon" type="button" id="dclose" aria-label="Fermer la fiche">
-      <svg class="ic" aria-hidden="true"><use href="#i-x"></use></svg></button></div>
-  <div class="dbody" id="dbody"></div>
-</div>
-
 <div class="modal" id="logmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="log-title"><h2 class="mt0" id="log-title">Journal des actions</h2><div id="loglist">…</div></div></div>
 
 <div class="modal" id="setmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="set-title">
@@ -479,6 +425,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-0942"></script>
+<script type="module" src="app.js?v=2026-09-03-1033"></script>
 </body>
 </html>
