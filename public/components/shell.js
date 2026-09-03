@@ -112,6 +112,43 @@ export function majCompteurs() {
   setCounter('incidents', down, 'err');
 }
 
+/* ---- pastilles servies par le backend -------------------------------------
+   `/api/mgmt/counts` dérive du MÊME agrégat que `/api/incidents` : c'est la
+   seule façon d'être sûr que la pastille Incidents dit exactement ce que montre
+   la file, et que la pastille Sécurité dit ce que montre l'écran Sécurité
+   (vulnérabilités corrigeables + administrateurs inconnus).
+
+   Étranglement à 20 s : la fonction est appelée à chaque changement du store
+   (statut Kuma toutes les 60 s, collecte, action), et l'agrégat relit une
+   demi-douzaine de fichiers côté serveur. */
+let CNT_AT = 0, CNT_P = null;
+
+export function majCompteursServeur(force) {
+  if (!force && CNT_P && Date.now() - CNT_AT < 20000) return CNT_P;
+  CNT_AT = Date.now();
+  CNT_P = api('/api/mgmt/counts').then(c => {
+    const i = (c && c.incidents) || {}, s = (c && c.securite) || {};
+    setIncidentCount((i.critical || 0) + (i.warning || 0), i.critical ? 'err' : 'warn');
+    setCounter('securite', (s.vulns_fixable || 0) + (s.admins_unknown || 0),
+      s.admins_unknown ? 'err' : 'warn');
+    return c;
+  }).catch(() => null);
+  return CNT_P;
+}
+
+/* ---- hauteur réelle de l'en-tête ------------------------------------------
+   Publiée dans `--shead-h` : les sommaires collants des pages à ancres se
+   placent JUSTE dessous, y compris quand l'en-tête passe à la ligne en étroit.
+   Une valeur en dur les ferait chevaucher ou flotter. */
+export function suivreHauteurEntete() {
+  const el = document.querySelector('.shead');
+  if (!el) return;
+  const maj = () => document.documentElement.style.setProperty('--shead-h', el.offsetHeight + 'px');
+  maj();
+  if (window.ResizeObserver) new ResizeObserver(maj).observe(el);
+  else window.addEventListener('resize', maj);
+}
+
 /* ---- collecte manuelle ---------------------------------------------------- */
 export function pollCollect() {
   poll('collect', async () => {
@@ -168,6 +205,7 @@ async function ouvrirJournal() {
 /* ---- démarrage de la coque ------------------------------------------------ */
 export function initShell({ onCollect } = {}) {
   applyTheme(themeCourant());
+  suivreHauteurEntete();
   document.getElementById('themebtn').onclick = () => {
     const c = themeCourant();
     applyTheme(THEMES[(THEMES.findIndex(x => x[0] === c) + 1) % THEMES.length][0]);

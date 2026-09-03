@@ -2,10 +2,14 @@
    chargement de la flotte.
 
    Phase 2 : le Parc et la page site sont neufs (`#site/<clé>[/<onglet>]`), le
-   tiroir a disparu, la recherche globale ⌘K est branchée. Sécurité,
-   Changements et Gestion restent les écrans de la phase 1, montés tels quels.
-   Les anciens fragments (#dash, #sec/…, #hist/…, #mgmt/…) redirigent vers les
-   nouveaux : des liens et des habitudes existent. */
+   tiroir a disparu, la recherche globale ⌘K est branchée.
+
+   Phase 3 : Incidents, Sécurité et Changements sont neufs à leur tour. Leurs
+   sous-onglets ont disparu au profit d'une page unique par destination ; les
+   anciens sous-slugs (#sec/vulnerabilites, #hist/tendance) et ceux des liens
+   d'incidents (#securite/vulns) désignent maintenant une ANCRE dans la page.
+   Les anciens fragments (#dash, #sec/…, #hist/…, #mgmt/…) redirigent toujours
+   vers les nouveaux : des liens et des habitudes existent. */
 
 import { esc as H } from './lib/dom.js';
 import { initIcons } from './lib/icons.js';
@@ -17,7 +21,9 @@ import { initModals, askInfo, registerModalCloser } from './components/confirm.j
 import { initTips } from './components/tip.js';
 import { initJob, setSecRefresh, reouvrirBulk } from './components/job.js';
 import { setOuvreurs } from './components/toast.js';
-import { initShell, loadSched, updMeta, setScreenTitle, majCompteurs, pollCollect } from './components/shell.js';
+import {
+  initShell, loadSched, updMeta, setScreenTitle, majCompteurs, majCompteursServeur, pollCollect,
+} from './components/shell.js';
 import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
 import { setVizSettings } from './components/viz.js';
 import { fermerMenus } from './components/actions-menu.js';
@@ -47,13 +53,67 @@ const ROUTE_DE_PAGE = Object.fromEntries(DESTINATIONS.map(d => [d.page, d.route]
 
 /* Fil d'Ariane dans l'URL : #destination/sous-section — partageable et
    rechargeable. Les slugs de sous-section sont inchangés : les liens déjà
-   partagés (#sec/vulnerabilites) continuent de tomber au bon endroit. */
+   partagés (#sec/vulnerabilites) continuent de tomber au bon endroit.
+
+   Seule Gestion a encore des SOUS-ONGLETS (un volet à la fois) ; Sécurité et
+   Changements sont, depuis la phase 3, des pages uniques dont les sous-slugs
+   désignent une ANCRE. */
 const SUBSLUG = {
   gestion: ['sites-non-geres', 'installs', 'mode-rest', 'moniteurs', 'docroots', 'serveurs'],
-  changements: ['tendance', 'changements'],
-  securite: ['vulnerabilites', 'erreurs-php', 'administrateurs', 'recherche-plugin',
-    'php-obsolete', 'certificats', 'plugins-a-risque', 'integrite-core'],
 };
+
+/* Sous-slug → identifiant de section. Deux familles de noms cohabitent, et les
+   deux doivent tomber juste : les slugs des anciens sous-onglets (partagés dans
+   des liens et des marque-pages) et ceux que le backend pose dans le champ
+   `link` des incidents (`{tab:"securite", sub:"vulns"}`). */
+const ANCRES = {
+  securite: {
+    vulnerabilites: 'sec-vulns', vulns: 'sec-vulns',
+    administrateurs: 'sec-admins', admins: 'sec-admins',
+    'erreurs-php': 'sec-phperr', phperrors: 'sec-phperr',
+    'plugins-a-risque': 'sec-risky', risky: 'sec-risky',
+    'php-obsolete': 'sec-php', php: 'sec-php',
+    certificats: 'sec-certs', certs: 'sec-certs',
+    'integrite-core': 'sec-checksums', checksums: 'sec-checksums',
+    'recherche-plugin': 'sec-recherche',
+  },
+  changements: {
+    changements: 'hist-chrono', chronologie: 'hist-chrono',
+    actions: 'hist-chrono', tendance: 'hist-tendance',
+  },
+};
+
+/* Défilement jusqu'à la section demandée.
+
+   L'écran vient d'être monté : ses sections sont dans le document, mais leur
+   CONTENU arrive ensuite, par plusieurs requêtes, et chaque section qui se
+   remplit pousse les suivantes vers le bas. Un défilement fait une seule fois
+   raterait donc sa cible de plusieurs centaines de pixels : on re-vise tant que
+   la page grandit, pendant 3 s au plus, et jamais après que l'utilisateur a
+   repris la main.
+
+   `setTimeout` plutôt que `requestAnimationFrame` : ce dernier ne se déclenche
+   pas tant que l'onglet n'est pas visible, et l'ancre d'une page ouverte en
+   arrière-plan n'aurait jamais été appliquée. */
+function allerAncre(route, sub) {
+  const id = (ANCRES[route] || {})[sub];
+  if (!id) return;
+  const aller = () => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ block: 'start' });
+  };
+  aller();
+  // Re-visée pendant 3 s : chaque section qui se remplit déplace la cible.
+  // Un simple minuteur plutôt qu'un ResizeObserver — celui-ci n'est appelé
+  // qu'avec la boucle de rendu, donc jamais dans un onglet en arrière-plan.
+  let tours = 0;
+  const t = setInterval(() => { if (++tours > 12) rendre(); else aller(); }, 250);
+  function rendre() {
+    clearInterval(t);
+    ['wheel', 'touchstart', 'keydown'].forEach(x => window.removeEventListener(x, rendre));
+  }
+  ['wheel', 'touchstart', 'keydown'].forEach(x => window.addEventListener(x, rendre, { passive: true }));
+}
 
 let NAVLOCK = false;   // évite que l'écriture de l'URL relance la navigation
 let ROUTE = 'parc';    // destination affichée ('site' pour la page d'un site)
@@ -176,6 +236,7 @@ function applyHash() {
     const nav = document.querySelector(`#page-${PAR_ROUTE[tete].page}> .subtabs`);
     if (i >= 0 && nav) { const b = nav.querySelectorAll('.subtab')[i]; if (b) b.click(); }
   }
+  if (ok && sub && ANCRES[tete]) allerAncre(tete, sub);
   NAVLOCK = false;
   // Fragment inconnu : on retombe sur Parc pour de bon (l'URL ET l'écran).
   if (!ok) showDest('parc');
@@ -183,7 +244,8 @@ function applyHash() {
 
 /* ---- sous-onglets ---------------------------------------------------------
    Les libellés viennent des <h2> existants — rien à maintenir en double.
-   Ils disparaîtront en phase 3 (Sécurité, Changements) et 4 (Gestion). */
+   Il n'en reste qu'un jeu, celui de Gestion : Sécurité et Changements sont
+   passées en pages à ancres (phase 3), Gestion suivra en phase 4. */
 function buildSubtabs(pageId, key, shortLabels) {
   const page = document.getElementById(pageId); if (!page) return;
   const secs = [...page.querySelectorAll(':scope> .section')];
@@ -261,10 +323,6 @@ async function boot() {
 
   buildSubtabs('page-mgmt', 'dashSubMgmt',
     ['Sites non gérés', 'Installs découverts', 'Mode REST', 'Moniteurs Kuma', 'Docroots', 'Serveurs']);
-  buildSubtabs('page-hist', 'dashSubHist', ['Tendance', 'Changements']);
-  buildSubtabs('page-sec', 'dashSubSec',
-    ['Vulnérabilités', 'Erreurs PHP', 'Administrateurs', 'Recherche plugin', 'PHP obsolète',
-     'Certificats SSL', 'Plugins à risque', 'Intégrité du core']);
 
   /* Un écran se redessine quand le store change ; plus personne ne l'appelle
      depuis le chargeur de données. La page site, elle, se rafraîchit sur ordre
@@ -279,11 +337,17 @@ async function boot() {
   loadStatus();
   loadViews();
   chargerIncidents();
+  // Pastilles de la barre latérale : un seul agrégat côté serveur
+  // (/api/mgmt/counts) pour Incidents ET Sécurité, rafraîchi à chaque
+  // changement du store (donc après chaque collecte) et après chaque analyse.
+  majCompteursServeur(true);
   ensureSettings();
   pollCollect();
   wpauthBanner();
   setInterval(loadStatus, 60000);
-  setInterval(() => { if (!store.curjob) { loadFleet(); chargerIncidents(); } }, 15 * 60000);
+  setInterval(() => {
+    if (!store.curjob) { loadFleet(); chargerIncidents(); majCompteursServeur(true); }
+  }, 15 * 60000);
 }
 
 boot();

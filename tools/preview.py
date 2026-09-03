@@ -155,11 +155,12 @@ def phperrors():
 
 
 def incidents():
-    """File « à traiter » : trois gravités, trois formes d'action.
+    """File « à traiter » : les deux gravités du backend (plus une inconnue),
+    neuf types, trois formes d'action et une source en échec.
 
     Volontairement bâtie « à la main » plutôt que dérivée de fleet() : c'est le
     rendu de la file qu'on veut éprouver (gravités, ancienneté, action en ligne,
-    lien seul, incident sans site), pas la logique du backend.
+    lien seul, incident sans site, type inattendu), pas la logique du backend.
     """
     def iso(h):
         return (datetime.now() - timedelta(hours=h)).replace(microsecond=0).isoformat()
@@ -198,6 +199,33 @@ def incidents():
          "detail": "3 site(s) : site-04.exemple.fr, site-07.exemple.fr, site-10.exemple.fr",
          "since": None, "age_h": 0.0, "action": None,
          "link": {"tab": "securite", "sub": "php"}},
+        {"id": "php_fatal:site-01.exemple.fr:x.php:42", "severity": "critical", "kind": "php_fatal",
+         "site": "site-01.exemple.fr", "server": "vps-1",
+         "title": "Fatal error sur site-01.exemple.fr",
+         "detail": "Uncaught Error: Call to undefined function — "
+                   "wp-content/plugins/x/x.php:42 (×12)",
+         "since": iso(11), "age_h": 11.0, "action": None,
+         "link": {"tab": "securite", "sub": "phperrors"}},
+        {"id": "checksums_modified:site-05.exemple.fr:", "severity": "critical",
+         "kind": "checksums_modified", "site": "site-05.exemple.fr", "server": "vps-2",
+         "title": "Intégrité du cœur en échec sur site-05.exemple.fr",
+         "detail": "3 fichier(s) ne correspondent pas au cœur officiel — "
+                   "wp-includes/load.php doesn't verify against checksum",
+         "since": iso(5), "age_h": 5.0,
+         "action": {"label": "Vérifier", "act": "verify_checksums", "arg": ""},
+         "link": {"tab": "securite", "sub": "checksums"}},
+        {"id": "cert_expiring:site-01.exemple.fr:", "severity": "warning", "kind": "cert_expiring",
+         "site": "site-01.exemple.fr", "server": "vps-1",
+         "title": "Certificat de site-01.exemple.fr à renouveler",
+         "detail": "expire dans 6 jour(s) (le 2026-09-09) — seuil 21 j",
+         "since": None, "age_h": 0.0, "action": None,
+         "link": {"tab": "securite", "sub": "certs"}},
+        # Gravité inconnue du front : elle doit rester visible, pas disparaître.
+        {"id": "inattendu:site-06.exemple.fr:", "severity": "info", "kind": "type_inconnu",
+         "site": "site-06.exemple.fr", "server": "vps-2",
+         "title": "Type d'incident inconnu du front",
+         "detail": "backend plus récent que l'interface : la ligne reste lisible",
+         "since": iso(1), "age_h": 1.0, "action": None, "link": None},
     ]
     if SCENARIO == "stale":
         inc.append({"id": "server_stale:vps-1:", "severity": "warning", "kind": "server_stale",
@@ -207,13 +235,23 @@ def incidents():
                     "link": {"tab": "gestion", "sub": "serveurs"}})
     if SCENARIO == "vide":
         inc = []
+    # Une source en échec : la file doit le DIRE, sinon « rien à traiter » se
+    # confond avec « on n'a pas pu regarder ».
+    errs = [] if SCENARIO == "vide" else [
+        {"source": "certs", "error": "RuntimeError: docker exec: conteneur uptime-kuma absent"}]
     return {"generated_at": now(0),
             "counts": {"critical": sum(1 for i in inc if i["severity"] == "critical"),
                        "warning": sum(1 for i in inc if i["severity"] == "warning")},
-            "incidents": inc, "errors": []}
+            "incidents": inc, "errors": errs}
 
 
 def sidebar_counts():
+    """Pastilles de la barre latérale, comme le backend : `counts` ne compte que
+    `critical` et `warning`. La file bouchonnée porte EN PLUS un incident de
+    gravité inconnue (pour éprouver le groupe « Autres »), d'où un écart de 1
+    entre la pastille et la longueur de la liste — écart impossible en
+    production, où le backend n'émet que ces deux gravités.
+    """
     p = incidents()
     return {"incidents": dict(p["counts"]),
             "securite": {"vulns_fixable": 6, "admins_unknown": 1},
@@ -290,7 +328,17 @@ ROUTES = {
     "/api/actions/collect_history": historique,
     "/api/actions/log": lambda: {"log": [
         {"domain": "site-01.exemple.fr", "action": "plugin_update", "arg": "akismet", "rc": 0,
-         "source": "dashboard", "ts": now(1), "duration_s": 12.4, "output_tail": "Success: Updated 1 of 1 plugins."}]},
+         "source": "dashboard", "ts": now(1), "duration_s": 12.4,
+         "output_tail": "Success: Updated 1 of 1 plugins."},
+        {"domain": "site-03.exemple.fr", "action": "updraft_backup", "arg": None, "rc": 0,
+         "source": "dashboard", "ts": now(7), "duration_s": 96.2,
+         "output_tail": "Backup finished (files + db)."},
+        {"domain": "site-00.exemple.fr", "action": "viz_scan", "arg": None, "rc": 2,
+         "source": "dashboard", "ts": now(26), "duration_s": 31.0,
+         "output_tail": "2 anomalies détectées sur 3 pages."},
+        {"domain": "site-05.exemple.fr", "action": "core_update", "arg": None, "rc": 1,
+         "source": "bulk", "ts": now(50), "duration_s": 8.1,
+         "output_tail": "Error: Could not create directory."}]},
     "/api/actions/bulk_status": lambda: dict(BULK),
     "/api/actions/safe_update_status": safe_update_status,
     "/api/actions/viz_update_status": viz_update_status,
@@ -314,10 +362,18 @@ ROUTES = {
     "/api/mgmt/wp_credentials": lambda: {"has_password": False, "user": "", "verified": None},
     "/api/mgmt/changes": lambda: {"changes": [
         {"domain": "site-02.exemple.fr", "label": "extension ajoutée", "detail": "wp-file-manager",
-         "severity": "warn", "ts": now(4)},
-        {"domain": "site-05.exemple.fr", "label": "version", "detail": "6.8.8 → 7.1",
-         "severity": "info", "ts": now(20)}],
-        "summary": {"day_total": 2, "day_sites": 2, "day_warn": 1}},
+         "severity": "warn", "kind": "plugin_add", "ts": now(4)},
+        {"domain": "site-02.exemple.fr", "label": "admin ajouté", "detail": "wpsvc_fkmdmu",
+         "severity": "warn", "kind": "admin_add", "ts": now(9)},
+        {"domain": "site-05.exemple.fr", "label": "cœur WordPress", "detail": "6.8.8 → 7.1",
+         "severity": "info", "kind": "core", "ts": now(20)},
+        {"domain": "site-01.exemple.fr", "label": "extension mise à jour", "detail": "akismet 5.3 → 5.4",
+         "severity": "info", "kind": "plugin_update", "ts": now(28)},
+        {"domain": "site-07.exemple.fr", "label": "PHP", "detail": "8.1.2 → 8.2.7",
+         "severity": "info", "kind": "php", "ts": now(52)},
+        {"domain": "site-04.exemple.fr", "label": "extension retirée", "detail": "duplicator",
+         "severity": "info", "kind": "plugin_remove", "ts": now(78)}],
+        "summary": {"day_total": 3, "day_sites": 2, "day_warn": 2}},
     "/api/mgmt/sshkeys": lambda: {"keys": [
         {"name": "dashboard", "path": "/root/.ssh/id_dashboard", "type": "ed25519",
          "fingerprint": "SHA256:abc…", "pub": "ssh-ed25519 AAAA… dashboard"}],
@@ -456,6 +512,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             rep = {"ok": True, "running": True}
         elif chemin.endswith("/api/sec/verify"):
             rep = {"ok": True, "output": "Success: WordPress installation verifies against checksums."}
+        elif chemin.endswith("/api/sec/checksums/run"):
+            # Un job, pour que « Vérifier tout le parc » ouvre bien la modale de suivi.
+            BULK.update({"running": False, "done": 1, "total": 1,
+                         "tasks": [{"domain": "site-00.exemple.fr", "status": "ok", "rc": 0,
+                                    "output_tail": "Success: verifies against checksums."}]})
+            rep = {"job": "apercu", "ok": True}
+        elif chemin.endswith("/api/sec/vulns/run") or chemin.endswith("/api/sec/phperrors/run"):
+            # `running: True` : le front enchaîne sur son sondage, puis le GET
+            # correspondant répond `running: False` — le cycle complet est joué.
+            rep = {"ok": True, "running": True}
         corps_rep = json.dumps(rep, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

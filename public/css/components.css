@@ -321,6 +321,50 @@ textarea.code.short{min-height:70px}
 .kbd{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
   border:1px solid var(--line);border-radius:var(--r-ctl);padding:0 4px;line-height:1.5}
 
+/* ---- chronologie ----------------------------------------------------------
+   Une pastille d'icône colorée par l'état, un titre, un détail, un horodatage
+   poussé à droite, et un bloc de sortie brute dépliable. Le composant sert à
+   l'onglet Historique d'un site ET à l'écran Changements : il ne connaît ni
+   l'un ni l'autre. */
+.tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line-2)}
+.tlrow:last-child{border-bottom:0}
+.tlic{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;
+  justify-content:center;background:var(--neutral-bg);color:var(--muted);margin-top:2px}
+.tlic.ok{background:var(--ok-bg);color:var(--ok)}
+.tlic.warn{background:var(--warn-bg);color:var(--warn)}
+.tlic.err{background:var(--err-bg);color:var(--err)}
+.tlmain{min-width:0;flex:1}
+.tltop{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.tlwhen{margin-left:auto;white-space:nowrap}
+.tlsub{margin-top:1px;word-break:break-word}
+.tldet{background:var(--neutral-bg);border-radius:var(--r-ctl);padding:6px var(--s-8);margin:4px 0 0;
+  font-family:var(--f-mono);font-size:var(--t-12);line-height:1.45;
+  white-space:pre-wrap;word-break:break-word;max-height:130px;overflow:auto}
+.tldet[hidden]{display:none}
+.tlopenable{cursor:pointer}
+.tlopenable:hover{background:var(--surface-2);border-radius:var(--r-ctl);
+  margin:0 -6px;padding-left:6px;padding-right:6px}
+.tlchev{color:var(--muted);display:inline-flex;transition:transform .15s ease}
+.tlopenable.open .tlchev{transform:rotate(90deg)}
+
+/* ---- sommaire d'ancres -----------------------------------------------------
+   Une page longue (Sécurité, Changements) s'ouvre par la liste de ses sections
+   avec leur chiffre. Il colle JUSTE sous l'en-tête d'écran : `--shead-h` est
+   la hauteur réelle de celui-ci, publiée par components/shell.js. */
+.anchors{position:sticky;top:var(--shead-h);z-index:5;
+  display:flex;gap:6px;flex-wrap:wrap;align-items:center;
+  background:var(--page);padding:var(--s-8) 0;margin:calc(-1 * var(--s-8)) 0 var(--s-12)}
+.anchor{display:inline-flex;align-items:center;gap:5px;
+  padding:3px 11px;border:1px solid var(--line);border-radius:var(--r-pill);
+  background:var(--surface);color:var(--ink-2);text-decoration:none;
+  font-family:var(--f-display);font-size:var(--t-12);font-weight:500;white-space:nowrap}
+.anchor:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+.anchor .chip{padding:0 7px}
+
+/* ---- en-tête de section (titre, résumé, action) ---------------------------- */
+.sechead{display:flex;align-items:center;gap:var(--s-8);flex-wrap:wrap;margin-bottom:var(--s-4)}
+.sechead .spacer{flex:1}
+
 /* ---- groupes d'actions et sections d'une fiche ----------------------------- */
 .agroup{margin-top:var(--s-12)}
 .agroup>.glbl{display:block;margin-bottom:6px}

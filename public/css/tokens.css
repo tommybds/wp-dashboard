@@ -120,8 +120,10 @@
   /* rayons : contrôles, surfaces, pilule. Pas d'arrondi généreux. */
   --r-ctl:4px; --r-surf:6px; --r-pill:999px;
 
-  /* mesures de la coque */
-  --nav-w:200px; --nav-w-mini:56px; --rowh:1;
+  /* mesures de la coque — `--shead-h` est la hauteur RÉELLE de l'en-tête,
+     réécrite par components/shell.js (elle change quand l'en-tête passe à la
+     ligne) ; la valeur ci-dessous n'est qu'un repli avant le premier calcul. */
+  --nav-w:200px; --nav-w-mini:56px; --rowh:1; --shead-h:56px;
 
   /* ---- alias hérités ----------------------------------------------------
      Les écrans repris tels quels en phase 1 (parc, gestion, sécurité,

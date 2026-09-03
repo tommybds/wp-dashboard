@@ -106,6 +106,13 @@ les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
 > L'écran Parc s'ouvre en plus sur une file **« À traiter »** alimentée par
 > `GET /api/incidents`, et la recherche globale se déclenche par ⌘K / Ctrl+K.
 
+> **Phase 3 de la refonte (septembre 2026).** Les **sous-onglets** de Sécurité
+> (huit) et de Changements (deux) ont disparu : chaque destination est une page
+> unique, ouverte par un sommaire d'ancres collant sous l'en-tête. L'écran
+> **Incidents** existe pour de bon (file complète, groupée par gravité, avec
+> action en ligne). Les pastilles de la barre latérale viennent toutes de
+> `GET /api/mgmt/counts`, c'est-à-dire du **même agrégat** que `/api/incidents`.
+
 ### Arborescence
 
 ```
@@ -138,6 +145,8 @@ public/
   screens/
     parc.js  site.js  incidents.js  securite.js  changements → historique.js
     gestion.js  reglages.js
+    (incidents, securite et historique sont des pages à ancres : plus de
+     sous-onglets, tout est construit avec h())
   fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2, latin + latin-ext)
 ```
 
@@ -473,12 +482,21 @@ La barre latérale porte cinq destinations. L'adresse est partageable :
 `#mgmt/…`) redirigent automatiquement — les liens déjà partagés continuent de
 tomber au bon endroit.
 
+Depuis la phase 3, `<section>` ne désigne plus un sous-onglet pour Sécurité et
+Changements (ils n'en ont plus) mais une **ancre** : `#securite/vulnerabilites`
+ouvre la page et défile jusqu'à la section. Les deux familles de noms tombent
+juste — les anciens slugs (`vulnerabilites`, `erreurs-php`, `administrateurs`,
+`recherche-plugin`, `php-obsolete`, `certificats`, `plugins-a-risque`,
+`integrite-core`, `tendance`, `changements`) et ceux que le backend pose dans le
+champ `link` des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`,
+`checksums`). Seule **Gestion** garde des sous-onglets, jusqu'à la phase 4.
+
 | Destination | Contenu |
 |---|---|
 | **Parc** | La liste des sites : état, versions, mises à jour en attente, sauvegardes. Filtres, vues enregistrées, export CSV, actions groupées, fiche site. |
-| **Incidents** | Écran de la phase 3 : sites down, erreurs PHP fatales, serveurs injoignables, checksums en anomalie, certificats proches de l'expiration. Le compteur de la barre latérale (sites injoignables) est déjà juste. |
-| **Sécurité** | Vulnérabilités, erreurs PHP, comptes administrateurs, recherche transversale d'extension, PHP obsolète, certificats, extensions à risque, intégrité du cœur. |
-| **Changements** | Tendance du parc (courbes) et journal des changements d'état. |
+| **Incidents** | La file « à traiter » complète (`GET /api/incidents`), groupée par gravité : sites down, erreurs PHP fatales, vulnérabilités critiques corrigeables, checksums en anomalie, administrateurs inconnus, serveurs injoignables, sauvegardes en retard, certificats, PHP en fin de support. Filtres gravité / type / recherche, action en ligne (même confirmation que la fiche site) ou lien vers la section concernée ; une source en échec s'affiche en « source incomplète ». |
+| **Sécurité** | **Une seule page à ancres**, ouverte par un sommaire chiffré : vulnérabilités (vue par site ou par extension, action groupée), comptes administrateurs et référence, erreurs PHP, extensions à risque, PHP obsolète regroupé par version, certificats, intégrité du cœur, recherche transversale d'extension. |
+| **Changements** | Une **chronologie** groupée par jour qui fusionne les changements d'état détectés par la collecte (`/api/mgmt/changes`) et les actions lancées depuis le dashboard (`/api/actions/log`), filtrable par site, type, gravité et texte — puis la **tendance du parc** (quatre courbes) en bas de page. |
 | **Gestion** | Ajout d'un site par URL, sites supervisés non gérés, serveurs, clés SSH, moniteurs Kuma, docroots. |
 
 En bas de la barre : **Réglages** (aussi accessible par `#reglages`),

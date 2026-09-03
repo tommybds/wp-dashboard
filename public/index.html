@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1033">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-1033">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-1033">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1033">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1108">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1108">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1108">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1108">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,32 +21,32 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-1033",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-1033",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1033",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-1033",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1033",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1033",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-1033",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1033",
-    "./components/button.js": "./components/button.js?v=2026-09-03-1033",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-1033",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1033",
-    "./components/job.js": "./components/job.js?v=2026-09-03-1033",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1033",
-    "./components/search.js": "./components/search.js?v=2026-09-03-1033",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-1033",
-    "./components/table.js": "./components/table.js?v=2026-09-03-1033",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-1033",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-1033",
-    "./components/viz.js": "./components/viz.js?v=2026-09-03-1033",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1033",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1033",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1033",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1033",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1033",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1033",
-    "./screens/site.js": "./screens/site.js?v=2026-09-03-1033"
+    "./version.js": "./version.js?v=2026-09-03-1108",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1108",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1108",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1108",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1108",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1108",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1108",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1108",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1108",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1108",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1108",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1108",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1108",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1108",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1108",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1108",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1108",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1108",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1108",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1108",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1108",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1108",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1108",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1108",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1108",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1108"
   }
 }
 </script>
@@ -73,7 +73,7 @@
     <li><a class="nav-i" href="#securite" data-dest="securite">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-shield"></use></svg>
       <span class="nav-l">Sécurité</span>
-      <span class="nav-c" id="cnt-securite" data-label="vulnérabilités élevées et critiques" hidden>0</span></a></li>
+      <span class="nav-c" id="cnt-securite" data-label="vulnérabilités corrigeables et administrateurs inconnus" hidden>0</span></a></li>
     <li><a class="nav-i" href="#changements" data-dest="changements">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-history"></use></svg>
       <span class="nav-l">Changements</span></a></li>
@@ -200,105 +200,13 @@
   </div>
 </div>
 
-<!-- ===================== CHANGEMENTS (tendance + historique) ===================== -->
-<div class="page" id="page-hist">
-  <div class="section">
-    <h2>Tendance du parc <span id="hist-sum" class="small"></span></h2>
-    <p class="hint">Relevé à chaque collecte. Montre si la dette de mises à jour se résorbe ou s'accumule.
-      <span class="info" data-tip="Ces chiffres portent sur toutes les installations detectees, y compris celles qui ne sont pas suivies dans Kuma et n'apparaissent donc pas dans le tableau de bord.">?</span></p>
-    <div class="dstats" id="hist-tiles"></div>
-    <div id="hist-charts"></div>
-  </div>
-  <div class="section">
-    <h2>Changements <span id="chg-sum" class="small"></span></h2>
-    <p class="hint">Historique persistant des changements d'état réel détectés à chaque collecte — version installée qui bouge, admin ou extension ajouté/retiré. Un <span class="new-admin">ajout d'admin ou d'extension</span> sur un site que vous n'avez pas touché est le signal n°1 d'une compromission. Complète les alertes temps réel des sites équipés de l'agent.</p>
-    <div class="filters">
-      <input type="search" id="chg-q" class="w-md" placeholder="Filtrer un site, un changement…" aria-label="Filtrer les changements">
-      <label class="small"><input type="checkbox" id="chg-warn"> à surveiller seulement</label>
-      <span class="spacer"></span>
-      <span id="chg-count" class="muted small"></span>
-    </div>
-    <div id="chg-body" class="small muted mt2 scroll-md">chargement…</div>
-  </div>
-</div>
+<!-- ===================== CHANGEMENTS (chronologie + tendance) =====================
+     Page à ancres construite par screens/historique.js avec h(). -->
+<div class="page" id="page-hist"></div>
 
-<!-- ===================== SÉCURITÉ ===================== -->
-<div class="page" id="page-sec">
-  <div class="section">
-    <h2>Vulnérabilités connues <span id="vln-sum" class="small"></span>
-      <button class="btn sm fr" type="button" id="vln-run">
-        <svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"></use></svg> Relancer l'analyse</button></h2>
-    <p class="hint">Croisement de l'inventaire (cœur, PHP, extensions et leurs versions exactes) avec la base ouverte
-      <a href="https://www.wpvulnerability.net/" target="_blank" rel="noopener">WPVulnerability</a>, qui agrège CVE.org, Patchstack, Wordfence et WPScan.
-      Le croisement est local : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ».</p>
-    <div class="filters">
-      <input type="search" id="vln-q" class="w-md" placeholder="Filtrer un site, une extension, un CVE…" aria-label="Filtrer les vulnérabilités">
-      <select id="vln-sev" aria-label="Gravité minimale">
-        <option value="">Toutes gravités</option>
-        <option value="critical">Critique</option>
-        <option value="high">Élevée et +</option>
-        <option value="medium">Moyenne et +</option>
-      </select>
-      <label class="small"><input type="checkbox" id="vln-fix"> corrigeable par une MAJ</label>
-      <select id="vln-vue" title="Par site : que corriger sur ce site ? — Par extension : une extension vulnérable sur plusieurs sites se traite en une fois." aria-label="Vue">
-        <option value="site">Vue par site</option>
-        <option value="ext">Vue par extension (tout le parc)</option>
-      </select>
-      <span class="spacer"></span>
-      <span id="vln-count" class="muted small"></span>
-    </div>
-    <div id="vln-body" class="small muted mt2 scroll-lg">chargement…</div>
-    <h3 class="mt4">Versions de PHP</h3>
-    <p class="hint">Regroupé par version : une faille PHP se corrige chez l'hébergeur, pas site par site. <span class="info" data-tip="A lire avec prudence : Debian et Plesk retroportent les correctifs sans changer le numero de version, donc une version signalee ici peut deja etre corrigee. Le signal fiable est une branche en fin de support (7.x, 8.0).">?</span></p>
-    <div id="vln-php" class="small muted"></div>
-  </div>
-  <div class="section">
-    <h2>Erreurs PHP <span id="phe-sum" class="small"></span>
-      <button class="btn sm fr" type="button" id="phe-run">
-        <svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"></use></svg> Relancer l'analyse</button></h2>
-    <p class="hint">Lecture des journaux que vos serveurs écrivent <b>déjà</b> — aucune modification des sites, aucun mode debug à activer.
-      Les occurrences sont regroupées par message, fichier et ligne.</p>
-    <div class="filters">
-      <input type="search" id="phe-q" class="w-md" placeholder="Filtrer un site, un message, un fichier…" aria-label="Filtrer les erreurs PHP">
-      <select id="phe-sev" aria-label="Gravité minimale"><option value="">Toutes gravités</option>
-        <option value="4">Fatales seulement</option><option value="3">Warnings et +</option></select>
-      <select id="phe-h" aria-label="Fenêtre d'analyse"><option value="24">24 h</option><option value="72">3 jours</option><option value="168">7 jours</option></select>
-      <span class="spacer"></span><span id="phe-count" class="muted small"></span>
-    </div>
-    <div id="phe-body" class="small muted mt2 scroll-lg">chargement…</div>
-  </div>
-  <div class="section">
-    <h2>Comptes administrateurs <button class="btn sm fr" type="button" id="baseline-all">Tout marquer comme vu</button></h2>
-    <p class="hint">Un admin non présent dans la référence est signalé <span class="new-admin">en rouge</span> — le signal n°1 d'une compromission. « Marquer comme vu » fige la liste actuelle comme référence.</p>
-    <div class="wrap"><table><thead><tr><th>Site</th><th>Administrateurs</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="admin-tb"></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Recherche transversale de plugin</h2>
-    <p class="hint">Quels sites ont tel plugin installé ? (utile en incident : wp-file-manager, etc.)</p>
-    <div class="filters"><input class="inp w-md" id="plug-q" placeholder="nom ou slug de plugin…" aria-label="Nom ou slug de plugin"><span id="plug-res" class="small"></span></div>
-    <div class="wrap"><table><thead><tr><th>Site</th><th>Plugin</th><th>Version</th><th>Statut</th></tr></thead><tbody id="plug-tb"></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>PHP obsolète</h2>
-    <div id="php-body" class="small"></div>
-  </div>
-  <div class="section">
-    <h2>Certificats SSL</h2>
-    <p class="hint">Expiration des certificats vue par Uptime Kuma. Alerte sous 21 jours, critique sous 7 jours.</p>
-    <div class="wrap"><table><thead><tr><th>Moniteur</th><th>Jours restants</th><th>Expire le</th></tr></thead><tbody id="cert-tb"></tbody></table></div>
-    <div id="cert-msg" class="small muted mt2"></div>
-  </div>
-  <div class="section">
-    <h2>Plugins à risque</h2>
-    <p class="hint">Plugins régulièrement exploités en incident (gestionnaires de fichiers, exécution de PHP arbitraire, outils de migration). À désinstaller dès qu'ils ne servent plus.</p>
-    <div id="risky-body" class="small"></div>
-  </div>
-  <div class="section">
-    <h2>Intégrité du core (checksums) <button class="btn sm primary fr" type="button" id="verify-all">Vérifier tout le parc</button></h2>
-    <p class="hint">Lance <code>wp core verify-checksums</code>. « Vérifier tout le parc » passe sur tous les sites en tâche de fond ; sinon sélectionne des sites dans le tableau de bord puis « Vérifier checksums » dans la barre d'actions, ou lance ici site par site. <span id="verify-msg" class="small"></span></p>
-    <div class="wrap"><table><thead><tr><th>Site</th><th>Dernier contrôle</th></tr></thead><tbody id="verify-tb"></tbody></table></div>
-  </div>
-</div>
+<!-- ===================== SÉCURITÉ =====================
+     Page à ancres (huit sections) construite par screens/securite.js avec h(). -->
+<div class="page" id="page-sec"></div>
 
 </main>
 </div>
@@ -425,6 +333,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-1033"></script>
+<script type="module" src="app.js?v=2026-09-03-1108"></script>
 </body>
 </html>

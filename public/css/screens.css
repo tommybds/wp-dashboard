@@ -203,6 +203,27 @@
 .choice b{font-size:var(--t-13);margin-bottom:4px;display:block}
 .choice small{display:block;line-height:1.55;color:var(--muted)}
 
+/* ---- écran Incidents -------------------------------------------------------
+   La file complète, groupée par gravité. La ligne elle-même (`.inc`) est celle
+   de la file « à traiter » du Parc : c'est le même objet, il se lit pareil. */
+.incgrp{margin-bottom:var(--s-16)}
+.incgrp-h{display:flex;align-items:center;gap:var(--s-8);margin-bottom:var(--s-4)}
+.incgrp .inclist{background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-surf);padding:2px var(--s-8)}
+.inc-s{font-weight:600}
+a.inc-s{color:var(--ink);text-decoration:none}
+a.inc-s:hover{color:var(--accent);text-decoration:underline}
+
+/* ---- pages à sections repérées par une ancre (Sécurité, Changements) -------
+   Le défilement doit s'arrêter SOUS l'en-tête d'écran et son sommaire, sinon
+   le titre de la section visée passe dessous et on croit l'ancre cassée. */
+.secsec{scroll-margin-top:calc(var(--shead-h) + 56px)}
+
+/* Lien vers la page d'un site depuis une liste : il se lit comme le nom du
+   site, pas comme un lien de texte courant. */
+.seclien{color:var(--ink);font-weight:600;text-decoration:none}
+.seclien:hover{color:var(--accent);text-decoration:underline}
+
 /* ---- écran Sécurité ------------------------------------------------------- */
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* Un en-tête de site repliable, puis une ligne par extension (et non par CVE :
@@ -220,29 +241,21 @@
 .phe-group{margin-bottom:10px}
 .phe-loc{margin-left:6px}
 
-/* ---- journal d'un site (onglet Historique de la page site) --------------- */
-.tlrow{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--line-2)}
-.tlrow:last-child{border-bottom:0}
-.tlic{flex:0 0 22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;
-  justify-content:center;background:var(--neutral-bg);color:var(--muted);margin-top:2px}
-.tlic.ok{background:var(--ok-bg);color:var(--ok)}
-.tlic.warn{background:var(--warn-bg);color:var(--warn)}
-.tlic.err{background:var(--err-bg);color:var(--err)}
-.tlmain{min-width:0;flex:1}
-.tltop{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
-.tlwhen{margin-left:auto;white-space:nowrap}
-.tlsub{margin-top:1px;word-break:break-word}
-.tldet{background:var(--neutral-bg);border-radius:var(--r-ctl);padding:6px var(--s-8);margin:4px 0 0;
-  font-family:var(--f-mono);font-size:var(--t-12);line-height:1.45;
-  white-space:pre-wrap;word-break:break-word;max-height:130px;overflow:auto}
-.tldet[hidden]{display:none}
-.tlopenable{cursor:pointer}
-.tlopenable:hover{background:var(--surface-2);border-radius:var(--r-ctl);
-  margin:0 -6px;padding-left:6px;padding-right:6px}
-.tlchev{color:var(--muted);display:inline-flex;transition:transform .15s ease}
-.tlopenable.open .tlchev{transform:rotate(90deg)}
+/* La chronologie (`.tlrow`…) a rejoint components.css : elle sert désormais à
+   l'onglet Historique de la page site ET à l'écran Changements. */
 
-/* ---- écran Changements (tendance) ----------------------------------------- */
+/* ---- écran Changements ----------------------------------------------------
+   Chronologie groupée par jour, puis les courbes de tendance. */
+.chrono-j{margin-top:var(--s-12)}
+.chrono-j:first-child{margin-top:0}
+/* Intitulé de journée : il n'est PAS collant — deux barres collantes (l'en-tête
+   d'écran et le sommaire d'ancres) sont déjà au-dessus, une troisième mangerait
+   le peu de hauteur qui reste au contenu. */
+.chrono-jt{background:var(--surface);border-bottom:1px solid var(--line-2);
+  padding:var(--s-4) 0;margin-bottom:2px;
+  font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em}
+
 /* Deux colonnes FIXES : `auto-fit` donnait 3 colonnes sur un large écran, donc
    une quatrième courbe orpheline sur la ligne suivante. */
 .histgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s-16);margin-top:var(--s-12)}
