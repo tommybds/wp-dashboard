@@ -1866,6 +1866,236 @@ def viz_connect_run(server_name, domain, site_id, api_base=None, scope=None,
     return fin(rc, out)
 
 
+# --------------------------------------------------------------------------- #
+#  Pages surveillées par VizProof                                             #
+#                                                                             #
+#  Lecture et écriture de la liste des pages qu'un site relié fait scanner.    #
+#  Deux chemins, selon la version du plugin installée :                        #
+#                                                                             #
+#  1.3.8+ : `wp vizproof pages [set]` fait tout, et VALIDE (page publiée,      #
+#           limite, portée). Le contrat de sortie est le même en lecture et    #
+#           en écriture :                                                      #
+#             {scope, selected:[ids], critical:[ids],                          #
+#              pages:[{id,title,url,type,selected,critical}], message}         #
+#           `type` ∈ page | front | home. L'entrée `{id:0, type:"home"}` est   #
+#           INFORMATIVE : l'accueil « flux d'articles » n'a pas d'identifiant  #
+#           de page, `set --ids=0` est refusé, et la seule façon de le          #
+#           surveiller est la portée « site ». Quand l'accueil est une page    #
+#           statique, il apparaît avec `type:"front"` et son vrai identifiant. #
+#                                                                             #
+#  1.3.7  : la sous-commande n'existe pas (« 'pages' is not a registered       #
+#           subcommand »). Repli sur `wp post list` + `wp option`. LIMITES,    #
+#           assumées et dites à l'utilisateur : aucune validation par le       #
+#           plugin (une page dépubliée depuis la lecture passera quand même),  #
+#           pas de notion de page critique, et l'accueil « flux d'articles »   #
+#           n'est pas distingué autrement que par `page_on_front = 0`.         #
+#                                                                             #
+#           Le repli écrit `selected_wordpress_page_ids` — des identifiants    #
+#           de POSTS WordPress (entiers) — et surtout PAS                      #
+#           `selected_page_ids`, qui contient des identifiants de pages        #
+#           VizProof (chaînes) et ne sert qu'à l'écran réseau multisite : y    #
+#           mettre des identifiants WordPress casse les captures (404 sur      #
+#           /api/pages/{id}/capture). Sous WP-CLI le sanitizer de l'option ne  #
+#           tourne pas : on écrit donc un tableau JSON d'entiers propres, et   #
+#           rien d'autre dans l'option (`option patch update` ne touche que    #
+#           la clé nommée).                                                    #
+# --------------------------------------------------------------------------- #
+VIZ_PAGES_MAX = 20          # le plugin tronque à 20 (`array_slice($ids, 0, 20)`)
+VIZ_PAGES_TIMEOUT = 120
+VIZ_PAGES_OPTION = "vizproof_timeline_options"
+VIZ_PAGES_KEY = "selected_wordpress_page_ids"
+VIZ_PAGES_SEP_OPT = "---VIZ-OPTIONS---"
+VIZ_PAGES_SEP_FRONT = "---VIZ-FRONT---"
+VIZ_PAGES_137_MSG = ("plugin VizProof 1.3.7 : liste et enregistrement en mode compatible "
+                     "(sans validation par l'extension)")
+
+
+def viz_json_array(out):
+    """Dernier tableau JSON d'une sortie wp-cli, ou None.
+
+    Lu par la FIN, comme `viz_json_tail` : wp-cli fait précéder son JSON
+    d'éventuels avertissements PHP, jamais l'inverse.
+    """
+    for ligne in reversed(str(out or "").splitlines()):
+        if ligne.lstrip()[:1] != "[":
+            continue
+        try:
+            d = json.loads(ligne.strip())
+        except ValueError:
+            continue
+        if isinstance(d, list):
+            return d
+    return None
+
+
+def viz_pages_ids(valeurs):
+    """Liste d'entiers positifs, dédoublonnée, dans l'ordre reçu."""
+    out = []
+    for v in valeurs or []:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n >= 0 and n not in out:
+            out.append(n)
+    return out
+
+
+def viz_pages_payload(j, source):
+    """Normalise la réponse du plugin — toutes les clés du contrat, toujours."""
+    pages = []
+    for p in (j.get("pages") or []):
+        if not isinstance(p, dict):
+            continue
+        try:
+            pid = int(p.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        typ = str(p.get("type") or "page")
+        pages.append({"id": pid, "title": str(p.get("title") or ""),
+                      "url": viz_http_url(p.get("url")) or "",
+                      "type": typ if typ in ("page", "front", "home") else "page",
+                      "selected": bool(p.get("selected")), "critical": bool(p.get("critical"))})
+    scope = str(j.get("scope") or "site")
+    return {"ok": True, "source": source, "limit": VIZ_PAGES_MAX,
+            "scope": scope if scope in VIZ_SCOPES else "site",
+            "selected": viz_pages_ids(j.get("selected")),
+            "critical": viz_pages_ids(j.get("critical")),
+            "pages": pages, "message": str(j.get("message") or "")}
+
+
+def viz_pages_cible(server_name, domain):
+    """(srv, site) ou (None, réponse d'erreur) — REST compris."""
+    srv, site = find_site(server_name, domain)
+    if srv and site:
+        return srv, site
+    if rest_target(server_name, domain):
+        return None, (REST_UNSUPPORTED_RC, {"ok": False, "error": REST_UNSUPPORTED_MSG})
+    return None, (92, {"ok": False, "error": "site inconnu"})
+
+
+def viz_pages_read(server_name, domain):
+    """→ (rc, payload). rc 0 = lu ; 97 = site sans SSH ; autre = échec."""
+    srv, site = viz_pages_cible(server_name, domain)
+    if not srv:
+        return site
+    rc, out = remote_bash(srv, site, "run vizproof pages --format=json",
+                          timeout=VIZ_PAGES_TIMEOUT)
+    if rc == 0:
+        j = viz_json_tail(out)
+        if isinstance(j, dict) and isinstance(j.get("pages"), list):
+            return 0, viz_pages_payload(j, "plugin")
+        return 95, {"ok": False, "error": "réponse illisible de « wp vizproof pages »",
+                    "output": str(out or "")[-800:]}
+    if VIZ_OLD_RE.search(out or ""):
+        return viz_pages_read_137(srv, site)
+    return rc, {"ok": False, "error": str(out or "")[-800:]}
+
+
+def viz_pages_read_137(srv, site):
+    """Repli de lecture pour la 1.3.7 : `post list` + les deux options utiles."""
+    body = (
+        "run post list --post_type=page --post_status=publish"
+        " --fields=ID,post_title,url --format=json || true\n"
+        f"echo '{VIZ_PAGES_SEP_OPT}'\n"
+        f"run option get {VIZ_PAGES_OPTION} --format=json || true\n"
+        f"echo '{VIZ_PAGES_SEP_FRONT}'\n"
+        "run option get page_on_front || true\n"
+        "exit 0\n"
+    )
+    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT)
+    if rc != 0:
+        return rc, {"ok": False, "error": str(out or "")[-800:]}
+    txt = str(out or "")
+    bloc_pages, _, reste = txt.partition(VIZ_PAGES_SEP_OPT)
+    bloc_opt, _, bloc_front = reste.partition(VIZ_PAGES_SEP_FRONT)
+    liste = viz_json_array(bloc_pages)
+    if liste is None:
+        return 95, {"ok": False, "error": "liste des pages illisible (repli 1.3.7)",
+                    "output": txt[-800:]}
+    opt = viz_json_tail(bloc_opt) or {}
+    front = 0
+    for ligne in reversed(bloc_front.splitlines()):
+        ligne = ligne.strip()
+        if ligne.isdigit():
+            front = int(ligne)
+            break
+    choisies = set(viz_pages_ids(opt.get(VIZ_PAGES_KEY)))
+    critiques = set(viz_pages_ids(opt.get("critical_wordpress_page_ids")))
+    scope = str(opt.get("scan_scope") or "site")
+    pages = []
+    for p in liste:
+        if not isinstance(p, dict):
+            continue
+        try:
+            pid = int(p.get("ID") or 0)
+        except (TypeError, ValueError):
+            continue
+        pages.append({"id": pid, "title": str(p.get("post_title") or ""),
+                      "url": p.get("url") or "", "type": "front" if pid == front else "page",
+                      "selected": pid in choisies, "critical": pid in critiques})
+    if not front:
+        # Accueil « flux d'articles » : aucun identifiant de page ne le désigne.
+        pages.insert(0, {"id": 0, "title": "Accueil (flux d’articles)",
+                         "url": site_home_url(site), "type": "home",
+                         "selected": scope == "site", "critical": False})
+    pages.sort(key=lambda p: 0 if p["type"] in ("home", "front") else 1)
+    return 0, viz_pages_payload(
+        {"scope": scope, "selected": sorted(choisies), "critical": sorted(critiques),
+         "pages": pages, "message": VIZ_PAGES_137_MSG}, "repli-1.3.7")
+
+
+def viz_pages_write(server_name, domain, ids, scope, source="ui"):
+    """Enregistre la sélection → (rc, payload). Journalise l'action `viz_pages`."""
+    t0 = time.time()
+
+    def fin(rc, payload):
+        append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": source, "server": server_name, "domain": domain,
+                    "action": "viz_pages", "arg": f"{scope}:{','.join(str(i) for i in ids)}"[:200],
+                    "rc": rc, "duration_s": round(time.time() - t0, 1),
+                    "output_tail": json.dumps(payload, ensure_ascii=False)[-2000:]})
+        return rc, payload
+
+    srv, site = viz_pages_cible(server_name, domain)
+    if not srv:
+        return fin(site[0], site[1])
+    args = ["vizproof", "pages", "set", "--scope=" + sq(scope), "--format=json"]
+    if ids:
+        args.insert(3, "--ids=" + sq(",".join(str(i) for i in ids)))
+    rc, out = remote_bash(srv, site, "run " + " ".join(args), timeout=VIZ_PAGES_TIMEOUT)
+    if rc == 0:
+        j = viz_json_tail(out)
+        if isinstance(j, dict) and isinstance(j.get("pages"), list):
+            return fin(0, viz_pages_payload(j, "plugin"))
+        return fin(0, {"ok": True, "source": "plugin", "limit": VIZ_PAGES_MAX,
+                       "scope": scope, "selected": list(ids), "critical": [], "pages": [],
+                       "message": str(out or "")[-300:]})
+    if VIZ_OLD_RE.search(out or ""):
+        return fin(*viz_pages_write_137(srv, site, ids, scope))
+    return fin(rc, {"ok": False, "error": str(out or "")[-800:]})
+
+
+def viz_pages_write_137(srv, site, ids, scope):
+    """Repli d'écriture pour la 1.3.7 : deux `option patch update`, rien d'autre."""
+    liste = json.dumps([int(i) for i in ids])
+    body = (
+        f"run option patch update {VIZ_PAGES_OPTION} {VIZ_PAGES_KEY} {sq(liste)}"
+        " --format=json || exit $?\n"
+        f"run option patch update {VIZ_PAGES_OPTION} scan_scope {sq(scope)} || exit $?\n"
+    )
+    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT)
+    if rc != 0:
+        return rc, {"ok": False, "error": str(out or "")[-800:]}
+    rc2, lu = viz_pages_read_137(srv, site)
+    if rc2 == 0:
+        lu["message"] = VIZ_PAGES_137_MSG
+        return 0, lu
+    return 0, {"ok": True, "source": "repli-1.3.7", "limit": VIZ_PAGES_MAX, "scope": scope,
+               "selected": list(ids), "critical": [], "pages": [],
+               "message": VIZ_PAGES_137_MSG}
+
+
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
                     with_core=False, dry_run=False, viz_rollback=None):
     """Orchestration complète.
@@ -5080,6 +5310,18 @@ class Handler(BaseHTTPRequestHandler):
             if not SLUG_RE.match(dom):
                 return self._send(400, {"error": "cible invalide"})
             self._send(200, {"viz": viz_last_get(dom) or None})
+        elif p == "/api/actions/viz_pages":
+            # Pages surveillées d'un site relié. rc 97 (site sans SSH) et rc 99
+            # (plugin trop ancien) sont des RÉPONSES, pas des pannes : 200 avec
+            # `ok:false`, l'interface sait quoi en dire.
+            server = urllib.parse.unquote(q.get("server", ""))
+            dom = urllib.parse.unquote(q.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(dom):
+                return self._send(400, {"error": "cible invalide"})
+            rc, payload = viz_pages_read(server, dom)
+            payload.setdefault("ok", rc == 0)
+            doux = rc in (0, VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            self._send(200 if doux else 500, dict(payload, rc=rc))
         elif p == "/api/sec/phperrors":
             res = load_json(PHPERR_PATH, {"sites": [], "total": 0, "fatals": 0,
                                           "sites_with_errors": 0})
@@ -5343,6 +5585,42 @@ class Handler(BaseHTTPRequestHandler):
                                "error": None if rc == 0 else out,
                                "site_id": site_id, "site_created": site_created,
                                "site_name": site_name})
+
+        if p == "/api/actions/viz_pages":
+            # Enregistrement de la sélection. La validation double celle du
+            # plugin (qui reste l'autorité) pour dire l'erreur AVANT le ssh.
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            brut = body.get("ids")
+            if not isinstance(brut, list):
+                return self._send(400, {"error": "ids : une liste d'entiers est attendue"})
+            for x in brut:
+                entier = isinstance(x, int) and not isinstance(x, bool)
+                if not (entier or (isinstance(x, str) and x.isdigit())):
+                    return self._send(400, {"error": "ids : entiers positifs attendus"})
+                if entier and x < 0:
+                    return self._send(400, {"error": "ids : entiers positifs attendus"})
+            scope = str(body.get("scope") or "").strip()
+            if scope not in VIZ_SCOPES:
+                return self._send(400, {"error": "portée invalide (site ou selected_pages)"})
+            ids = viz_pages_ids(brut)
+            # L'accueil « flux d'articles » porte l'identifiant 0 : il n'a pas de
+            # page à capturer, le plugin refuse `--ids=0`, et la seule façon de
+            # le surveiller est la portée « tout le site ».
+            if 0 in ids and scope != "site":
+                return self._send(400, {"error": "l'accueil « flux d'articles » ne se surveille "
+                                                 "qu'avec la portée « tout le site »"})
+            ids = [i for i in ids if i > 0]
+            if len(ids) > VIZ_PAGES_MAX:
+                return self._send(400, {"error": f"{VIZ_PAGES_MAX} pages au maximum "
+                                                 "(le plugin ne scanne pas au-delà)"})
+            if scope == "selected_pages" and not ids:
+                return self._send(400, {"error": "choisissez au moins une page à surveiller"})
+            rc, payload = viz_pages_write(server, domain, ids, scope)
+            payload.setdefault("ok", rc == 0)
+            doux = rc in (0, VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            return self._send(200 if doux else 500, dict(payload, rc=rc))
 
         if p == "/api/actions/viz_disconnect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))

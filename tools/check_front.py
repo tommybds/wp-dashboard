@@ -29,7 +29,9 @@ ROUTES_PROXY = {"/api/status-page/", "/api/status-page/heartbeat/"}
 # Fichier statique produit par le collecteur.
 FICHIERS_STATIQUES = {"fleet.json"}
 # Actions groupées qui ne sont pas des commandes wp-cli de ACTIONS.
-ACTIONS_EXTRA = {"rescan", "dash_connect", "dash_disconnect"}
+# `viz_pages` n'est pas une commande wp-cli de ACTIONS : c'est une route
+# dédiée (lecture + écriture des pages surveillées), journalisée sous ce nom.
+ACTIONS_EXTRA = {"rescan", "dash_connect", "dash_disconnect", "viz_pages"}
 
 # Cas de `style="…"` explicitement tolérés : aucun pour l'instant. Toute
 # entrée ajoutée ici doit dire POURQUOI la valeur ne peut pas être un jeton.

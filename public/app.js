@@ -100,36 +100,208 @@ const ANCRES = {
   },
 };
 
+/* ---- sommaires d'ancres ----------------------------------------------------
+
+   Une page à ancres (Sécurité, Changements, Gestion, Réglages) est UNE page :
+   passer d'une de ses sections à une autre n'est PAS une navigation. Tout ce
+   qui suit sert à tenir cette promesse — ne rien reconstruire, ne rien perdre
+   d'une saisie en cours, et ne pas confisquer le défilement. */
+
+/** Le mouvement est-il permis ? (`prefers-reduced-motion` coupe tout.) */
+function mouvementOk() {
+  try { return !window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+  catch (e) { return true; }
+}
+
+/** Identifiant de section visé par un lien de sommaire (`#reglages/alertes`). */
+function idDeLien(a) {
+  const parts = String(a.getAttribute('href') || '').replace(/^#/, '').split('/');
+  return (ANCRES[parts[0]] || {})[parts[1]] || '';
+}
+
+/* Chip actif = section VISIBLE, pas dernier chip cliqué : au défilement libre
+   comme après un saut, le sommaire dit toujours où l'on est.
+
+   `epingler` marque un choix EXPLICITE (clic sur un chip, ancre d'URL). La
+   section choisie reste marquée tant qu'elle est à l'écran, puis le suivi
+   reprend la main. Sans cela, cliquer sur l'avant-dernière section d'une page
+   allumait la dernière : le bas de page est atteint, les deux sont visibles, et
+   la règle « la dernière en bas de page » contredisait le clic. */
+let SECTIONVUE = '';
+let EPINGLE = '';
+/* Le défilement doux met une bonne demi-seconde : pendant ce trajet la section
+   visée est encore hors de l'écran, et le suivi la déclarerait « pas visible »
+   pour aussitôt rallumer le chip d'où l'on part. L'épingle est donc INCONDI-
+   TIONNELLE le temps du voyage, puis soumise à la visibilité comme le reste. */
+const EPINGLE_TRAJET = 1200;
+let EPINGLEFIN = 0;
+function marquerSection(id, epingler) {
+  SECTIONVUE = id;
+  EPINGLE = epingler ? id : '';
+  if (epingler) EPINGLEFIN = Date.now() + EPINGLE_TRAJET;
+  document.querySelectorAll('.anchors a').forEach(a => {
+    const on = !!id && idDeLien(a) === id;
+    a.classList.toggle('actif', on);
+    if (on) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+  });
+}
+
+/* Section courante : la dernière dont le haut est passé sous le sommaire
+   collant. Deux lectures de `getBoundingClientRect` par section et par tour de
+   défilement, étranglées — c'est assez léger pour se passer d'un
+   IntersectionObserver, qui demanderait d'être recréé à chaque remontage. */
+function majSectionActive() {
+  const page = document.querySelector('.page.active');
+  const somm = page && page.querySelector('.anchors');
+  if (!somm) { if (SECTIONVUE) marquerSection(''); return; }
+  const liens = [...somm.querySelectorAll('a')];
+  if (!liens.length) return;
+  const sections = liens.map(a => document.getElementById(idDeLien(a)));
+  const premiere = sections.find(Boolean);
+  if (!premiere) return;
+  /* Seuil = la ligne où une section VISÉE vient se poser, c'est-à-dire son
+     `scroll-margin-top` (screens.css) — un seuil pris au bas du sommaire
+     collant serait quelques pixels trop haut, et la section qu'on vient
+     d'atteindre ne serait jamais celle qui s'allume. */
+  const marge = parseFloat(getComputedStyle(premiere).scrollMarginTop) || 0;
+  const seuil = Math.max(somm.getBoundingClientRect().bottom, marge) + 4;
+
+  if (EPINGLE) {
+    const e = document.getElementById(EPINGLE), r = e && e.getBoundingClientRect();
+    const enRoute = Date.now() < EPINGLEFIN;
+    if (r && (enRoute || (r.bottom > seuil && r.top < window.innerHeight))) {
+      // Ré-épingler sans REPARTIR le délai de trajet : sinon l'épingle ne
+      // tomberait jamais et le sommaire cesserait de suivre le défilement.
+      if (SECTIONVUE !== EPINGLE) { const fin = EPINGLEFIN; marquerSection(EPINGLE, true); EPINGLEFIN = fin; }
+      return;
+    }
+    EPINGLE = '';                       // sortie de l'écran : le suivi reprend
+  }
+
+  let courant = idDeLien(liens[0]);
+  liens.forEach((a, i) => {
+    const el = sections[i];
+    if (el && el.getBoundingClientRect().top <= seuil) courant = idDeLien(a);
+  });
+  // Bas de page : la dernière section est active même trop courte pour atteindre
+  // le seuil — sinon son chip ne s'allume jamais.
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) {
+    courant = idDeLien(liens[liens.length - 1]) || courant;
+  }
+  if (courant !== SECTIONVUE) marquerSection(courant);
+}
+
+/* Étranglé par un minuteur et non par `requestAnimationFrame` : celui-ci ne se
+   déclenche pas dans un onglet en arrière-plan, et le sommaire d'une page
+   rouverte depuis un autre onglet resterait figé sur sa première section. */
+let SUIVITICK = null;
+function suivreSections() {
+  if (SUIVITICK) return;
+  SUIVITICK = setTimeout(() => { SUIVITICK = null; majSectionActive(); }, 80);
+}
+
 /* Défilement jusqu'à la section demandée.
 
-   L'écran vient d'être monté : ses sections sont dans le document, mais leur
-   CONTENU arrive ensuite, par plusieurs requêtes, et chaque section qui se
-   remplit pousse les suivantes vers le bas. Un défilement fait une seule fois
-   raterait donc sa cible de plusieurs centaines de pixels : on re-vise tant que
-   la page grandit, pendant 3 s au plus, et jamais après que l'utilisateur a
-   repris la main.
+   `revise` n'est vrai qu'au PREMIER rendu d'une destination : ses sections sont
+   dans le document mais leur CONTENU arrive ensuite, par plusieurs requêtes, et
+   chaque section qui se remplit pousse les suivantes vers le bas — un
+   défilement fait une seule fois raterait sa cible de plusieurs centaines de
+   pixels. Une fois la page remplie, il n'y a plus rien à re-viser : re-viser
+   quand même revenait à annuler tout défilement de l'utilisateur pendant 3 s.
+
+   La re-visée s'arrête dès que quelqu'un d'AUTRE que nous a défilé. Distinguer
+   les deux ne se fait pas sur `scrollY` seul : quand le contenu grandit
+   au-dessus de la cible, le navigateur déplace lui-même la page (ancrage du
+   défilement), et le comparer à la valeur retenue faisait passer ce réglage
+   automatique pour un geste de l'utilisateur — l'ancre n'arrivait alors jamais
+   sur sa section. On mesure donc la CIBLE, deux fois :
+
+     `doc`  sa position dans le document — elle change quand le contenu bouge ;
+     `haut` sa position à l'écran — elle change quand ON défile.
+
+   Cible qui n'a pas bougé dans le document mais qui n'est plus à l'écran là où
+   on l'avait posée : c'est un défilement extérieur, on rend la main. Tout le
+   reste (contenu qui se remplit, ancrage du navigateur) est une re-visée.
 
    `setTimeout` plutôt que `requestAnimationFrame` : ce dernier ne se déclenche
    pas tant que l'onglet n'est pas visible, et l'ancre d'une page ouverte en
    arrière-plan n'aurait jamais été appliquée. */
-function allerAncre(route, sub) {
+function mesurerCible(el) {
+  const r = el.getBoundingClientRect();
+  return { haut: Math.round(r.top), doc: Math.round(r.top + window.scrollY) };
+}
+
+/* Une seule re-visée à la fois : la suivante (clic sur un autre chip, autre
+   fragment) annule la précédente au lieu de lui disputer le défilement. */
+let ARRETANCRE = null;
+function arreterRevisee() { if (ARRETANCRE) ARRETANCRE(); }
+
+function allerAncre(route, sub, revise) {
+  arreterRevisee();
   const id = (ANCRES[route] || {})[sub];
   if (!id) return;
-  const aller = () => {
+  let ref = null;
+  const aller = doux => {
     const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ block: 'start' });
+    if (!el) return;
+    el.scrollIntoView({ block: 'start', behavior: doux ? 'smooth' : 'auto' });
+    ref = mesurerCible(el);
   };
-  aller();
-  // Re-visée pendant 3 s : chaque section qui se remplit déplace la cible.
-  // Un simple minuteur plutôt qu'un ResizeObserver — celui-ci n'est appelé
-  // qu'avec la boucle de rendu, donc jamais dans un onglet en arrière-plan.
+  aller(!revise && mouvementOk());
+  marquerSection(id, true);
+  if (!revise) return;
+  const detourne = () => {
+    const el = document.getElementById(id);
+    if (!el || !ref) return true;
+    const m = mesurerCible(el);
+    return Math.abs(m.doc - ref.doc) <= 2 && Math.abs(m.haut - ref.haut) > 2;
+  };
   let tours = 0;
-  const t = setInterval(() => { if (++tours > 12) rendre(); else aller(); }, 250);
+  const t = setInterval(() => {
+    if (detourne() || ++tours > 12) rendre();
+    else aller(false);
+  }, 250);
+  // L'évènement `scroll` rend la main tout de suite plutôt qu'au tour suivant.
+  // Il ne suffit pas à lui seul : un document caché n'en émet aucun (ils sont
+  // produits par les étapes de rendu), d'où le contrôle du minuteur ci-dessus,
+  // qui, lui, fonctionne partout.
+  const auScroll = () => { if (detourne()) rendre(); };
   function rendre() {
     clearInterval(t);
-    ['wheel', 'touchstart', 'keydown'].forEach(x => window.removeEventListener(x, rendre));
+    window.removeEventListener('scroll', auScroll);
+    if (ARRETANCRE === rendre) ARRETANCRE = null;
+    majSectionActive();
   }
-  ['wheel', 'touchstart', 'keydown'].forEach(x => window.addEventListener(x, rendre, { passive: true }));
+  ARRETANCRE = rendre;
+  window.addEventListener('scroll', auScroll, { passive: true });
+}
+
+/* Clic sur un chip de sommaire dont la page est DÉJÀ affichée : il ne doit rien
+   reconstruire. Sans cette interception, le changement de fragment relançait
+   `showDest`, donc `loadReglages()`, donc le remontage de tous les corps de
+   section — le champ dans lequel on tapait était remplacé, et la saisie perdue.
+   Le lien garde son `href` : clic milieu, « ouvrir dans un onglet » et copie du
+   lien continuent de marcher. */
+function clicSommaire(e) {
+  if (e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest && e.target.closest('.anchors a[href^="#"]');
+  if (!a) return;
+  const href = a.getAttribute('href');
+  const route = href.replace(/^#/, '').split('/')[0];
+  if (route !== ROUTE || !PAR_ROUTE[route]) return;      // vraie navigation : laisser faire
+  const id = idDeLien(a);
+  const el = id && document.getElementById(id);
+  if (!el) return;
+  e.preventDefault();
+  arreterRevisee();          // une re-visée de chargement encore en cours perdrait ce clic
+  el.scrollIntoView({ block: 'start', behavior: mouvementOk() ? 'smooth' : 'auto' });
+  marquerSection(id, true);
+  // `replaceState` et non `pushState` : sauter de section en section dans une
+  // même page ne doit pas remplir l'historique de dix entrées à remonter.
+  if (NAVLOCK) return;
+  NAVLOCK = true;
+  try { history.replaceState(null, '', href); } catch (err) { /* historique verrouillé */ }
+  NAVLOCK = false;
 }
 
 let NAVLOCK = false;   // évite que l'écriture de l'URL relance la navigation
@@ -171,6 +343,10 @@ function marquerNav(route) {
   });
 }
 
+/* Destinations déjà affichées au moins une fois : leurs sections ont du
+   contenu, donc plus rien à re-viser quand on y revient sur une ancre. */
+const RENDUES = new Set();
+
 function showDest(route, { ecrire = true, push = false } = {}) {
   const d = PAR_ROUTE[route];
   if (!d) return false;
@@ -180,13 +356,17 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   masquerPages();
   document.getElementById('page-' + d.page).classList.add('active');
   setScreenTitle(d.titre);
+  const premier = !RENDUES.has(route);
+  RENDUES.add(route);
   if (route === 'gestion') loadMgmt();
   if (route === 'securite') loadSec();
   if (route === 'changements') loadHist();
   if (route === 'incidents') renderIncidents();
   if (route === 'reglages') loadReglages();
   if (ecrire) writeHash(route, push);
-  return true;
+  marquerSection('');
+  suivreSections();
+  return premier ? 'premier' : true;
 }
 
 /* ---- page site -------------------------------------------------------------
@@ -232,9 +412,18 @@ function applyHash() {
     NAVLOCK = false;
     tete = d.route;
   }
+  /* Même destination, seule la section change (chip de sommaire, lien
+     `#reglages/vizproof` d'une modale, retour arrière du navigateur) : on
+     DÉFILE, on ne remonte rien. Un remontage remplacerait le champ en cours de
+     saisie par un champ neuf — c'est exactement ce que Tommy voyait. */
+  if (tete && tete === ROUTE && RENDUES.has(tete) && PAR_ROUTE[tete]) {
+    if (sub && ANCRES[tete]) allerAncre(tete, sub, false);
+    else majSectionActive();
+    return;
+  }
   NAVLOCK = true;
   const ok = showDest(tete || 'parc', { ecrire: false });
-  if (ok && sub && ANCRES[tete]) allerAncre(tete, sub);
+  if (ok && sub && ANCRES[tete]) allerAncre(tete, sub, ok === 'premier');
   NAVLOCK = false;
   // Fragment inconnu : on retombe sur Parc pour de bon (l'URL ET l'écran).
   if (!ok) showDest('parc');
@@ -273,6 +462,14 @@ async function boot() {
     b.onclick = e => { e.preventDefault(); showDest(b.dataset.dest, { push: true }); };
   });
   window.addEventListener('hashchange', applyHash);
+
+  /* Sommaires d'ancres : un seul écouteur pour toute l'application. Les chips
+     sont (re)construits par leurs écrans à chaque rafraîchissement — les
+     brancher un par un obligerait chaque écran à y penser, et l'un d'eux
+     finirait par l'oublier. */
+  document.addEventListener('click', clicSommaire);
+  window.addEventListener('scroll', suivreSections, { passive: true });
+  window.addEventListener('resize', suivreSections);
 
   /* Un écran se redessine quand le store change ; plus personne ne l'appelle
      depuis le chargeur de données. La page site, elle, se rafraîchit sur ordre

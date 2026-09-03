@@ -119,6 +119,13 @@ page site (un seul volet à la fois sur un même objet) ; partout ailleurs, un
 sous-slug d'URL désigne une **ancre** dans la page. Les anciens fragments
 (`#dash`, `#sec/…`, `#hist/…`, `#mgmt/…`) redirigent.
 
+Passer d'une ancre à l'autre **n'est pas une navigation** : la destination est
+déjà à l'écran, `app.js` défile jusqu'à la section et `replaceState` le fragment,
+sans rien remonter — un remontage remplacerait le champ en cours de saisie. Le
+chip actif suit la **section visible**, et la re-visée qui rattrape les sections
+qui se remplissent n'existe qu'au **premier rendu** d'une destination : elle
+s'arrête dès que quelqu'un d'autre a défilé, ou après 3 s.
+
 ### Arborescence
 
 ```
@@ -220,7 +227,7 @@ chips ≥ 4.5:1 sur leur fond. À lancer après toute modification de `tokens.cs
 | `chip.js` | Chip d'état : point + libellé, **quatre** niveaux (`ok`, `warn`, `err`, `mut`) et un seul vocabulaire dans toute l'application. |
 | `button.js` | États d'un bouton : chargement (`setBusy`/`setIdle`, qui préservent l'icône) et confirmation à deux clics. |
 | `table.js` | Tri par colonne avec `aria-sort`, densité, colonnes masquables mémorisées, et les **ombres de débordement** horizontal. |
-| `actions-menu.js` | Menu groupé par intention. Au bureau c'est un panneau `role="menu"` ; sous 720 px, **la même liste s'ouvre en feuille basse**. |
+| `actions-menu.js` | Menu groupé par intention. Un groupe peut s'ouvrir sur des **lignes d'état** non cliquables (`{etat:true}`) et ne montrer ensuite que les entrées qui ont un sens dans cet état. Au bureau c'est un panneau `role="menu"` ; sous 720 px, **la même liste s'ouvre en feuille basse**. |
 | `sheet.js` | La feuille basse : `role="dialog"`, glisser pour fermer, boutons pleine largeur. |
 | `confirm.js` | Les modales génériques, l'**ordre des couches** (Échap ferme la plus haute) et le **piège de focus**, valable pour toutes. |
 | `search.js` | Palette ⌘K / Ctrl+K : sites, extensions, administrateurs, actions. |
@@ -918,6 +925,49 @@ extension absente) sont écartés de la liste.
 
 `POST /api/actions/viz_disconnect {server, domain}` fait l'inverse (bouton
 **Dissocier** de la page site) ; l'extension reste installée.
+
+#### Choisir les pages surveillées
+
+Une fois le site relié, la question suivante est **quelles pages photographier**.
+La modale de connexion y enchaîne d'elle-même, et le bloc VizProof d'un site relié
+y revient par **Pages surveillées…** — même étape, deux entrées.
+
+```
+GET  /api/actions/viz_pages?server=&domain=
+POST /api/actions/viz_pages {server, domain, ids:[…], scope}
+→ {ok, rc, source, scope, limit, selected:[ids], critical:[ids],
+   pages:[{id, title, url, type, selected, critical}], message}
+```
+
+`type` vaut `page`, `front` (l'accueil est une page statique) ou `home` (l'accueil
+est le flux d'articles). **`home` porte l'identifiant 0 et n'est pas sélectionnable** :
+il n'y a pas de page à capturer, le plugin refuse `--ids=0`, et la seule façon de
+surveiller cet accueil-là est la portée `site`. La route refuse donc l'identifiant 0
+hors portée `site`, où elle le retire simplement de l'envoi.
+
+Validation, avant tout ssh : identifiants entiers positifs, dédoublonnés,
+**20 au plus** (`array_slice($ids, 0, 20)` côté plugin — l'interface l'affiche),
+`scope` ∈ `site` | `selected_pages`, et au moins une page en `selected_pages`.
+L'écriture est journalisée sous l'action **`viz_pages`** dans `actions.log`
+(`arg` = `<portée>:<ids>`), et un re-scan suit l'enregistrement pour que la
+colonne du Parc affiche tout de suite le nouveau décompte.
+
+> **Repli pour le plugin 1.3.7.** La sous-commande `pages` n'existe qu'à partir de
+> la 1.3.8 ; en dessous, wp-cli répond « `'pages' is not a registered subcommand` ».
+> Le serveur bascule alors sur `wp post list --post_type=page --post_status=publish`
+> + `wp option get page_on_front` pour lire, et sur deux
+> `wp option patch update vizproof_timeline_options …` pour écrire —
+> `selected_wordpress_page_ids` (des identifiants **WordPress**) et `scan_scope`,
+> rien d'autre dans l'option. **Attention** : `selected_page_ids`, lui, contient des
+> identifiants de pages **VizProof** et ne sert qu'à l'écran réseau multisite ; y
+> écrire des identifiants WordPress casse les captures.
+> Limites du repli, dites à l'utilisateur dans la modale : **aucune validation par
+> l'extension** (une page dépubliée entre la lecture et l'écriture passe quand même),
+> pas de notion de page critique, et l'accueil « flux d'articles » n'est reconnu
+> qu'à `page_on_front = 0`. La réponse porte `source: "repli-1.3.7"`.
+
+Un site géré **sans SSH** répond `rc 97` : l'interface renvoie alors vers
+`…/wp-admin/admin.php?page=vizproof-timeline`.
 
 #### Anomalie visuelle pendant une MAJ sûre
 

@@ -9,7 +9,7 @@
    Trait de 1,5 px, 16 px dans les lignes, 20 px dans les barres. Une icône
    n'est jamais seule dans une colonne : elle porte un libellé ou un aria-label. */
 .ic{
-  width:16px;height:16px;flex:0 0 auto;vertical-align:-3px;
+  width:16px;height:16px;flex:none;vertical-align:-3px;line-height:1;
   fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;
 }
 .ic-20{width:20px;height:20px;vertical-align:-4px}
@@ -20,15 +20,33 @@
 
 /* ---- boutons --------------------------------------------------------------
    Quatre formes : secondaire (défaut), primaire, danger, icône seule.
-   L'élévation est une bordure, jamais une ombre. */
+   L'élévation est une bordure, jamais une ombre.
+
+   HAUTEUR ET ALIGNEMENT. Deux boutons voisins d'un même tableau (« MAJ »,
+   « Geler », « Rétablir » avec son icône) doivent faire la MÊME hauteur et
+   s'aligner sur la même ligne. Deux règles y suffisent, et il faut les deux :
+
+   - `min-height` fixe (28 px, 24 px en `.sm`) : la hauteur ne dépend plus du
+     contenu, donc plus du fait qu'il y ait une icône ou non ;
+   - `vertical-align:middle` : la ligne de base d'une boîte `inline-flex` est
+     celle de son PREMIER élément de flux. Pour « MAJ » c'est le texte ; pour
+     « Rétablir » c'est le `<svg>`, un élément remplacé dont la ligne de base
+     est le bord bas — le bouton se retrouvait décalé vers le haut, et poussait
+     la ligne du tableau. Aligné au milieu, il n'y a plus de ligne de base à
+     départager. */
 .btn{
   display:inline-flex;align-items:center;gap:6px;
+  min-height:28px;vertical-align:middle;
   background:var(--surface);color:var(--ink);
   border:1px solid var(--line);border-radius:var(--r-ctl);
   padding:5px 10px;font-size:var(--t-13);font-weight:500;line-height:1.4;
   cursor:pointer;white-space:nowrap;
   transition:border-color .12s ease,background .12s ease,color .12s ease;
 }
+/* Une icône dans un bouton ne pousse jamais sa hauteur : taille fixe, pas
+   d'interligne, pas de rétrécissement. */
+.btn>.ic{flex:none;line-height:1;vertical-align:middle}
+.btn.sm>.ic{width:14px;height:14px}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink);color:var(--on-accent)}
@@ -42,7 +60,7 @@
   background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn:disabled:hover{border-color:var(--line);color:var(--muted);background:var(--surface)}
 .btn.primary:disabled:hover{background:var(--accent);color:var(--on-accent)}
-.btn.sm{padding:2px 8px;font-size:var(--t-12)}
+.btn.sm{padding:2px 8px;font-size:var(--t-12);min-height:24px}
 .btn.icon{padding:5px 8px}
 .btn.is-busy{cursor:progress}
 /* Libellé d'un bouton qui devient une icône en étroit : il passe en `sr-only`
@@ -203,6 +221,22 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 .logline:last-child{border-bottom:0}
 .logline code{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted)}
 .actions{display:flex;flex-wrap:wrap;gap:var(--s-8)}
+
+/* ---- liste des pages surveillées par VizProof ------------------------------
+   Une case par page publiée, dans une boîte défilante : vingt lignes tiennent
+   dans une modale, deux cents non — et la limite du plugin est justement de
+   vingt pages par scan. */
+.vzpages{max-height:34vh;overflow:auto;border:1px solid var(--line);
+  border-radius:var(--r-surf);background:var(--surface);padding:var(--s-4)}
+.vzpage{display:flex;align-items:flex-start;gap:var(--s-8);padding:5px 6px;
+  border-radius:var(--r-ctl);font-size:var(--t-13);cursor:pointer}
+.vzpage:hover{background:var(--surface-2)}
+.vzpage input{margin-top:2px;flex:none}
+.vzpage .vzp-t{display:block;font-weight:500}
+.vzpage .vzp-u{display:block;font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vzpage.off{opacity:.55;cursor:default}
+.vzp-b{min-width:0}
 .errbox{background:var(--err-bg);color:var(--err);border-radius:var(--r-ctl);padding:9px 12px;
   font-family:var(--f-mono);font-size:var(--t-12);line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .warnbox{background:var(--warn-bg);color:var(--warn);border-radius:var(--r-ctl);padding:9px 12px;line-height:1.5}
@@ -354,6 +388,14 @@ textarea.code.short{min-height:70px}
 .menu-i[aria-disabled="true"]{color:var(--muted);cursor:help}
 .menu-i[aria-disabled="true"] .menu-mod{display:none}
 .menu-vide{padding:var(--s-8);color:var(--muted);font-size:var(--t-12)}
+/* Ligne d'ÉTAT : elle ne se clique pas et ne se survole pas. Retrait à gauche
+   aligné sur les entrées voisines, mais fond neutre — rien n'y invite au clic. */
+.menu-etat{display:flex;align-items:flex-start;gap:var(--s-8);
+  padding:4px var(--s-8) 4px calc(var(--s-8) + 2px);
+  font-size:var(--t-12);color:var(--ink-2);line-height:1.45}
+.menu-etat .ic{color:var(--muted);flex:none;margin-top:2px}
+.menu-etat .menu-l{white-space:normal}
+.menu-d{color:var(--muted)}
 
 /* Raccourci clavier affiché dans un bouton. */
 .kbd{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
@@ -397,6 +439,10 @@ textarea.code.short{min-height:70px}
   background:var(--surface);color:var(--ink-2);text-decoration:none;
   font-family:var(--f-display);font-size:var(--t-12);font-weight:500;white-space:nowrap}
 .anchor:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+/* Section courante. Elle suit ce qui est VISIBLE (app.js/majSectionActive), pas
+   le dernier chip cliqué : après un défilement libre, le sommaire dit encore
+   où l'on est. Même couple de jetons que l'entrée de navigation active. */
+.anchor.actif{background:var(--accent-bg);border-color:var(--accent);color:var(--accent-ink)}
 .anchor .chip{padding:0 7px}
 
 /* ---- en-tête de section (titre, résumé, action) ---------------------------- */

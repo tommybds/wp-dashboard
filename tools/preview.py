@@ -331,6 +331,39 @@ REST_SITES = [
 WPCRED = {"site-07.exemple.fr": {"has_password": True, "user": "dash_bot",
                                  "verified": True, "checked_ts": now(5)}}
 
+# Pages surveillées par VizProof : huit pages, l'accueil en tête et UNE SEULE
+# pré-cochée — c'est le cas qu'il faut voir, l'étape « Pages surveillées » doit
+# refléter la sélection enregistrée et non tout cocher.
+VIZPAGES = {"scope": "selected_pages", "selected": [12], "critical": [12], "pages": [
+    {"id": 12, "title": "Accueil", "url": "https://site-00.exemple.fr/",
+     "type": "front", "selected": True, "critical": True},
+    {"id": 18, "title": "Nos services", "url": "https://site-00.exemple.fr/services/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 24, "title": "Tarifs", "url": "https://site-00.exemple.fr/tarifs/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 31, "title": "À propos", "url": "https://site-00.exemple.fr/a-propos/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 37, "title": "Références clients", "url": "https://site-00.exemple.fr/references/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 42, "title": "Blog", "url": "https://site-00.exemple.fr/blog/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 55, "title": "Contact", "url": "https://site-00.exemple.fr/contact/",
+     "type": "page", "selected": False, "critical": False},
+    {"id": 61, "title": "Mentions légales", "url": "https://site-00.exemple.fr/mentions/",
+     "type": "page", "selected": False, "critical": False},
+]}
+
+
+def viz_pages_etat(domain=""):
+    """GET /api/actions/viz_pages — un site sans SSH répond rc 97, comme en vrai."""
+    if any(x["domain"] == domain for x in REST_SITES):
+        return {"ok": False, "rc": 97, "pages": [], "selected": [], "critical": [],
+                "scope": "site", "limit": 20,
+                "error": "action indisponible : site géré sans SSH (l'agent est en lecture seule)"}
+    d = json.loads(json.dumps(VIZPAGES))
+    d.update({"ok": True, "rc": 0, "source": "plugin", "limit": 20, "message": ""})
+    return d
+
 
 def evenements():
     """Évènements poussés par les agents, au format de data/events.jsonl."""
@@ -545,7 +578,7 @@ STUB = """
   // réglage enregistré n'apparaîtrait jamais au rechargement de la section.
   const DIRECT = ['/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
     '/api/mgmt/sshkeys', '/api/mgmt/settings', '/api/mgmt/alerts', '/api/mgmt/schedule',
-    '/api/mgmt/candidates', '/api/mgmt/events'];
+    '/api/mgmt/candidates', '/api/mgmt/events', '/api/actions/viz_pages'];
   const vrai = window.fetch.bind(window);
   window.__PREVIEW__ = true;
   window.fetch = function(url, opts){
@@ -591,6 +624,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         chemin = self.path.split("?")[0]
+        if chemin == "/api/actions/viz_pages":
+            import urllib.parse as up
+            dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
+            return self._json(200, viz_pages_etat(dom))
         if chemin == "/api/mgmt/wp_credentials":
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
@@ -653,6 +690,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                           for t in taches],
             })
             rep = {"job": "apercu", "ok": True}
+        elif chemin.endswith("/api/actions/viz_pages"):
+            # Écriture des pages surveillées : elle a un EFFET (la sélection est
+            # relue à la réouverture) et rejoue les refus du backend.
+            ids = corps.get("ids")
+            scope = str(corps.get("scope") or "")
+            if not isinstance(ids, list) or any(not isinstance(x, int) for x in ids):
+                return self._json(400, {"error": "ids : une liste d'entiers est attendue"})
+            if scope not in ("site", "selected_pages"):
+                return self._json(400, {"error": "portée invalide (site ou selected_pages)"})
+            if 0 in ids and scope != "site":
+                return self._json(400, {"error": "l'accueil « flux d'articles » ne se surveille "
+                                                 "qu'avec la portée « tout le site »"})
+            ids = [i for i in ids if i > 0]
+            if len(ids) > 20:
+                return self._json(400, {"error": "20 pages au maximum (le plugin ne scanne pas au-delà)"})
+            if scope == "selected_pages" and not ids:
+                return self._json(400, {"error": "choisissez au moins une page à surveiller"})
+            VIZPAGES["scope"] = scope
+            VIZPAGES["selected"] = list(ids)
+            for pg in VIZPAGES["pages"]:
+                pg["selected"] = pg["id"] in ids
+            return self._json(200, viz_pages_etat(str(corps.get("domain") or "")))
         elif chemin.endswith("/api/actions/safe_update"):
             rep = {"ok": True, "running": True}
         elif chemin.endswith("/api/sec/verify"):

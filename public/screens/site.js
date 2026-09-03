@@ -32,10 +32,11 @@ import { menuActions, fermerMenus } from '../components/actions-menu.js';
 import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '../components/rollback.js';
 import { NOTIF } from '../components/toast.js';
 import {
-  openVizConnect, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
-  vizInstall, vizPhrase, vizState, setVizConsole, setVizRefresh,
+  openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
+  vizEtatTexte, vizInstall, vizPhrase, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast,
 } from '../components/viz.js';
+import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
 import { sevPill, SEVLABEL, SEVRANK, grouperParExtension } from './securite.js';
@@ -152,7 +153,11 @@ function refreshSite() {
   store.cur = s;
   const box = document.getElementById('site-console');
   const garde = (box && !box.hidden) ? box.innerHTML : null;
+  // Une action a pu changer l'autorisation WordPress : on la relit plutôt que
+  // de laisser le menu affirmer un état périmé.
+  WPETAT.delete(s.domain);
   dessiner();
+  chargerWpEtat(s).catch(() => {});
   if (garde !== null) { const b2 = document.getElementById('site-console'); if (b2) { b2.hidden = false; b2.innerHTML = garde; } }
   renderPolicy();
   renderVulnsSite();
@@ -318,58 +323,135 @@ function menuDuSite(s) {
     itemAct(s, { action: 'cache_flush', label: 'Vider les caches', ic: 'eraser', attention: true }),
   ];
 
-  const conn = [
-    {
-      action: 'vizproof_install',
-      label: 'Installer VizProof', ic: 'plus', attention: true,
-      disabled: rest || vs !== 'absent',
-      raison: rest ? "site sans SSH : passez par « Autoriser WordPress » puis le bloc VizProof" : (vs === 'absent' ? '' : 'extension déjà présente'),
-      onSelect: () => vizInstall(porteurAction(), s.srv, s.domain),
-    },
-    {
-      label: 'Connecter VizProof', ic: 'link',
-      disabled: rest || !['nonconnecte', 'connecte'].includes(vs),
-      raison: rest ? R.rest : (vs === 'absent' ? 'extension non installée'
-        : vs === 'inactif' ? 'extension désactivée sur le site'
-          : vs === 'nocli' ? 'version trop ancienne : la commande wp vizproof est absente' : ''),
-      onSelect: () => openVizConnect([s]),
-    },
-    {
-      label: 'Dissocier VizProof', ic: 'x', attention: true,
-      disabled: rest || vs !== 'connecte',
-      raison: rest ? R.rest : 'site non relié à VizProof',
-      onSelect: () => vizDisconnect(porteurAction(), s),
-    },
-    {
-      label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
-      disabled: rest, raison: rest ? "site sans SSH : l'agent y est déjà, c'est lui qui pousse l'inventaire" : '',
-      onSelect: () => dashAgent(s, true),
-    },
-    {
-      label: 'Dissocier l’agent Dash', ic: 'x', attention: true,
-      disabled: rest, raison: rest ? "site sans SSH : dissocier l'agent couperait tout inventaire" : '',
-      onSelect: () => dashAgent(s, false),
-    },
-    {
-      label: 'Autoriser WordPress (mot de passe d’application)', ic: 'link', attention: true,
-      disabled: !rest, raison: rest ? '' : "réservé aux sites gérés sans SSH : en SSH le dashboard agit déjà directement",
-      onSelect: () => cliquerWpCred('[data-wpauth]', 'Autoriser'),
-    },
-    {
-      label: 'Révoquer l’autorisation WordPress', ic: 'trash-2', attention: true,
-      disabled: !rest, raison: rest ? '' : "réservé aux sites gérés sans SSH",
-      onSelect: () => cliquerWpCred('[data-wprevoke]', 'Révoquer'),
-    },
-  ];
-
   return menuActions({
     label: 'Actions', ic: 'list', groups: [
       { titre: 'Mettre à jour', items: maj },
       { titre: 'Vérifier', items: verif },
       { titre: 'Sauvegarder', items: sauv },
-      { titre: 'Connecter', items: conn },
+      { titre: 'Connecter', items: groupeConnecter(s) },
     ],
   });
+}
+
+/* ---- groupe « Connecter » : l'état d'abord, puis ce qui a du sens ----------
+
+   Il listait TOUT — installer, connecter, dissocier, agent, WordPress — et
+   grisait ce qui ne s'appliquait pas. Devant « Installer VizProof » barré
+   d'un « extension déjà présente », on ne savait toujours pas si le site
+   était RELIÉ. Trois lignes d'état le disent maintenant en toutes lettres, et
+   la liste ne garde que les entrées qui ont un sens dans cet état-là.
+
+   Ce qui reste grisé plutôt que masqué : les cas REST, où l'action existe mais
+   demande un accès SSH. La raison reste en infobulle — la masquer laisserait
+   croire que le dashboard ne sait pas le faire. */
+function groupeConnecter(s) {
+  const rest = s.via === 'rest';
+  const R = raisons(s);
+  const t = vizEtatTexte(s), vs = t.etat;
+  const items = [];
+
+  /* --- VizProof --- */
+  items.push({ etat: true, ic: 'scan-eye', label: 'VizProof :', detail: t.long });
+  if (vs === 'absent' || vs === 'nodata') {
+    items.push({
+      action: 'vizproof_install',
+      label: 'Installer VizProof', ic: 'plus', attention: true,
+      disabled: rest,
+      raison: rest ? 'site sans SSH : passez par « Autoriser WordPress » puis le bloc VizProof' : '',
+      onSelect: () => vizInstall(porteurAction(), s.srv, s.domain),
+    });
+  } else if (vs === 'nonconnecte') {
+    items.push({
+      label: 'Connecter VizProof…', ic: 'link',
+      disabled: rest, raison: rest ? R.rest : '',
+      onSelect: () => openVizConnect([s]),
+    });
+  } else if (vs === 'connecte') {
+    items.push({
+      label: 'Pages surveillées…', ic: 'scan-eye',
+      disabled: rest, raison: rest ? 'site sans SSH : à choisir dans wp-admin' : '',
+      onSelect: () => openVizPages(s),
+    }, {
+      label: 'Reconnecter VizProof…', ic: 'link',
+      disabled: rest, raison: rest ? R.rest : '',
+      onSelect: () => openVizConnect([s]),
+    }, {
+      label: 'Dissocier VizProof', ic: 'x', attention: true,
+      disabled: rest, raison: rest ? R.rest : '',
+      onSelect: () => vizDisconnect(porteurAction(), s),
+    });
+  }
+  // 'inactif' et 'nocli' : rien à proposer d'ici, la ligne d'état dit quoi faire
+  // (activer l'extension, ou la mettre à jour depuis l'onglet Extensions).
+
+  /* --- agent Dash ---
+     La collecte ne relève pas sa présence : sur un site en SSH, l'état est
+     honnêtement INCONNU, et les deux actions restent offertes. Sur un site
+     REST, en revanche, l'agent est là par construction — c'est lui qui pousse
+     l'inventaire. */
+  items.push({
+    etat: true, ic: 'link', label: 'Agent Dash :',
+    detail: rest
+      ? 'relié — c’est lui qui pousse l’inventaire de ce site'
+      : 'état inconnu — la collecte ne relève pas sa présence',
+  });
+  items.push({
+    label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
+    disabled: rest, raison: rest ? "site sans SSH : l'agent y est déjà, c'est lui qui pousse l'inventaire" : '',
+    onSelect: () => dashAgent(s, true),
+  }, {
+    label: 'Dissocier l’agent Dash', ic: 'x', attention: true,
+    disabled: rest, raison: rest ? "site sans SSH : dissocier l'agent couperait tout inventaire" : '',
+    onSelect: () => dashAgent(s, false),
+  });
+
+  /* --- autorisation WordPress ---
+     Elle n'existe que pour les sites sans SSH : en SSH le dashboard agit déjà
+     directement. Autoriser OU Révoquer, jamais les deux. */
+  const cred = rest ? WPETAT.get(s.domain) : undefined;
+  // `su` : true autorisé · false non autorisé · null on ne sait pas encore.
+  const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;
+  items.push({
+    etat: true, ic: 'link', label: 'WordPress :',
+    detail: !rest ? 'sans objet — ce site est piloté en SSH'
+      : cred === WPENCOURS ? 'état en cours de lecture…'
+        : su === null ? 'état indisponible'
+          : su ? 'autorisé' + (cred.user ? ' (' + cred.user + ')' : '') : 'non autorisé',
+  });
+  if (rest && su !== true) {
+    items.push({
+      label: 'Autoriser WordPress (mot de passe d’application)', ic: 'link', attention: true,
+      onSelect: () => cliquerWpCred('[data-wpauth]', 'Autoriser'),
+    });
+  }
+  if (rest && su !== false) {
+    items.push({
+      label: 'Révoquer l’autorisation WordPress', ic: 'trash-2', attention: true,
+      disabled: su !== true, raison: su === true ? '' : 'aucune autorisation enregistrée pour ce site',
+      onSelect: () => cliquerWpCred('[data-wprevoke]', 'Révoquer'),
+    });
+  }
+  return items;
+}
+
+/* État des identifiants WordPress, lu une fois par site REST. Le menu est
+   construit d'un bloc : sans ce cache il ne pourrait pas savoir s'il faut
+   proposer « Autoriser » ou « Révoquer », et les montrerait tous les deux. */
+const WPETAT = new Map();
+const WPENCOURS = 'encours';
+
+async function chargerWpEtat(s) {
+  if (!s || s.via !== 'rest' || WPETAT.has(s.domain)) return;
+  WPETAT.set(s.domain, WPENCOURS);            // en vol : pas de second appel
+  const j = await wpCredentials(s.domain);
+  WPETAT.set(s.domain, j || null);
+  if (CUR && CUR.domain === s.domain) majBarreActions();
+}
+
+/** Redessine la seule barre d'actions de l'en-tête (pas toute la page). */
+function majBarreActions() {
+  const box = document.querySelector('#page-site .siteact');
+  if (box && CUR) mount(box, actionPrincipale(CUR), menuDuSite(CUR));
 }
 
 /* Les boutons d'autorisation WordPress sont posés par gestion.js dans le bloc
@@ -1092,6 +1174,9 @@ function chargerTout() {
   loadRollbackPoints(s.srv, s.domain);
   loadSafeStatus(s.domain);
   loadVizUpStatus(s.srv, s.domain);
+  // Site sans SSH : l'état de l'autorisation WordPress alimente la ligne
+  // « WordPress : … » du menu d'actions, et décide d'Autoriser OU Révoquer.
+  chargerWpEtat(s).catch(() => {});
   chargerVulns(kName(s) || s.domain);
   chargerIncidents();
   ensureSettings().then(() => { if (CUR === s) { const b = document.getElementById('site-band'); if (b) b.replaceWith(bandeau(s)); renderVulnsSite(); } }).catch(() => {});

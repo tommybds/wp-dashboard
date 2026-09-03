@@ -65,11 +65,27 @@ function itemEl(it, fermer) {
   return el;
 }
 
+/* Ligne d'ÉTAT en tête d'un groupe : elle ne se clique pas, elle dit où l'on
+   en est. « Installer VizProof (grisé, extension déjà présente) » demandait de
+   déduire l'état de la liste des actions indisponibles ; on le dit une fois,
+   en toutes lettres, et la liste ne garde plus que ce qui a un sens.
+
+   `role="presentation"` comme les titres de groupe : dans un `role="menu"`,
+   tout ce qui n'est pas `menuitem` est ignoré du parcours au clavier, et c'est
+   exactement ce qu'on veut d'une ligne qu'on ne peut pas activer. */
+function etatEl(it) {
+  return h('div', { class: 'menu-etat', role: 'presentation', title: it.title || null },
+    it.ic ? iconEl(it.ic, { size: 14 }) : null,
+    h('span', { class: 'menu-l' },
+      h('b', { text: it.label }),
+      it.detail ? [' ', h('span', { class: 'menu-d', text: it.detail })] : null));
+}
+
 /**
  * menuActions({label, ic, kind, groups, align}) → élément `.menu`
  *   groups : [{titre, items:[{label, ic, onSelect, disabled, raison,
- *                             attention, danger, title}]}]
- * `attention` marque une action qui MODIFIE le site.
+ *                             attention, danger, title} | {etat:true, label, detail, ic}]}]
+ * `attention` marque une action qui MODIFIE le site ; `etat` une ligne d'état.
  */
 export function menuActions({ label = 'Actions', ic = '', kind = '', groups = [], align = 'end', id = null } = {}) {
   brancher();
@@ -95,7 +111,7 @@ export function menuActions({ label = 'Actions', ic = '', kind = '', groups = []
     const out = [];
     groups.filter(g => g && (g.items || []).length).forEach((g, i) => {
       if (g.titre) out.push(h('div', { class: 'menu-g' + (i ? ' sep' : ''), role: 'presentation', text: g.titre }));
-      g.items.forEach(it => out.push(itemEl(it, quitter)));
+      g.items.forEach(it => out.push(it.etat ? etatEl(it) : itemEl(it, quitter)));
     });
     if (!out.length) {
       out.push(h('div', { class: 'menu-vide', role: 'presentation', text: 'aucune action disponible' }));

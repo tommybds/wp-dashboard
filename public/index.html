@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1250">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-1250">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-1250">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1250">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1454">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1454">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1454">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1454">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,36 +21,36 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-1250",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-1250",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1250",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-1250",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1250",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1250",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-1250",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1250",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1250",
-    "./components/button.js": "./components/button.js?v=2026-09-03-1250",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-1250",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1250",
-    "./components/job.js": "./components/job.js?v=2026-09-03-1250",
-    "./components/log.js": "./components/log.js?v=2026-09-03-1250",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1250",
-    "./components/search.js": "./components/search.js?v=2026-09-03-1250",
-    "./components/sheet.js": "./components/sheet.js?v=2026-09-03-1250",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-1250",
-    "./components/table.js": "./components/table.js?v=2026-09-03-1250",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-1250",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-1250",
-    "./components/viz.js": "./components/viz.js?v=2026-09-03-1250",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1250",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1250",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1250",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1250",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1250",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1250",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1250",
-    "./screens/site.js": "./screens/site.js?v=2026-09-03-1250"
+    "./version.js": "./version.js?v=2026-09-03-1454",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1454",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1454",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1454",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1454",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1454",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1454",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1454",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1454",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1454",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1454",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1454",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1454",
+    "./components/log.js": "./components/log.js?v=2026-09-03-1454",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1454",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1454",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-03-1454",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1454",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1454",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1454",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1454",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1454",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1454",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1454",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1454",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1454",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1454",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1454",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1454",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1454"
   }
 }
 </script>
@@ -238,8 +238,13 @@
   </div>
 </div></div>
 
+<!-- VizProof : DEUX étapes dans une seule modale — relier le site, puis choisir
+     les pages à surveiller. Une seule couche : la connexion débouche sur la
+     sélection des pages sans que rien ne se ferme entre les deux, et le bloc
+     VizProof d'un site déjà relié ouvre directement la seconde étape. -->
 <div class="modal" id="vizmodal"><div class="box medium" role="dialog" aria-modal="true" aria-labelledby="vz-title">
   <h2 class="mt0" id="vz-title">Connecter VizProof</h2>
+  <div id="vz-connect">
   <p class="hint" id="vz-intro"></p>
   <div id="vz-rows"></div>
   <p class="hint hint-loose" id="vz-idhint" hidden>Identifiant <b>facultatif</b> — vide : le site VizProof est retrouvé ou créé d'après l'URL.</p>
@@ -278,9 +283,30 @@
     </div>
   </div>
   <div id="vz-out" class="small"></div>
+  </div>
+  <div id="vz-pages" hidden>
+    <p class="hint" id="vz-pg-intro"></p>
+    <div class="filters filters-baseline">
+      <label class="fld small">à surveiller
+        <select class="inp w-sm" id="vz-pg-scope">
+          <option value="selected_pages">les pages sélectionnées</option>
+          <option value="site">tout le site</option>
+        </select></label>
+      <input class="inp w-md" type="search" id="vz-pg-q" placeholder="Filtrer les pages…"
+             aria-label="Filtrer les pages">
+      <button class="btn sm" type="button" id="vz-pg-all">Tout</button>
+      <button class="btn sm" type="button" id="vz-pg-none">Aucune</button>
+      <span class="small" id="vz-pg-count"></span>
+    </div>
+    <div id="vz-pg-list" class="vzpages"></div>
+    <p class="hint hint-loose" id="vz-pg-note"></p>
+    <div id="vz-pg-msg" class="small" role="status" aria-live="polite"></div>
+  </div>
   <div class="actions jend mt4">
     <button class="btn" type="button" id="vz-cancel">Annuler</button>
     <button class="btn" type="button" id="vz-preview" hidden>Aperçu</button>
+    <button class="btn" type="button" id="vz-pg-base" hidden>Capturer une baseline</button>
+    <button class="btn primary" type="button" id="vz-pg-save" hidden>Enregistrer</button>
     <button class="btn primary" type="button" id="vz-go">Connecter</button>
   </div>
 </div></div>
@@ -327,6 +353,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-1250"></script>
+<script type="module" src="app.js?v=2026-09-03-1454"></script>
 </body>
 </html>

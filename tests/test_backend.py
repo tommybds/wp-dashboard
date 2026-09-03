@@ -2548,3 +2548,321 @@ class TestVizUpdateJob(BaseTmp):
         self.maj()
         self.assertLessEqual(len(A.VIZUP), A.VIZUP_MAX)
         self.assertIn("a.fr", A.VIZUP)          # le job en cours n'est jamais purgé
+
+
+# --------------------------------------------------------------------------- #
+#  VizProof : pages surveillées (lecture, écriture, repli 1.3.7, validation)    #
+#                                                                             #
+#  `run_remote_script` est bouché : on inspecte le script envoyé, et on rejoue  #
+#  la sortie que chaque version du plugin produirait. Aucun ssh, aucun réseau.  #
+# --------------------------------------------------------------------------- #
+PAGES_138 = json.dumps({
+    "scope": "selected_pages", "selected": [12], "critical": [12],
+    "pages": [
+        {"id": 12, "title": "Accueil", "url": "https://a.fr/", "type": "front",
+         "selected": True, "critical": True},
+        {"id": 18, "title": "Contact", "url": "https://a.fr/contact/", "type": "page",
+         "selected": False, "critical": False},
+    ],
+    "message": "",
+})
+PAGES_137_ERR = "Error: 'pages' is not a registered subcommand of 'vizproof'."
+
+
+class VizPagesBase(BaseTmp):
+    def setUp(self):
+        super().setUp()
+        self.envoyes = []
+        self.reponses = []          # [(motif attendu dans le script, (rc, sortie))]
+        self.srv = {"name": "s1", "host": "203.0.113.1", "port": 22, "patterns": ["/x/*"]}
+        self.site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
+                     "siteurl": "https://a.fr"}
+        for cible, valeur in (("run_remote_script", self._ssh),
+                              ("find_site", lambda s, d: (self.srv, self.site)),
+                              ("rest_target", lambda s, d: None)):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _ssh(self, srv, script, timeout=300, max_out=6000):
+        self.envoyes.append(script)
+        if self.reponses:
+            return self.reponses.pop(0)
+        return 0, ""
+
+    def log(self):
+        if not os.path.exists(A.LOG):
+            return []
+        with open(A.LOG) as fh:
+            return [json.loads(l) for l in fh]
+
+
+class TestVizPagesLecture(VizPagesBase):
+
+    def test_lecture_138_normalisee(self):
+        self.reponses = [(0, PAGES_138)]
+        rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(rc, 0)
+        self.assertEqual(j["source"], "plugin")
+        self.assertEqual(j["scope"], "selected_pages")
+        self.assertEqual(j["selected"], [12])
+        self.assertEqual(j["limit"], 20)
+        self.assertEqual([p["id"] for p in j["pages"]], [12, 18])
+        self.assertEqual(j["pages"][0]["type"], "front")
+        self.assertIn("wp vizproof pages", "".join(self.envoyes).replace("run ", "wp "))
+
+    def test_commande_de_lecture(self):
+        self.reponses = [(0, PAGES_138)]
+        A.viz_pages_read("s1", "a.fr")
+        self.assertIn("run vizproof pages --format=json", self.envoyes[0])
+        self.assertNotIn(" set ", self.envoyes[0])
+
+    def test_type_inconnu_ramene_a_page(self):
+        self.reponses = [(0, json.dumps({"scope": "site", "selected": [], "critical": [],
+                                         "pages": [{"id": 5, "type": "archive"}]}))]
+        _rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(j["pages"][0]["type"], "page")
+
+    def test_sortie_illisible(self):
+        self.reponses = [(0, "PHP Notice: quelque chose")]
+        rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(rc, 95)
+        self.assertFalse(j["ok"])
+
+    def test_site_sans_ssh_rend_97(self):
+        with mock.patch.object(A, "find_site", lambda s, d: (None, None)), \
+             mock.patch.object(A, "rest_target", lambda s, d: {"domain": "a.fr"}):
+            rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(rc, A.REST_UNSUPPORTED_RC)
+        self.assertEqual(rc, 97)
+        self.assertFalse(j["ok"])
+        self.assertEqual(self.envoyes, [])
+
+    def test_site_inconnu(self):
+        with mock.patch.object(A, "find_site", lambda s, d: (None, None)):
+            rc, _j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(rc, 92)
+
+
+class TestVizPagesRepli137(VizPagesBase):
+    """Le plugin 1.3.7 n'a pas `wp vizproof pages` : on lit et on écrit les options."""
+
+    POSTS = json.dumps([
+        {"ID": 12, "post_title": "Accueil", "url": "https://a.fr/"},
+        {"ID": 18, "post_title": "Contact", "url": "https://a.fr/contact/"},
+    ])
+
+    def sortie_repli(self, front="12", opt=None):
+        o = json.dumps(opt if opt is not None else
+                       {"selected_wordpress_page_ids": [18], "scan_scope": "selected_pages"})
+        return "\n".join([self.POSTS, A.VIZ_PAGES_SEP_OPT, o, A.VIZ_PAGES_SEP_FRONT, front])
+
+    def test_bascule_sur_le_repli(self):
+        self.reponses = [(1, PAGES_137_ERR), (0, self.sortie_repli())]
+        rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(rc, 0)
+        self.assertEqual(j["source"], "repli-1.3.7")
+        self.assertEqual(j["selected"], [18])
+        self.assertEqual(j["scope"], "selected_pages")
+        # la page d'accueil statique est repérée par page_on_front
+        self.assertEqual(j["pages"][0]["id"], 12)
+        self.assertEqual(j["pages"][0]["type"], "front")
+        self.assertTrue(j["pages"][1]["selected"])
+        self.assertIn("1.3.7", j["message"])
+
+    def test_le_repli_utilise_post_list_et_les_options(self):
+        self.reponses = [(1, PAGES_137_ERR), (0, self.sortie_repli())]
+        A.viz_pages_read("s1", "a.fr")
+        script = self.envoyes[1]
+        self.assertIn("post list --post_type=page --post_status=publish", script)
+        self.assertIn("option get vizproof_timeline_options --format=json", script)
+        self.assertIn("option get page_on_front", script)
+
+    def test_accueil_flux_d_articles_en_tete_et_sans_identifiant(self):
+        self.reponses = [(1, PAGES_137_ERR), (0, self.sortie_repli(front="0"))]
+        _rc, j = A.viz_pages_read("s1", "a.fr")
+        self.assertEqual(j["pages"][0]["id"], 0)
+        self.assertEqual(j["pages"][0]["type"], "home")
+
+    def test_ecriture_ecrit_les_ids_wordpress_et_pas_les_ids_vizproof(self):
+        self.reponses = [(1, PAGES_137_ERR), (0, "Success"), (0, self.sortie_repli())]
+        rc, j = A.viz_pages_write("s1", "a.fr", [12, 18], "selected_pages")
+        self.assertEqual(rc, 0)
+        script = self.envoyes[1]
+        self.assertIn("option patch update vizproof_timeline_options "
+                      "selected_wordpress_page_ids '[12, 18]' --format=json", script)
+        # `selected_page_ids` porte des identifiants de pages VIZPROOF : y écrire
+        # des identifiants WordPress casserait les captures.
+        self.assertNotIn("selected_page_ids '", script)
+        self.assertIn("option patch update vizproof_timeline_options scan_scope "
+                      "'selected_pages'", script)
+        self.assertEqual(j["source"], "repli-1.3.7")
+
+    def test_le_repli_ne_touche_a_rien_d_autre_dans_l_option(self):
+        self.reponses = [(1, PAGES_137_ERR), (0, "Success"), (0, self.sortie_repli())]
+        A.viz_pages_write("s1", "a.fr", [12], "site")
+        script = self.envoyes[1]
+        self.assertNotIn("option update vizproof_timeline_options", script)
+        self.assertEqual(script.count("option patch update"), 2)
+
+
+class TestVizPagesEcriture(VizPagesBase):
+
+    def test_commande_138(self):
+        self.reponses = [(0, PAGES_138)]
+        rc, j = A.viz_pages_write("s1", "a.fr", [12, 18], "selected_pages")
+        self.assertEqual(rc, 0)
+        self.assertIn("run vizproof pages set --ids='12,18' --scope='selected_pages' "
+                      "--format=json", self.envoyes[0])
+        self.assertEqual(j["selected"], [12])          # la réponse du plugin fait foi
+
+    def test_portee_site_sans_selection_n_envoie_pas_ids(self):
+        self.reponses = [(0, PAGES_138)]
+        A.viz_pages_write("s1", "a.fr", [], "site")
+        self.assertNotIn("--ids", self.envoyes[0])
+        self.assertIn("--scope='site'", self.envoyes[0])
+
+    def test_ecriture_journalisee(self):
+        self.reponses = [(0, PAGES_138)]
+        A.viz_pages_write("s1", "a.fr", [12], "selected_pages")
+        e = [x for x in self.log() if x["action"] == "viz_pages"]
+        self.assertEqual(len(e), 1)
+        self.assertEqual(e[0]["rc"], 0)
+        self.assertEqual(e[0]["domain"], "a.fr")
+        self.assertIn("selected_pages", e[0]["arg"])
+
+    def test_echec_journalise_aussi(self):
+        self.reponses = [(3, "Error: page 999 introuvable")]
+        rc, j = A.viz_pages_write("s1", "a.fr", [999], "selected_pages")
+        self.assertEqual(rc, 3)
+        self.assertFalse(j["ok"])
+        self.assertEqual([x["rc"] for x in self.log() if x["action"] == "viz_pages"], [3])
+
+    def test_site_sans_ssh_journalise_97(self):
+        with mock.patch.object(A, "find_site", lambda s, d: (None, None)), \
+             mock.patch.object(A, "rest_target", lambda s, d: {"domain": "a.fr"}):
+            rc, _j = A.viz_pages_write("s1", "a.fr", [12], "site")
+        self.assertEqual(rc, 97)
+        self.assertEqual([x["rc"] for x in self.log() if x["action"] == "viz_pages"], [97])
+
+
+class TestVizPagesRoute(BaseTmp):
+    """Validation d'entrée des deux routes, sans toucher au ssh."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+        self.ecrits = []
+        p = mock.patch.object(A, "viz_pages_write", self._write)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _write(self, server, domain, ids, scope, source="ui"):
+        self.ecrits.append((server, domain, list(ids), scope))
+        return 0, {"ok": True, "source": "plugin", "limit": 20, "scope": scope,
+                   "selected": list(ids), "critical": [], "pages": [], "message": ""}
+
+    def post(self, corps):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("POST", "/api/actions/viz_pages", body=json.dumps(corps).encode(),
+                      headers={"Cookie": self.cookie, "X-Dash": "1",
+                               "Content-Type": "application/json"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def get(self, chemin):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("GET", chemin, headers={"Cookie": self.cookie})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    BON = {"server": "s1", "domain": "a.fr", "ids": [12], "scope": "selected_pages"}
+
+    def test_nominal(self):
+        st, j = self.post(self.BON)
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])
+        self.assertEqual(j["rc"], 0)
+        self.assertEqual(self.ecrits, [("s1", "a.fr", [12], "selected_pages")])
+
+    def test_cible_invalide(self):
+        for mauvais in ({"server": "../x"}, {"domain": "a b"}):
+            st, _j = self.post(dict(self.BON, **mauvais))
+            self.assertEqual(st, 400, mauvais)
+        self.assertEqual(self.ecrits, [])
+
+    def test_ids_doivent_etre_entiers(self):
+        for mauvais in ("12", {"a": 1}, None):
+            st, _j = self.post(dict(self.BON, ids=mauvais))
+            self.assertEqual(st, 400, mauvais)
+        st, _j = self.post(dict(self.BON, ids=[1.5]))
+        self.assertEqual(st, 400)
+        st, _j = self.post(dict(self.BON, ids=[-3]))
+        self.assertEqual(st, 400)
+        self.assertEqual(self.ecrits, [])
+
+    def test_portee_inconnue(self):
+        for mauvais in ("", "tout", "SITE"):
+            st, _j = self.post(dict(self.BON, scope=mauvais))
+            self.assertEqual(st, 400, mauvais)
+
+    def test_limite_de_vingt_pages(self):
+        st, j = self.post(dict(self.BON, ids=list(range(1, 22))))
+        self.assertEqual(st, 400)
+        self.assertIn("20", j["error"])
+        st, _j = self.post(dict(self.BON, ids=list(range(1, 21))))
+        self.assertEqual(st, 200)
+
+    def test_pages_choisies_sans_page(self):
+        st, j = self.post(dict(self.BON, ids=[]))
+        self.assertEqual(st, 400)
+        self.assertIn("au moins une page", j["error"])
+
+    def test_accueil_flux_d_articles_seulement_en_portee_site(self):
+        st, j = self.post(dict(self.BON, ids=[0, 12]))
+        self.assertEqual(st, 400)
+        self.assertIn("tout le site", j["error"])
+        # en portée « site », l'identifiant 0 est simplement retiré de l'envoi
+        st, _j = self.post(dict(self.BON, ids=[0, 12], scope="site"))
+        self.assertEqual(st, 200)
+        self.assertEqual(self.ecrits[-1][2], [12])
+
+    def test_doublons_retires(self):
+        st, _j = self.post(dict(self.BON, ids=[12, 12, 18]))
+        self.assertEqual(st, 200)
+        self.assertEqual(self.ecrits[-1][2], [12, 18])
+
+    # ---- lecture ----
+    def test_get_valide_sa_cible(self):
+        st, _j = self.get("/api/actions/viz_pages?server=s1&domain=" + urllib.parse.quote("a b"))
+        self.assertEqual(st, 400)
+
+    def test_get_site_sans_ssh_repond_200_rc_97(self):
+        with mock.patch.object(A, "viz_pages_read",
+                               lambda s, d: (97, {"ok": False, "error": "sans SSH"})):
+            st, j = self.get("/api/actions/viz_pages?server=s1&domain=a.fr")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["rc"], 97)
+        self.assertFalse(j["ok"])
+
+    def test_get_echec_dur_repond_500(self):
+        with mock.patch.object(A, "viz_pages_read",
+                               lambda s, d: (7, {"ok": False, "error": "ssh mort"})):
+            st, j = self.get("/api/actions/viz_pages?server=s1&domain=a.fr")
+        self.assertEqual(st, 500)
+        self.assertEqual(j["rc"], 7)
+
+    def test_viz_pages_n_est_pas_une_action_wp_cli(self):
+        """Elle ne doit pas être atteignable par /api/actions/run."""
+        self.assertNotIn("viz_pages", A.ACTIONS)

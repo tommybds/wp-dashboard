@@ -6,8 +6,8 @@
    `vizState()` fait foi, la colonne et le bloc en découlent. */
 
 import { api } from '../lib/api.js';
-import { esc as H, h } from '../lib/dom.js';
-import { absTime, relTime, safeUrl, stripPhpNoise } from '../lib/format.js';
+import { esc as H, h, mount } from '../lib/dom.js';
+import { absTime, debounce, relTime, safeUrl, stripPhpNoise } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
 import { kName, loadFleet } from '../lib/state.js';
@@ -82,6 +82,42 @@ export function vizVal(s) {
   return vizRun(s) ? 3 : 2;
 }
 
+/* ---- vocabulaire d'état ----------------------------------------------------
+   UN seul jeu de mots pour les trois endroits qui parlent de VizProof : la
+   colonne du Parc, le bloc de l'onglet Aperçu et le menu d'actions de la page
+   site. Ils disaient la même chose de trois façons — « non connecté », « pas
+   encore reliée », « extension déjà présente » — et on ne savait plus, devant
+   le menu, si le plugin était installé, relié, ou ni l'un ni l'autre.
+
+   `court` tient dans une chip de tableau ; `long` est la ligne d'état d'un
+   menu ou d'une fiche ; `niveau` est l'un des quatre du langage d'état. */
+export function vizEtatTexte(s) {
+  const e = vizState(s), v = 'v' + vizVersion(s);
+  const n = Number((vizInfo(s) || {}).pages) || 0;
+  const pages = n + ' page' + (n > 1 ? 's' : '');
+  if (e === 'nodata') {
+    return { etat: e, niveau: 'mut', court: 'inconnu',
+      long: 'état inconnu — aucun inventaire d’extensions pour ce site' };
+  }
+  if (e === 'absent') return { etat: e, niveau: 'mut', court: 'absent', long: 'extension absente' };
+  if (e === 'inactif') {
+    return { etat: e, niveau: 'mut', court: v + ' · inactif',
+      long: 'installée en ' + v + ', mais désactivée' };
+  }
+  if (e === 'nocli') {
+    return { etat: e, niveau: 'warn', court: v + ' · à mettre à jour',
+      long: v + ' — trop ancienne pour être pilotée d’ici (wp vizproof absent)' };
+  }
+  if (e === 'nonconnecte') {
+    return { etat: e, niveau: 'warn', court: v + ' · non connecté',
+      long: 'installée en ' + v + ', pas encore reliée' };
+  }
+  const r = vizRun(s);
+  return { etat: e, niveau: vizAnom(s) ? 'warn' : 'ok', court: v + ' · ' + pages,
+    long: 'reliée · ' + pages + ' surveillée' + (n > 1 ? 's' : '') + ' · '
+      + (r && r.at ? 'dernier scan ' + relTime(r.at) : 'aucun scan enregistré') };
+}
+
 /* Un lien ouvert dans un onglet ne doit pas aussi ouvrir la page du site :
    la ligne du tableau est cliquable, le lien capte donc son propre clic. */
 function lienEl(url, texte, cls) {
@@ -111,25 +147,20 @@ function vizRunBadgeEl(s) {
 
 /* ---- cellule de la colonne VizProof du tableau --------------------------- */
 export function vizCellEl(s) {
-  const e = vizState(s), ver = vizVersion(s);
+  const t = vizEtatTexte(s), e = t.etat;
   if (e === 'nodata') return document.createTextNode('—');
   if (e === 'absent') {
-    if (s.via === 'rest') return h('span', { class: 'pill mut', title: 'site sans SSH : installation depuis la page du site', text: 'absent' });
+    if (s.via === 'rest') return h('span', { class: 'pill mut', title: 'site sans SSH : installation depuis la page du site', text: t.court });
     const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('plus'), 'installer');
     b.onclick = ev => { ev.stopPropagation(); vizInstall(b, s.srv, s.domain); };
     return b;
   }
-  if (e === 'inactif') return h('span', { class: 'pill mut', title: 'extension présente mais désactivée', text: 'v' + ver + ' · inactif' });
-  if (e === 'nocli') {
-    return h('span', {
-      class: 'pill warn',
-      title: "cette version n'expose pas la commande wp vizproof — mettez l'extension à jour",
-      text: 'v' + ver + ' · à mettre à jour',
-    });
+  if (e === 'inactif' || e === 'nocli') {
+    return h('span', { class: 'pill ' + t.niveau, title: t.long, text: t.court });
   }
   if (e === 'nonconnecte') {
     const frag = h('span', { class: 'vizwrap' },
-      h('span', { class: 'pill warn', title: 'extension installée mais pas encore reliée à VizProof', text: 'v' + ver + ' · non connecté' }));
+      h('span', { class: 'pill ' + t.niveau, title: t.long, text: t.court }));
     if (s.via !== 'rest') {
       const b = h('button', { type: 'button', class: 'btn sm', text: 'Connecter' });
       b.onclick = ev => { ev.stopPropagation(); openVizConnect([s]); };
@@ -139,9 +170,8 @@ export function vizCellEl(s) {
     if (a) frag.append(a);
     return frag;
   }
-  const n = Number((vizInfo(s) || {}).pages) || 0;
   return h('span', { class: 'vizwrap' },
-    h('span', { class: 'pill ok', text: 'v' + ver + ' · ' + n + ' page' + (n > 1 ? 's' : '') }),
+    h('span', { class: 'pill ok', title: t.long, text: t.court }),
     vizRunBadgeEl(s));
 }
 
@@ -162,7 +192,7 @@ function vizLastRunEl(s) {
 }
 
 export function vizBlocEl(s) {
-  const e = vizState(s);
+  const t = vizEtatTexte(s), e = t.etat;
   if (e === 'nodata') return null;
   const ver = vizVersion(s), rest = s.via === 'rest';
   const n = Number((vizInfo(s) || {}).pages) || 0;
@@ -194,13 +224,19 @@ export function vizBlocEl(s) {
       btns.append(b);
     }
   } else {
-    txt.append('Reliée à VizProof · ', h('b', { text: n + ' page' + (n > 1 ? 's' : '') }), ' suivie' + (n > 1 ? 's' : ''));
+    txt.append('Reliée à VizProof · ', h('b', { text: n + ' page' + (n > 1 ? 's' : '') }), ' surveillée' + (n > 1 ? 's' : ''));
     if (sid) txt.append(' · identifiant ', h('code', { text: String(sid) }));
     txt.append('.');
     if (!rest) {
+      /* Le choix des pages est la suite naturelle de la connexion : c'est ici
+         qu'on y revient, sans repasser par la modale de liaison. */
+      const bp = h('button', { type: 'button', class: 'btn sm' }, iconEl('scan-eye'), 'Pages surveillées…');
+      bp.onclick = () => openVizPages(s);
       const b = h('button', { type: 'button', class: 'btn sm', text: 'Dissocier' });
       b.onclick = () => vizDisconnect(b, s);
-      btns.append(b);
+      btns.append(bp, b);
+    } else {
+      txt.append(' Ce site est géré sans SSH : le choix des pages se fait dans wp-admin.');
     }
   }
   const a = lienEl(vizAdminUrl(s), 'ouvrir dans wp-admin');
@@ -326,6 +362,29 @@ const VZ_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
 function closeViz() { document.getElementById('vizmodal').classList.remove('open'); }
 
+/* La modale a DEUX étapes dans une seule couche : relier, puis choisir les
+   pages. Les boutons de pied changent avec l'étape — un seul jeu de boutons
+   pour deux écrans donnait un « Connecter » inerte devant la liste des pages. */
+function montrerEtape(quoi) {
+  const pages = quoi === 'pages';
+  document.getElementById('vz-connect').hidden = pages;
+  document.getElementById('vz-pages').hidden = !pages;
+  document.getElementById('vz-go').hidden = pages;
+  document.getElementById('vz-pg-save').hidden = !pages;
+  document.getElementById('vz-pg-base').hidden = !pages;
+  if (pages) document.getElementById('vz-preview').hidden = true;
+}
+
+/* Les identifiants de site VizProof ne sont montrés d'emblée que là où ils
+   servent : un lot à relier. Sur un site déjà relié, ils passent derrière
+   « Options avancées » — le champ « par URL » en évidence donnait à croire
+   qu'il fallait le remplir avant de pouvoir faire quoi que ce soit. */
+let VZROWSADV = false;
+function majLignesAvancees(ouvert) {
+  document.getElementById('vz-rows').hidden = VZROWSADV && !ouvert;
+  document.getElementById('vz-idhint').hidden = !VZTOK || (VZROWSADV && !ouvert);
+}
+
 function brancherModale() {
   document.getElementById('vz-cancel').onclick = closeViz;
   document.getElementById('vizmodal').onclick = e => { if (e.target.id === 'vizmodal') closeViz(); };
@@ -333,6 +392,7 @@ function brancherModale() {
     const b = document.getElementById('vz-advbox');
     b.hidden = !b.hidden;
     document.getElementById('vz-adv').textContent = b.hidden ? 'Options avancées' : 'Masquer les options';
+    majLignesAvancees(!b.hidden);
   };
   document.getElementById('vz-mode').onchange = e => {
     const tok = e.target.value === 'token';
@@ -367,11 +427,31 @@ export async function openVizConnect(sites) {
   }
   const cfg = await SETTINGS();
   VZTOK = !!cfg.vizproof_token_set;
-  document.getElementById('vz-intro').innerHTML = VZSITES.length > 1
-    ? `<b>${VZSITES.length}</b> site(s) à relier.` + (VZTOK
-      ? ' Le jeton enregistré vaut pour tous ; laissez l’identifiant vide pour que chaque site soit retrouvé ou créé d’après son URL.'
-      : " L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.")
-    : `Relier <b>${H(kName(VZSITES[0]) || VZSITES[0].domain)}</b> à VizProof.`;
+  const seul = VZSITES.length === 1;
+  const relie = seul && vizState(VZSITES[0]) === 'connecte';
+  montrerEtape('connect');
+  /* Le titre nomme le site : ouverte sur un site déjà relié, la modale ne
+     « connecte » plus rien, elle montre l'état et propose de refaire la
+     liaison. « Connecter VizProof » y était un contresens. */
+  document.getElementById('vz-title').textContent = seul
+    ? 'VizProof · ' + (kName(VZSITES[0]) || VZSITES[0].domain)
+    : 'Connecter VizProof';
+  if (relie) {
+    const info = vizInfo(VZSITES[0]) || {};
+    const n = Number(info.pages) || 0;
+    document.getElementById('vz-intro').innerHTML =
+      `Relié à <b>${H(VZSITES[0].blogname || VZSITES[0].domain)}</b> · `
+      + `<b>${n} page${n > 1 ? 's' : ''}</b> surveillée${n > 1 ? 's' : ''}`
+      + (info.site_id ? ` · identifiant <code>${H(info.site_id)}</code>` : '')
+      + '. <b>Reconnecter</b> refait la liaison avec le jeton enregistré — utile après un '
+      + 'changement d’URL, un jeton révoqué, ou un site VizProof recréé. Rien d’autre à saisir.';
+  } else {
+    document.getElementById('vz-intro').innerHTML = VZSITES.length > 1
+      ? `<b>${VZSITES.length}</b> site(s) à relier.` + (VZTOK
+        ? ' Le jeton enregistré vaut pour tous ; laissez l’identifiant vide pour que chaque site soit retrouvé ou créé d’après son URL.'
+        : " L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.")
+      : `Relier <b>${H(kName(VZSITES[0]) || VZSITES[0].domain)}</b> à VizProof.`;
+  }
   document.getElementById('vz-rows').innerHTML = VZSITES.map((s, i) => {
     // Avec un jeton enregistré, le champ reste VIDE : « par URL » est le défaut.
     const cur = VZTOK ? '' : ((vizInfo(s) || {}).site_id || vizSlug(s.domain));
@@ -382,7 +462,12 @@ export async function openVizConnect(sites) {
              placeholder="${VZTOK ? 'par URL' : ''}">
       <span class="small" data-vzres="${i}"></span></div>`;
   }).join('');
-  document.getElementById('vz-idhint').hidden = !VZTOK;
+  // Site déjà relié : les identifiants passent derrière « Options avancées ».
+  VZROWSADV = relie;
+  const adv = document.getElementById('vz-advbox');
+  adv.hidden = true;
+  document.getElementById('vz-adv').textContent = 'Options avancées';
+  majLignesAvancees(false);
   document.getElementById('vz-tokstored').hidden = !VZTOK;
   document.getElementById('vz-toktail').textContent = '…' + (cfg.vizproof_token_tail || '');
   document.getElementById('vz-othertok').hidden = false;
@@ -394,19 +479,22 @@ export async function openVizConnect(sites) {
   document.getElementById('vz-code').value = '';
   const go = document.getElementById('vz-go');
   go.disabled = false;
-  go.textContent = (VZTOK && VZSITES.length > 1) ? `Connecter ${VZSITES.length} sites` : 'Connecter';
+  go.textContent = relie ? 'Reconnecter'
+    : (VZTOK && VZSITES.length > 1) ? `Connecter ${VZSITES.length} sites` : 'Connecter';
   go.onclick = runVizConnect;
   const ap = document.getElementById('vz-preview');
-  ap.hidden = !VZTOK; ap.disabled = false; ap.textContent = 'Aperçu';
+  ap.hidden = !VZTOK || relie; ap.disabled = false; ap.textContent = 'Aperçu';
   ap.onclick = () => runVizPreview();
   const an = document.getElementById('vz-cancel');
-  an.textContent = 'Annuler'; an.className = 'btn';
+  an.textContent = relie ? 'Fermer' : 'Annuler'; an.className = 'btn';
   document.getElementById('vizmodal').classList.add('open');
-  const f = document.querySelector('#vz-rows input');
+  const f = relie ? go : document.querySelector('#vz-rows input');
   if (f) f.focus();
-  // Aperçu automatique sur un site unique : on affiche AVANT de connecter quel
-  // site VizProof recevra ce WordPress.
-  if (VZTOK && VZSITES.length === 1) runVizPreview().catch(() => {});
+  /* Aperçu automatique sur un site unique PAS ENCORE RELIÉ : on montre avant de
+     connecter quel site VizProof recevra ce WordPress. Sur un site relié il n'y
+     a rien à résoudre — l'aperçu ne faisait qu'un appel réseau pour rien et
+     brouillait la seule question posée : reconnecter, ou fermer. */
+  if (VZTOK && seul && !relie) runVizPreview().catch(() => {});
 }
 
 /* Aperçu : `viz_resolve` ne crée rien. Il dit quel site existant sera relié. */
@@ -508,11 +596,22 @@ async function runVizConnect() {
     ok: nok === VZSITES.length, warn: !!nok && nok < VZSITES.length,
     message: nok + '/' + VZSITES.length + ' connecté' + (nok > 1 ? 's' : ''),
   });
-  out.innerHTML = `<div class="mt2"><span class="pill ${nok === VZSITES.length ? 'ok' : nok ? 'warn' : 'err'}">${nok}/${VZSITES.length} connecté(s)</span></div>` + out.innerHTML;
+  /* « 1/1 connecté(s) » devant un seul site est un compte rendu de lot pour un
+     lot qui n'existe pas : sur un site unique, on dit simplement ce qui s'est
+     passé. La pastille de décompte reste au GROUPÉ, où elle informe. */
+  out.innerHTML = (seul
+    ? (nok ? '<div class="mt2"><span class="pill ok">site relié</span></div>'
+      : '<div class="mt2"><span class="pill err">connexion impossible</span></div>')
+    : `<div class="mt2"><span class="pill ${nok === VZSITES.length ? 'ok' : nok ? 'warn' : 'err'}">${nok}/${VZSITES.length} connecté(s)</span></div>`)
+    + out.innerHTML;
   go.textContent = lbl; go.disabled = false;
   const an = document.getElementById('vz-cancel');
   an.textContent = 'Fermer'; an.className = 'btn primary';
   if (nok) loadFleet().then(() => REFRESH()).catch(() => {});
+  // La connexion faite, la question suivante est « quelles pages surveiller ? ».
+  // On y enchaîne dans la même couche plutôt que de renvoyer l'utilisateur
+  // chercher un bouton : c'est exactement là qu'il ne savait plus quoi cliquer.
+  if (seul && nok) { setTimeout(() => openVizPages(VZSITES[0]), 400); }
 }
 
 export async function vizDisconnect(btn, s) {
@@ -534,4 +633,219 @@ export async function vizDisconnect(btn, s) {
   }
   await loadFleet();
   REFRESH();
+}
+
+/* ---- étape « Pages surveillées » -------------------------------------------
+
+   Ce que le plugin scanne : tout le site, ou une liste de pages. Jusqu'ici
+   c'était invisible depuis le dashboard — on reliait un site, et le choix des
+   pages restait dans wp-admin, sans que rien ne le dise.
+
+   Deux routes, un seul contrat :
+     GET  /api/actions/viz_pages?server=&domain=
+     POST /api/actions/viz_pages {server, domain, ids, scope}
+   → {scope, selected, critical, pages:[{id,title,url,type,selected,critical}],
+      limit, source, message}
+
+   `type` vaut `page`, `front` (l'accueil est une page statique) ou `home`
+   (l'accueil est le flux d'articles). Ce dernier n'a pas d'identifiant de page
+   à capturer : il ne se surveille qu'avec la portée « tout le site », et sa
+   case reste donc désactivée.
+
+   `source` dit par quel chemin le serveur a répondu : `plugin` (1.3.8, qui
+   valide) ou `repli-1.3.7` (lecture/écriture directes des options, sans
+   validation). L'interface le REDIT à l'utilisateur : ce n'est pas la même
+   garantie. */
+const PG = { site: null, pages: [], sel: new Set(), scope: 'selected_pages', limit: 20, source: '', enr: false };
+
+function pgEl(id) { return document.getElementById(id); }
+function pgDire(niveau, texte) {
+  mount(pgEl('vz-pg-msg'), h('span', { class: 'pill ' + niveau, text: texte }));
+}
+
+/** Ouvre la modale VizProof directement sur le choix des pages. */
+export async function openVizPages(s) {
+  if (!s) return;
+  PG.site = s;
+  PG.pages = []; PG.sel = new Set(); PG.scope = 'selected_pages';
+  PG.limit = 20; PG.source = ''; PG.enr = false;
+  pgEl('vz-title').textContent = 'Pages surveillées · ' + (kName(s) || s.domain);
+  montrerEtape('pages');
+  pgEl('vz-pg-intro').textContent = 'Chargement des pages publiées du site…';
+  mount(pgEl('vz-pg-list'), h('span', { class: 'muted small', text: 'chargement…' }));
+  mount(pgEl('vz-pg-msg'));
+  pgEl('vz-pg-q').value = '';
+  pgEl('vz-pg-note').textContent = '';
+  const an = pgEl('vz-cancel');
+  an.textContent = 'Fermer'; an.className = 'btn';
+  pgEl('vz-pg-base').hidden = true;              // la baseline vient APRÈS l'enregistrement
+  pgEl('vizmodal').classList.add('open');
+  brancherPages();
+  await chargerPages();
+}
+
+let PGBRANCHE = false;
+function brancherPages() {
+  if (PGBRANCHE) return;
+  PGBRANCHE = true;
+  pgEl('vz-pg-q').oninput = debounce(rendrePages, 150);
+  pgEl('vz-pg-scope').onchange = e => { PG.scope = e.target.value; rendrePages(); };
+  pgEl('vz-pg-all').onclick = () => { pagesVisibles().forEach(p => cocher(p, true)); rendrePages(); };
+  pgEl('vz-pg-none').onclick = () => { pagesVisibles().forEach(p => cocher(p, false)); rendrePages(); };
+  pgEl('vz-pg-save').onclick = enregistrerPages;
+  pgEl('vz-pg-base').onclick = capturerBaseline;
+}
+
+/** L'accueil « flux d'articles » n'a pas de page à capturer : jamais cochable. */
+function cochable(p) { return p.type !== 'home'; }
+function cocher(p, on) {
+  if (!cochable(p)) return;
+  if (on) PG.sel.add(p.id); else PG.sel.delete(p.id);
+}
+
+function pagesVisibles() {
+  const q = String(pgEl('vz-pg-q').value || '').trim().toLowerCase();
+  if (!q) return PG.pages;
+  return PG.pages.filter(p => (p.title + ' ' + p.url).toLowerCase().includes(q));
+}
+
+async function chargerPages() {
+  const s = PG.site;
+  let j;
+  try {
+    j = await api('/api/actions/viz_pages?server=' + encodeURIComponent(s.srv)
+      + '&domain=' + encodeURIComponent(s.domain)) || {};
+  } catch (e) { j = { ok: false, error: String(e) }; }
+  if (!PG.site || PG.site.domain !== s.domain) return;      // modale rouverte ailleurs
+  if (!j.ok) return pagesIndisponibles(j);
+  PG.pages = Array.isArray(j.pages) ? j.pages : [];
+  PG.limit = Number(j.limit) || 20;
+  PG.source = String(j.source || '');
+  PG.scope = j.scope === 'site' ? 'site' : 'selected_pages';
+  PG.sel = new Set((j.selected || []).filter(x => Number.isInteger(x) && x > 0));
+  // Sélection vide sur un site qui vient d'être relié : l'accueil est le
+  // premier témoin utile, et c'est la page qui casse le plus visiblement.
+  if (!PG.sel.size) {
+    const acc = PG.pages.find(p => p.type === 'front');
+    if (acc) PG.sel.add(acc.id);
+  }
+  pgEl('vz-pg-scope').value = PG.scope;
+  pgEl('vz-pg-intro').textContent = 'Choisissez les pages que VizProof photographie à chaque scan. '
+    + 'L’accueil en tête : c’est le témoin le plus parlant quand une mise à jour casse le rendu.';
+  rendrePages();
+}
+
+function pagesIndisponibles(j) {
+  const s = PG.site, rest = Number(j.rc) === 97 || s.via === 'rest';
+  pgEl('vz-pg-intro').textContent = '';
+  pgEl('vz-pg-save').hidden = true;
+  pgEl('vz-pg-base').hidden = true;
+  const lien = vizAdminUrl(s);
+  mount(pgEl('vz-pg-list'),
+    h('p', { class: 'hint hint-tight' },
+      rest
+        ? 'Ce site est géré sans SSH : choisissez les pages à surveiller dans wp-admin.'
+        : 'La liste des pages n’a pas pu être lue depuis ce site.'),
+    rest && lien
+      ? h('p', { class: 'hint hint-tight' },
+        h('a', { href: lien, target: '_blank', rel: 'noopener noreferrer',
+          text: 'Ouvrir VizProof dans wp-admin' }))
+      : h('p', { class: 'hint hint-tight' }, h('code', { text: String(j.error || 'échec').slice(-300) })));
+}
+
+function ligneEl(p) {
+  const ok = cochable(p);
+  const c = h('input', { type: 'checkbox', 'aria-label': 'Surveiller ' + (p.title || p.url || ('page ' + p.id)) });
+  c.checked = ok && PG.sel.has(p.id);
+  c.disabled = !ok;
+  c.onchange = () => { cocher(p, c.checked); majCompte(); };
+  const roles = [];
+  if (p.type === 'front') roles.push('accueil');
+  if (p.type === 'home') roles.push('accueil — flux d’articles');
+  if (p.critical) roles.push('critique');
+  return h('label', { class: 'vzpage' + (ok ? '' : ' off') },
+    c,
+    h('span', { class: 'vzp-b' },
+      h('span', { class: 'vzp-t' }, p.title || '(sans titre)',
+        roles.length ? [' ', h('span', { class: 'pill mut', text: roles.join(' · ') })] : null),
+      h('span', { class: 'vzp-u', text: p.url || ('#' + p.id) })));
+}
+
+function rendrePages() {
+  const liste = pagesVisibles();
+  mount(pgEl('vz-pg-list'), liste.length
+    ? liste.map(ligneEl)
+    : h('span', { class: 'muted small', text: 'aucune page ne correspond' }));
+  const tout = PG.scope === 'site';
+  pgEl('vz-pg-scope').value = PG.scope;
+  pgEl('vz-pg-save').hidden = false;
+  pgEl('vz-pg-save').textContent = 'Enregistrer';
+  pgEl('vz-pg-note').textContent = (tout
+    ? 'Portée « tout le site » : le plugin parcourt le site entier, la sélection ci-dessous est '
+      + 'conservée pour un retour à « pages sélectionnées ». '
+    : '')
+    + 'Le plugin ne scanne pas plus de ' + PG.limit + ' pages : au-delà, les suivantes sont ignorées. '
+    + (PG.source === 'repli-1.3.7'
+      ? 'Extension en 1.3.7 : l’enregistrement écrit directement les options du site, sans validation par l’extension. '
+      : '');
+  majCompte();
+}
+
+function majCompte() {
+  const n = PG.sel.size;
+  const trop = n > PG.limit;
+  mount(pgEl('vz-pg-count'),
+    h('span', { class: 'pill ' + (trop ? 'err' : n ? 'ok' : 'mut') },
+      n + ' / ' + PG.limit + ' page' + (n > 1 ? 's' : '') + ' sélectionnée' + (n > 1 ? 's' : '')));
+}
+
+async function enregistrerPages() {
+  const s = PG.site, b = pgEl('vz-pg-save');
+  const ids = [...PG.sel];
+  if (ids.length > PG.limit) { pgDire('err', PG.limit + ' pages au maximum'); return; }
+  if (PG.scope === 'selected_pages' && !ids.length) {
+    pgDire('err', 'choisissez au moins une page, ou passez à « tout le site »');
+    return;
+  }
+  setBusy(b, 'enregistrement…');
+  mount(pgEl('vz-pg-msg'));
+  let j;
+  try { j = await api('/api/actions/viz_pages', { server: s.srv, domain: s.domain, ids, scope: PG.scope }) || {}; }
+  catch (e) { j = { ok: false, error: String(e) }; }
+  setIdle(b, 'Enregistrer');
+  if (!j.ok) { pgDire('err', String(j.error || 'échec').slice(-200)); return; }
+  PG.enr = true;
+  if (Array.isArray(j.pages) && j.pages.length) PG.pages = j.pages;
+  PG.sel = new Set((j.selected || []).filter(x => Number.isInteger(x) && x > 0));
+  PG.scope = j.scope === 'site' ? 'site' : 'selected_pages';
+  rendrePages();
+  pgDire('ok', 'sélection enregistrée');
+  pgEl('vz-pg-base').hidden = false;
+  pgEl('vz-pg-note').textContent += ' Étape suivante : capturer une baseline — '
+    + 'le témoin « avant » auquel les prochains scans seront comparés. Sans elle, '
+    + 'le premier contrôle n’a rien à quoi se comparer.';
+  /* Le re-scan rafraîchit `pages` dans l'inventaire : sans lui, la colonne du
+     Parc et le bloc de l'Aperçu afficheraient encore l'ancien décompte. */
+  try {
+    await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'rescan', arg: null });
+    await loadFleet();
+    REFRESH();
+  } catch (e) { /* l'enregistrement, lui, a bien eu lieu */ }
+}
+
+async function capturerBaseline() {
+  const s = PG.site, b = pgEl('vz-pg-base');
+  setBusy(b, 'capture…');
+  const nid = NOTIF.start({
+    kind: 'viz', label: 'Baseline VizProof · ' + (kName(s) || s.domain),
+    site: { srv: s.srv, domain: s.domain },
+  });
+  let j;
+  try { j = await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'viz_baseline', arg: null }) || {}; }
+  catch (e) { j = { ok: false, error: String(e) }; }
+  setIdle(b, 'Capturer une baseline');
+  const det = stripPhpNoise(String(j.output || j.error || '')).slice(-200);
+  NOTIF.done(nid, { ok: !!j.ok, message: j.ok ? 'baseline capturée' : det });
+  pgDire(j.ok ? 'ok' : 'err', j.ok ? 'baseline capturée' : (det || 'échec'));
+  if (j.ok) loadFleet().then(() => REFRESH()).catch(() => {});
 }
