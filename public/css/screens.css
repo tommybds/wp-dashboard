@@ -72,8 +72,11 @@
 .page{display:none;padding:var(--s-16) var(--s-24) var(--s-48)}
 .page.active{display:block}
 
-/* Sous-onglets : une section à la fois dans Gestion, Sécurité et Changements.
-   Ils disparaîtront en phase 3 ; en phase 1 ils gardent le contenu à l'identique. */
+/* Les sous-onglets de NAVIGATION ont disparu en phase 4 : les cinq
+   destinations et la page Réglages sont des pages à ancres (`.anchors` dans
+   components.css). `.subtabs` ne sert plus qu'à la PAGE SITE — ses cinq
+   onglets et le filtre de sa chronologie — où ce sont de vrais onglets : un
+   seul volet à la fois sur un même objet, pas un rangement d'écran. */
 .subtabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 var(--s-16)}
 .subtab{padding:4px 11px;border:1px solid var(--line);background:var(--surface);
   color:var(--muted);border-radius:var(--r-pill);cursor:pointer;
@@ -214,7 +217,8 @@
 a.inc-s{color:var(--ink);text-decoration:none}
 a.inc-s:hover{color:var(--accent);text-decoration:underline}
 
-/* ---- pages à sections repérées par une ancre (Sécurité, Changements) -------
+/* ---- pages à sections repérées par une ancre ------------------------------
+   Sécurité, Changements, et depuis la phase 4 Gestion et Réglages.
    Le défilement doit s'arrêter SOUS l'en-tête d'écran et son sommaire, sinon
    le titre de la section visée passe dessous et on croit l'ancre cassée. */
 .secsec{scroll-margin-top:calc(var(--shead-h) + 56px)}

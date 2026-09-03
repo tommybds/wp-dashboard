@@ -6,12 +6,12 @@
      * les changements d'état réels détectés par la collecte
        (`/api/mgmt/changes` — version installée qui bouge, admin ou extension
        ajouté/retiré) ;
-     * les actions lancées depuis le dashboard (`/api/actions/log`).
-
-   Les évènements poussés par les agents (events.jsonl) n'ont PAS de route à
-   l'échelle du parc : `/api/site/timeline` est par site. Le filtre « évènement »
-   existe donc, mais reste vide tant qu'une route parc n'existe pas — c'est dit
-   en clair sous les filtres plutôt que passé sous silence.
+     * les actions lancées depuis le dashboard (`/api/actions/log`) ;
+     * depuis la phase 4, les ÉVÈNEMENTS poussés par les agents
+       (`/api/mgmt/events` — connexion, nouvel administrateur, extension
+       activée, mise à jour faite depuis wp-admin). Ils arrivent en temps réel,
+       sans attendre la collecte : c'est souvent la ligne la plus ancienne d'une
+       compromission.
 
    La tendance du parc (les quatre courbes) ferme la page : elle répond à la
    même question sur un autre pas de temps.
@@ -21,7 +21,7 @@
 
 import { api } from '../lib/api.js';
 import { h, mount } from '../lib/dom.js';
-import { relTime, absTime, debounce, stripPhpNoise, tsMs } from '../lib/format.js';
+import { relTime, absTime, debounce, stripPhpNoise, tsMs, detailEvenement, evenementAlerte } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { cacheFrais, cacheVider } from '../lib/state.js';
 import { chipEl } from '../components/chip.js';
@@ -31,12 +31,14 @@ import { actLib } from './site.js';
 let MONTE = false;
 let ENTREES = [];        // chronologie fusionnée, du plus récent au plus ancien
 let RESUME = null;       // résumé 24 h renvoyé par /api/mgmt/changes
-let CHGERR = '', LOGERR = '';
+let CHGERR = '', LOGERR = '', EVTERR = '';
 
 const TYPES = {
   change: { lbl: 'changement', ic: 'refresh-cw' },
   action: { lbl: 'action', ic: 'diamond' },
-  event: { lbl: 'évènement', ic: 'activity' },
+  // L'éclair : ce qui arrive tout seul, poussé par le site, sans qu'on ait rien
+  // demandé — c'est ce qui distingue un évènement d'une action.
+  event: { lbl: 'évènement', ic: 'zap' },
 };
 
 /* ============================================================================
@@ -75,9 +77,10 @@ function sectionChrono() {
       h('h2', { text: 'Chronologie' }),
       h('span', { class: 'small', id: 'chg-sum' })),
     h('p', { class: 'hint' },
-      'Ce que la collecte a détecté (version installée qui bouge, ',
+      'Trois sources dans le même fil : ce que la collecte a détecté (version installée qui bouge, ',
       h('span', { class: 'new-admin', text: 'admin ou extension ajouté' }),
-      ' — le signal n°1 d’une compromission) et ce que le dashboard a lancé, dans le même fil.'),
+      ' — le signal n°1 d’une compromission), ce que le dashboard a lancé, et les ',
+      h('b', { text: 'évènements' }), ' que les sites équipés de l’agent poussent en temps réel.'),
     h('div', { class: 'filters' },
       q, site, type,
       h('label', { class: 'small' }, warn, ' à surveiller seulement'),
@@ -122,6 +125,21 @@ function entreeAction(e) {
     detail: sortie,
     meta: [e.source || '', e.duration_s !== undefined && e.duration_s !== null ? e.duration_s + ' s' : '']
       .filter(Boolean).join(' · '),
+  };
+}
+
+/* Évènement poussé par un agent : `{ts, domain, event, detail}`. Le détail est
+   du JSON brut, rendu lisible par detailEvenement(). */
+function entreeEvenement(e) {
+  const label = String(e.event || e.type || e.label || 'évènement');
+  const alerte = evenementAlerte(label, e.detail);
+  return {
+    ts: e.ts, ms: tsMs(e.ts) ?? 0, type: 'event',
+    site: e.domain || '', label,
+    etat: alerte ? 'à surveiller' : '',
+    niveau: alerte ? 'err' : 'mut',
+    warn: alerte,
+    detail: detailEvenement(label, e.detail), meta: '',
   };
 }
 
@@ -313,7 +331,7 @@ function renderTendance(hist) {
 async function loadHist(force) {
   monterHist();
   if (cacheFrais('hist', force)) return;
-  CHGERR = LOGERR = '';
+  CHGERR = LOGERR = EVTERR = '';
 
   // 1. changements d'état détectés par la collecte
   let changes = [];
@@ -330,7 +348,14 @@ async function loadHist(force) {
     log = Array.isArray(j.log) ? j.log : [];
   } catch (e) { LOGERR = String(e); cacheVider('hist'); }
 
-  ENTREES = [...changes.map(entreeChange), ...log.map(entreeAction)]
+  // 3. évènements poussés par les agents, à l'échelle du parc
+  let events = [];
+  try {
+    const j = await api('/api/mgmt/events?limit=400');
+    events = Array.isArray(j.events) ? j.events : [];
+  } catch (e) { EVTERR = String(e); cacheVider('hist'); }
+
+  ENTREES = [...changes.map(entreeChange), ...log.map(entreeAction), ...events.map(entreeEvenement)]
     .filter(e => e.ms)
     .sort((a, b) => b.ms - a.ms);
 
@@ -343,20 +368,22 @@ async function loadHist(force) {
   } else if (RESUME) mount(sum, chipEl('rien sur 24 h', 'ok'));
   else mount(sum, chipEl('résumé indisponible', 'warn'));
 
-  // Ce que la chronologie ne peut PAS montrer se dit, plutôt que de manquer en
-  // silence : sources en échec et évènements d'agents sans route parc.
+  // Une source en échec se DIT : « rien à afficher » ne doit pas se confondre
+  // avec « on n'a pas pu regarder ». Les trois sources sont indépendantes.
   const note = document.getElementById('chg-note');
   const bouts = [];
   if (CHGERR) bouts.push('changements de collecte indisponibles : ' + CHGERR);
   if (LOGERR) bouts.push('journal des actions indisponible : ' + LOGERR);
-  bouts.push("les évènements poussés par les agents (nouvel administrateur, extension activée) "
-    + "n'ont pas encore de route à l'échelle du parc : ils restent dans l'onglet Historique de chaque site.");
-  mount(note, h('span', { class: 'muted small', text: bouts.join(' — ') }));
+  if (EVTERR) bouts.push('évènements des agents indisponibles : ' + EVTERR);
+  if (bouts.length) {
+    mount(note, chipEl('source incomplète', 'warn'), ' ',
+      h('span', { class: 'muted small', text: bouts.join(' — ') }));
+  } else mount(note);
 
   optionsSite();
   renderChrono();
 
-  // 3. tendance
+  // 4. tendance
   try {
     const j = await api('/api/actions/collect_history');
     renderTendance((j.history || []).filter(x => x && typeof x === 'object'));

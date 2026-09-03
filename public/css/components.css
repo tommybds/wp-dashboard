@@ -149,6 +149,27 @@ label{cursor:default}
 .filters-baseline{align-items:flex-end}
 .filters-flat{margin:0}
 
+/* ---- champ de formulaire ---------------------------------------------------
+   Un champ = un libellé, un contrôle, une aide, et une place pour son erreur.
+   L'erreur est un TEXTE sous le champ, pas seulement une bordure rouge : la
+   couleur seule ne dit pas ce qui est refusé, et ne se voit pas de tous. */
+.field{display:flex;flex-direction:column;gap:3px;margin-bottom:var(--s-12);min-width:0}
+.field>label{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.04em}
+.field>label.fld{font-family:var(--f-body);text-transform:none;letter-spacing:0;
+  color:var(--ink);font-size:var(--t-13);margin:0}
+.field .aide{font-size:var(--t-12);color:var(--muted);line-height:1.5;max-width:78ch}
+.field .ferr{font-size:var(--t-12);color:var(--err);line-height:1.45;max-width:78ch}
+.field .ferr:empty{display:none}
+.field.error>input,.field.error>select,.field.error>textarea{border-color:var(--err)}
+.field.error>label{color:var(--err)}
+/* Deux champs par ligne tant que la place le permet, un seul ensuite. */
+.fieldrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 var(--s-16)}
+
+/* Cartes de choix (assistant d'ajout d'un site) : elles se posent côte à côte
+   et passent l'une sous l'autre en étroit. */
+.cards{display:flex;gap:var(--s-8);flex-wrap:wrap;margin:var(--s-8) 0}
+
 /* ---- surfaces ------------------------------------------------------------- */
 .section{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf);
   padding:var(--s-16) var(--s-16) var(--s-16);margin-bottom:var(--s-16)}

@@ -1,5 +1,6 @@
 /* Coque : barre latérale (destinations, compteurs, pied), en-tête d'écran
-   (titre, méta, bouton Collecter), thème, journal des actions, collecte.
+   (titre, méta, bouton Collecter), thème et collecte. Le journal des actions
+   est une modale à part (components/log.js), branchée d'ici.
 
    Rien ici ne connaît le contenu d'un écran : la coque n'affiche que ce que
    `store` et le backend lui donnent. */
@@ -12,6 +13,7 @@ import { poll } from '../lib/poll.js';
 import { store, allSites, st, loadFleet, loadStatus } from '../lib/state.js';
 import { NOTIF } from './toast.js';
 import { chip } from './chip.js';
+import { initJournal } from './log.js';
 
 /* ---- thème : auto / clair / sombre ---------------------------------------
    `auto` retire l'attribut et laisse `prefers-color-scheme` décider ; les deux
@@ -35,7 +37,8 @@ export function applyTheme(t) {
   try { localStorage.dashTheme = t; } catch (e) { /* stockage refusé : le thème vaut pour la session */ }
 }
 
-function themeCourant() {
+/** Thème choisi : 'auto', 'light' ou 'dark'. Lu aussi par l'écran Réglages. */
+export function themeCourant() {
   try { return localStorage.dashTheme || 'auto'; } catch (e) { return 'auto'; }
 }
 
@@ -189,19 +192,6 @@ export function pollCollect() {
   }, { every: 2500, maxErrors: 5, until: r => !!(r && r.fini) });
 }
 
-/* ---- journal des actions -------------------------------------------------- */
-async function ouvrirJournal() {
-  document.getElementById('logmodal').classList.add('open');
-  const j = await api('/api/actions/log');
-  document.getElementById('loglist').innerHTML = (j.log || []).map(e => {
-    /* rc 2 sur une action vizproof (scan, verdict) = ANOMALIES : l'action a
-       tourné, c'est le rendu du site qui a changé — chip orange, pas rouge. */
-    const anom = Number(e.rc) === 2 && /^viz_/.test(String(e.action || ''));
-    const cls = e.rc === 0 ? 'ok' : (anom ? 'warn' : 'err'), lib = e.rc === 0 ? 'OK' : (anom ? 'anomalies' : 'échec');
-    return `<div class="logline"><b>${H(e.domain)}</b> · ${H(e.action)}${e.arg ? ' ' + H(e.arg) : ''} · <span class="pill ${cls}">${lib}</span> <span class="muted small">${H(e.source || '')} ${H(e.ts)} · ${e.duration_s}s</span><br><code>${H((e.output_tail || '').slice(-240))}</code></div>`;
-  }).join('') || 'Aucune action.';
-}
-
 /* ---- démarrage de la coque ------------------------------------------------ */
 export function initShell({ onCollect } = {}) {
   applyTheme(themeCourant());
@@ -211,10 +201,9 @@ export function initShell({ onCollect } = {}) {
     applyTheme(THEMES[(THEMES.findIndex(x => x[0] === c) + 1) % THEMES.length][0]);
   };
   document.getElementById('logoutbtn').onclick = logout;
-  document.getElementById('logbtn').onclick = ouvrirJournal;
-  document.getElementById('logmodal').onclick = e => {
-    if (e.target.id === 'logmodal') e.target.classList.remove('open');
-  };
+  // Le journal des actions vit dans son propre composant (components/log.js) :
+  // c'est une modale transversale, pas un morceau de la coque.
+  initJournal();
   document.getElementById('collectbtn').onclick = async () => {
     const r = await api('/api/actions/collect', {}).catch(e => ({ error: String(e) }));
     if (r && r.error && onCollect) onCollect(r.error);

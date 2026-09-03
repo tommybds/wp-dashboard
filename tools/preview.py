@@ -19,6 +19,7 @@ import http.server
 import json
 import pathlib
 import random
+import re
 import socketserver
 import sys
 import time
@@ -70,6 +71,10 @@ def faux_site(i, srv, rng):
         }
     if i % 7 == 0:
         s["via"] = "rest"
+    # Quelques installs SANS moniteur Kuma : c'est le cas qui fait apparaître
+    # « créer moniteur » et le filtre « sans moniteur » de l'écran Gestion.
+    if i % 9 == 4:
+        s["kuma"] = ""
     s["plugins_list"] = plugins
     s["plugins_updates_list"] = [p["name"] for p in plugins if p.get("update") == "available"]
     return s
@@ -287,9 +292,62 @@ def viz_update_status():
 
 # État mutable de la page bouchonnée : sans lui, un POST répondait toujours
 # `{"ok":true}` et l'interface ne pouvait pas montrer l'effet d'une action
-# (geler/dégeler une extension, sortie d'une commande, tâche groupée).
+# (geler/dégeler une extension, sortie d'une commande, tâche groupée, ajout
+# d'un serveur, réglage enregistré).
 POLICY = {"frozen": ["plugin-4"]}
 BULK = {"tasks": [], "done": 0, "total": 0, "running": False}
+
+SETTINGS = {
+    "viz_anomaly_rollback": False, "viz_scan_after_update": True,
+    "viz_baseline_before_update": True, "viz_baseline_required": False,
+    "vizproof_token_set": True, "vizproof_token_tail": "9f2c",
+    "vizproof_api_base": "https://vizproof.com",
+    "incident_rules": {"backup_max_age_h": 48, "cert_warn_days": 21,
+                       "cert_critical_days": 7, "vuln_high_is_incident": False,
+                       "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]},
+}
+ALERTES = {"enabled": True, "token_set": True, "token_tail": "aa42", "chat_id": "-100123",
+           "rules": {"new_admin": True, "checksum_fail": True, "viz_anomaly": False,
+                     "site_down": True, "backup_stale_h": 48, "cert_days": 21,
+                     "collect_dead_h": 6}}
+SCHEDULE = {"interval_minutes": 30, "choices": [0, 15, 30, 60, 120, 180, 360, 720, 1440],
+            "cron": "*/30 * * * *", "ok": True}
+SSHKEYS = {"keys": [
+    {"name": "dashboard", "path": "/root/.ssh/id_dashboard", "type": "ed25519",
+     "fingerprint": "SHA256:8p1c…", "pub": "ssh-ed25519 AAAAC3Nza… wp-dashboard"},
+    {"name": "sumotori", "path": "/root/.ssh/dash_sumotori", "type": "ed25519",
+     "fingerprint": "SHA256:q3Ze…", "pub": "ssh-ed25519 AAAAC3Nza… sumotori"}],
+    "assignments": [{"server": "plesk-mutu", "key": "/root/.ssh/id_dashboard"},
+                    {"server": "vps-1", "key": "/root/.ssh/id_dashboard"},
+                    {"server": "vps-2", "key": "/root/.ssh/dash_sumotori"}]}
+REST_SITES = [
+    {"domain": "site-07.exemple.fr", "url": "https://site-07.exemple.fr", "name": "Site 7",
+     "added_at": now(48), "multisite": False, "server": ""},
+    {"domain": "boutique.exemple.fr", "url": "https://boutique.exemple.fr", "name": "Boutique",
+     "added_at": now(300), "multisite": True, "server": ""},
+]
+# Identifiants WordPress : un site sur deux est autorisé, pour que les deux
+# états (« autorisé + Révoquer » et « non autorisé + Autoriser ») se voient.
+WPCRED = {"site-07.exemple.fr": {"has_password": True, "user": "dash_bot",
+                                 "verified": True, "checked_ts": now(5)}}
+
+
+def evenements():
+    """Évènements poussés par les agents, au format de data/events.jsonl."""
+    return {"events": [
+        {"ts": now(2), "domain": "site-01.exemple.fr", "event": "wp_login",
+         "detail": '{"login":"admin","ip":"10.0.0.9"}'},
+        {"ts": now(3), "domain": "site-02.exemple.fr", "event": "user_register",
+         "detail": '{"login":"wpsvc_fkmdmu","email":"x@y.tld","roles":["administrator"]}'},
+        {"ts": now(8), "domain": "site-02.exemple.fr", "event": "activated_plugin",
+         "detail": '{"plugin":"wp-file-manager/file_folder_manager.php"}'},
+        {"ts": now(19), "domain": "site-05.exemple.fr", "event": "upgrader_process_complete",
+         "detail": '{"type":"plugin","action":"update","items":["akismet/akismet.php"]}'},
+        {"ts": now(31), "domain": "site-04.exemple.fr", "event": "switch_theme",
+         "detail": '{"name":"Divi","stylesheet":"Divi"}'},
+        {"ts": now(60), "domain": "site-00.exemple.fr", "event": "evenement_inconnu_du_front",
+         "detail": '{"quoi":"un agent plus recent","reste":"lisible"}'},
+    ]}
 
 
 def rollback_points():
@@ -307,23 +365,96 @@ def collect_status():
     return {"running": False, "rc": None, "done": 0, "total": 0, "lines": []}
 
 
+# Serveurs de la page bouchonnée : ils vivent en variable de MODULE pour qu'un
+# POST /api/mgmt/servers ait un effet visible (ajout, modification, retrait).
+SERVEURS = [
+    {"name": "plesk-mutu", "host": "148.251.123.48", "port": 10022, "priority": 3,
+     "patterns": ["/var/www/vhosts/*/httpdocs"], "parallel": 4},
+    {"name": "vps-1", "host": "159.69.95.228", "port": 22,
+     "patterns": ["/var/www/*/htdocs", "/var/www/html"],
+     "key": "/root/.ssh/id_dashboard"},
+    {"name": "vps-2", "host": "mutu.hebergeur.example", "port": 22, "user": "u94559715",
+     "no_su": True, "patterns": ["/home/clients/*/sites/*"], "priority": 1},
+]
+DOCROOTS = [{"server": "vps-1", "path": "/var/www/dev"}]
+OVERRIDES = {"site-03.exemple.fr": {"visible": False},
+             "site-05.exemple.fr": {"alias": "client-cinq.fr"}}
+MONITEURS = [
+    {"id": 9, "name": "Sumotori", "active": True, "parent": None},
+    {"id": 11, "name": "Client A", "active": True, "parent": None},
+    {"id": 1, "name": "site-00.exemple.fr", "active": True, "parent": 9},
+    {"id": 2, "name": "site-01.exemple.fr", "active": True, "parent": 9},
+    {"id": 3, "name": "site-02.exemple.fr", "active": False, "parent": 11},
+]
+# Clés réellement présentes sous /root/.ssh : c'est le SEUL contrôle que le
+# formulaire ne peut pas faire lui-même (il ne voit pas le disque du serveur),
+# donc le seul chemin normal vers un refus 400 champ par champ.
+CLES = ["/root/.ssh/id_dashboard", "/root/.ssh/dash_sumotori"]
+
+
 def mgmt_state():
-    f = fleet()
     return {
-        "kuma_monitors": [{"id": 1, "name": "site-00.exemple.fr", "active": True, "parent": 9},
-                          {"id": 9, "name": "Sumotori", "active": True, "parent": None}],
-        "kuma_groups": [{"id": 9, "name": "Sumotori"}],
-        "overrides": {}, "servers": [{"name": s["name"], "host": "10.0.0.1"} for s in f["servers"]],
-        "extra_docroots": [{"server": "vps-1", "path": "/var/www/dev"}],
+        "kuma_monitors": list(MONITEURS),
+        "kuma_groups": [{"id": 9, "name": "Sumotori"}, {"id": 11, "name": "Client A"}],
+        "overrides": dict(OVERRIDES),
+        "servers": [dict(s) for s in SERVEURS],
+        "extra_docroots": [dict(d) for d in DOCROOTS],
     }
+
+
+# ---- validation d'un serveur : MÊMES règles que validate_server() ------------
+SRV_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+SRV_HOST_RE = re.compile(r"^[A-Za-z0-9.:-]+$")
+SRV_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+SRV_PATH_RE = re.compile(r"^/[A-Za-z0-9_./*@-]+$")
+
+
+def _entier(v, mini, maxi):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if mini <= n <= maxi else None
+
+
+def valider_serveur(o):
+    """Copie fidèle de validate_server(), messages compris : la page bouchonnée
+    doit refuser exactement ce que refuse la production, sinon la mise au point
+    de l'affichage « erreur champ par champ » ne prouve rien."""
+    if not isinstance(o, dict):
+        return "serveur invalide (objet attendu)"
+    nom = str(o.get("name") or "")
+    if not SRV_NAME_RE.match(nom):
+        return f"nom de serveur invalide : « {nom[:40]} »"
+    hote = str(o.get("host") or "")
+    if not SRV_HOST_RE.match(hote) or hote.startswith("-") or ".." in hote:
+        return f"hôte invalide pour « {nom} »"
+    user = o.get("user")
+    if user not in (None, "") and not SRV_USER_RE.match(str(user)):
+        return f"utilisateur ssh invalide pour « {nom} »"
+    if _entier(o.get("port"), 1, 65535) is None:
+        return f"port invalide pour « {nom} » (1-65535 attendu)"
+    key = o.get("key")
+    if key not in (None, "") and key not in CLES:
+        return f"clé ssh invalide pour « {nom} » (attendue sous /root/.ssh, existante)"
+    pats = o.get("patterns")
+    if not isinstance(pats, list) or not pats:
+        return f"patterns manquants pour « {nom} »"
+    for p in pats:
+        if not isinstance(p, str) or not SRV_PATH_RE.match(p) or ".." in p:
+            return f"chemin invalide pour « {nom} » : « {str(p)[:60]} »"
+    if o.get("parallel") is not None and _entier(o.get("parallel"), 1, 16) is None:
+        return f"parallel invalide pour « {nom} » (1-16 attendu)"
+    if o.get("priority") is not None and _entier(o.get("priority"), -10 ** 6, 10 ** 6) is None:
+        return f"priority invalide pour « {nom} »"
+    return None
 
 
 ROUTES = {
     "fleet.json": fleet,
     "/api/status-page/parc-x7k2m9": status_cfg,
     "/api/status-page/heartbeat/parc-x7k2m9": status_hb,
-    "/api/mgmt/schedule": lambda: {"interval_minutes": 30, "choices": [0, 15, 30, 60, 120, 180, 360, 720, 1440],
-                                   "cron": "*/30 * * * *", "ok": True},
+    "/api/mgmt/schedule": lambda: dict(SCHEDULE),
     "/api/actions/collect_status": collect_status,
     "/api/actions/collect_history": historique,
     "/api/actions/log": lambda: {"log": [
@@ -353,13 +484,13 @@ ROUTES = {
          "detail": '{"login":"admin","ip":"10.0.0.9"}'},
         {"kind": "collect", "label": "collecte", "status": "", "ts": now(6), "detail": ""}]},
     "/api/mgmt/state": mgmt_state,
+    "/api/mgmt/events": evenements,
     "/api/mgmt/candidates": lambda: {"candidates": [
         {"name": "nouveau.exemple.fr", "url": "https://nouveau.exemple.fr",
-         "source": "Kuma", "reason": "non géré"}]},
-    "/api/mgmt/rest_sites": lambda: {"rest_sites": [
-        {"domain": "site-07.exemple.fr", "url": "https://site-07.exemple.fr", "name": "Site 7",
-         "added_at": now(48), "multisite": False, "server": ""}]},
-    "/api/mgmt/wp_credentials": lambda: {"has_password": False, "user": "", "verified": None},
+         "source": "Kuma", "reason": "non géré"},
+        {"name": "vitrine.exemple.fr", "url": "https://vitrine.exemple.fr",
+         "source": "Kuma", "reason": "aucun install correspondant"}]},
+    "/api/mgmt/rest_sites": lambda: {"rest_sites": [dict(x) for x in REST_SITES]},
     "/api/mgmt/changes": lambda: {"changes": [
         {"domain": "site-02.exemple.fr", "label": "extension ajoutée", "detail": "wp-file-manager",
          "severity": "warn", "kind": "plugin_add", "ts": now(4)},
@@ -374,22 +505,9 @@ ROUTES = {
         {"domain": "site-04.exemple.fr", "label": "extension retirée", "detail": "duplicator",
          "severity": "info", "kind": "plugin_remove", "ts": now(78)}],
         "summary": {"day_total": 3, "day_sites": 2, "day_warn": 2}},
-    "/api/mgmt/sshkeys": lambda: {"keys": [
-        {"name": "dashboard", "path": "/root/.ssh/id_dashboard", "type": "ed25519",
-         "fingerprint": "SHA256:abc…", "pub": "ssh-ed25519 AAAA… dashboard"}],
-        "assignments": [{"server": "vps-1", "key": "/root/.ssh/id_dashboard"}]},
-    "/api/mgmt/settings": lambda: {"settings": {
-        "viz_anomaly_rollback": False, "viz_scan_after_update": True,
-        "viz_baseline_before_update": True, "viz_baseline_required": False,
-        "vizproof_token_set": True, "vizproof_token_tail": "9f2c",
-        "vizproof_api_base": "https://vizproof.com",
-        "incident_rules": {"backup_max_age_h": 48, "cert_warn_days": 21,
-                           "cert_critical_days": 7, "vuln_high_is_incident": False,
-                           "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]}}},
-    "/api/mgmt/alerts": lambda: {"enabled": True, "token_set": True, "token_tail": "…42",
-                                 "chat_id": "-100123", "rules": {"new_admin": True, "site_down": True,
-                                                                 "backup_stale_h": 48, "cert_days": 21,
-                                                                 "collect_dead_h": 6}},
+    "/api/mgmt/sshkeys": lambda: json.loads(json.dumps(SSHKEYS)),
+    "/api/mgmt/settings": lambda: {"settings": json.loads(json.dumps(SETTINGS))},
+    "/api/mgmt/alerts": lambda: json.loads(json.dumps(ALERTES)),
     "/api/incidents": incidents,
     "/api/mgmt/counts": sidebar_counts,
     "/api/sec/vulns": vulns,
@@ -421,10 +539,19 @@ STUB = """
 /* --- page bouchonnée : aucun appel réseau ne sort d'ici --- */
 (function(){
   const DATA = __DATA__;
+  // Routes dont la réponse DÉPEND de la requête ou de l'état déjà modifié par
+  // un POST : elles vont au serveur local, qui tient cet état, au lieu du
+  // paquet figé injecté au chargement. Sans cela, un serveur ajouté ou un
+  // réglage enregistré n'apparaîtrait jamais au rechargement de la section.
+  const DIRECT = ['/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
+    '/api/mgmt/sshkeys', '/api/mgmt/settings', '/api/mgmt/alerts', '/api/mgmt/schedule',
+    '/api/mgmt/candidates', '/api/mgmt/events'];
   const vrai = window.fetch.bind(window);
   window.__PREVIEW__ = true;
   window.fetch = function(url, opts){
     const u = String(url);
+    const chemin = u.replace(location.origin,'').split('?')[0];
+    if(DIRECT.includes(chemin)) return vrai(url, opts);
     // Ressources statiques (sprite, polices, CSS) : vrai chargement.
     if(!/^\\/api\\/|fleet\\.json/.test(u.replace(location.origin,''))) return vrai(url, opts);
     // Les ÉCRITURES passent au serveur local, qui tient un peu d'état (gel
@@ -454,8 +581,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def _json(self, code, obj):
+        corps = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(corps)))
+        self.end_headers()
+        self.wfile.write(corps)
+
     def do_GET(self):
         chemin = self.path.split("?")[0]
+        if chemin == "/api/mgmt/wp_credentials":
+            import urllib.parse as up
+            dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
+            return self._json(200, WPCRED.get(dom, {"has_password": False, "user": "",
+                                                    "verified": None, "checked_ts": None}))
+        if chemin.startswith("/api/") and chemin in ROUTES:
+            return self._json(200, fixture_ou_fabrique(chemin))
         if chemin in ("/", "/index.html"):
             html = (PUBLIC / "index.html").read_text(encoding="utf-8")
             stub = STUB.replace("__DATA__", json.dumps(paquet(), ensure_ascii=False))
@@ -483,7 +625,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             corps = json.loads(self.rfile.read(taille) or b"{}") if taille else {}
         except ValueError:
             corps = {}
-        rep = {"ok": True}
+        rep, code = {"ok": True}, 200
+        gere = self._mgmt_post(chemin, corps)
+        if gere is not None:
+            return self._json(gere[0], gere[1])
         if chemin.endswith("/api/actions/policy"):
             gel = set(POLICY["frozen"])
             slug = str(corps.get("slug") or "")
@@ -522,12 +667,205 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # `running: True` : le front enchaîne sur son sondage, puis le GET
             # correspondant répond `running: False` — le cycle complet est joué.
             rep = {"ok": True, "running": True}
-        corps_rep = json.dumps(rep, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(corps_rep)))
-        self.end_headers()
-        self.wfile.write(corps_rep)
+        self._json(code, rep)
+
+    def _mgmt_post(self, chemin, corps):
+        """Écritures de l'écran Gestion et de l'écran Réglages.
+
+        Elles ont un EFFET sur l'état du module : sans cela, on ne peut vérifier
+        ni qu'un serveur ajouté apparaît, ni qu'un refus de validation se pose
+        sur le bon champ, ni qu'un réglage enregistré est bien relu.
+        Renvoie (code, réponse) ou None si la route n'est pas de son ressort.
+        """
+        if chemin == "/api/mgmt/servers":
+            liste = corps.get("servers")
+            if not isinstance(liste, list):
+                return 400, {"error": "format invalide"}
+            for x in liste:
+                err = valider_serveur(x)
+                if err:
+                    return 400, {"error": err}
+            SERVEURS[:] = [dict(x) for x in liste]
+            return 200, {"ok": True}
+
+        if chemin == "/api/mgmt/docroots":
+            docs = corps.get("docroots")
+            if not isinstance(docs, list):
+                return 400, {"error": "format invalide"}
+            for d in docs:
+                if not isinstance(d, dict) or not SRV_NAME_RE.match(str(d.get("server") or "")):
+                    return 400, {"error": "serveur invalide pour un docroot"}
+                p2 = str(d.get("path") or "")
+                if not SRV_PATH_RE.match(p2) or ".." in p2:
+                    return 400, {"error": f"chemin invalide : « {p2[:60]} »"}
+            DOCROOTS[:] = [dict(d) for d in docs]
+            return 200, {"ok": True}
+
+        if chemin == "/api/mgmt/override":
+            dom = str(corps.get("domain") or "")
+            cur = dict(OVERRIDES.get(dom, {}))
+            if "visible" in corps:
+                if corps["visible"] in (True, False):
+                    cur["visible"] = corps["visible"]
+                else:
+                    cur.pop("visible", None)
+            if "alias" in corps:
+                al = str(corps["alias"] or "").strip()
+                if al:
+                    cur["alias"] = al
+                else:
+                    cur.pop("alias", None)
+            if cur:
+                OVERRIDES[dom] = cur
+            else:
+                OVERRIDES.pop(dom, None)
+            return 200, {"ok": True, "overrides": dict(OVERRIDES)}
+
+        if chemin == "/api/mgmt/kuma/create":
+            mid = max([m["id"] for m in MONITEURS] or [0]) + 1
+            MONITEURS.append({"id": mid, "name": str(corps.get("domain") or "?"),
+                              "active": True, "parent": int(corps.get("group_id") or 9)})
+            return 200, {"ok": True, "output": "monitor created (page bouchonnée)"}
+        if chemin == "/api/mgmt/kuma/pause":
+            for m in MONITEURS:
+                if m["id"] == corps.get("monitor_id"):
+                    m["active"] = bool(corps.get("active"))
+            return 200, {"ok": True, "output": ""}
+        if chemin == "/api/mgmt/kuma/delete":
+            MONITEURS[:] = [m for m in MONITEURS if m["id"] != corps.get("monitor_id")]
+            return 200, {"ok": True, "output": ""}
+
+        if chemin == "/api/mgmt/discover":
+            url = str(corps.get("url") or "")
+            if "inconnu" in url:
+                return 200, {"ok": False, "error": "aucune réponse HTTP à cette adresse"}
+            hote = url.replace("https://", "").replace("http://", "").split("/")[0] or "exemple.fr"
+            return 200, {"ok": True, "name": "Site " + hote, "url_effective": "https://" + hote,
+                         "home": "https://" + hote, "is_wordpress": True, "rest_open": True,
+                         "namespaces": ["wp/v2", "sumotori-dash/v1"],
+                         "has_agent": False, "has_vizproof": False, "multisite": False,
+                         "already_known": False,
+                         "suggestion": "ssh" if hote.endswith("exemple.fr") else "pair"}
+        if chemin == "/api/mgmt/pair_code":
+            return 200, {"code": "K7F2-9QMD", "expires_in": 600}
+
+        if chemin == "/api/mgmt/rest_sites":
+            url = str(corps.get("url") or "")
+            if not url.startswith("http"):
+                return 400, {"error": "url invalide (http/https attendu)"}
+            dom = url.replace("https://", "").replace("http://", "").split("/")[0]
+            REST_SITES.append({"domain": dom, "url": url, "name": corps.get("name") or "",
+                               "added_at": now(0), "multisite": False, "server": ""})
+            return 200, {"ok": True, "site": REST_SITES[-1]}
+        if chemin == "/api/mgmt/rest_sites/delete":
+            dom = str(corps.get("domain") or "")
+            REST_SITES[:] = [x for x in REST_SITES if x["domain"] != dom]
+            WPCRED.pop(dom, None)
+            return 200, {"ok": True,
+                         "cleanup": "non demandé" if corps.get("keep_account") else "compte supprimé"}
+
+        if chemin == "/api/mgmt/wp_authorize":
+            return 200, {"authorize_url": "https://" + str(corps.get("domain") or "exemple.fr")
+                         + "/wp-admin/authorize-application.php?app_name=Dashboard"}
+        if chemin == "/api/mgmt/wp_credentials/delete":
+            WPCRED.pop(str(corps.get("domain") or ""), None)
+            return 200, {"ok": True}
+
+        if chemin == "/api/mgmt/sshkeys/test":
+            cle = str(corps.get("key") or "")
+            if cle and cle not in CLES:
+                return 400, {"error": "clé invalide"}
+            ok = str(corps.get("server")) != "vps-2"
+            return 200, {"ok": ok, "output": "OK depuis srv01" if ok
+                         else "Permission denied (publickey)."}
+        if chemin == "/api/mgmt/sshkeys/generate":
+            nom = str(corps.get("name") or "")
+            chemin_cle = "/root/.ssh/dash_" + nom
+            if chemin_cle in CLES:
+                return 409, {"error": "une clé porte déjà ce nom"}
+            CLES.append(chemin_cle)
+            SSHKEYS["keys"].append({"name": nom, "path": chemin_cle, "type": "ed25519",
+                                    "fingerprint": "SHA256:nouv…",
+                                    "pub": "ssh-ed25519 AAAAC3Nza… wp-dashboard"})
+            return 200, {"ok": True, "path": chemin_cle,
+                         "pub": "ssh-ed25519 AAAAC3Nza… wp-dashboard"}
+        if chemin == "/api/mgmt/sshkeys/assign":
+            cle = str(corps.get("key") or "")
+            if cle not in CLES:
+                return 400, {"error": "clé invalide"}
+            cible = str(corps.get("server") or "")
+            for a in SSHKEYS["assignments"]:
+                if cible in ("*", a["server"]):
+                    a["key"] = cle
+            return 200, {"ok": True}
+
+        if chemin == "/api/mgmt/schedule":
+            v = corps.get("interval_minutes")
+            if v not in SCHEDULE["choices"]:
+                return 400, {"ok": False, "error": "cadence non proposée", **SCHEDULE}
+            SCHEDULE["interval_minutes"] = v
+            SCHEDULE["cron"] = "" if v == 0 else (f"*/{v} * * * *" if v < 60 else f"0 */{v // 60} * * *")
+            return 200, {"ok": True, **SCHEDULE}
+
+        if chemin == "/api/mgmt/settings":
+            patch = corps.get("settings")
+            if not isinstance(patch, dict):
+                patch = {}
+            if corps.get("vizproof_token_clear"):
+                SETTINGS["vizproof_token_set"] = False
+                SETTINGS["vizproof_token_tail"] = ""
+                patch.pop("vizproof_token", None)
+            jeton = str(patch.pop("vizproof_token", "") or "")
+            if jeton:
+                if not jeton.startswith("vrt_") or len(jeton) < 12:
+                    return 400, {"error": "jeton VizProof invalide (vrt_… , 8 à 200 caractères "
+                                          "après le préfixe)"}
+                SETTINGS["vizproof_token_set"] = True
+                SETTINGS["vizproof_token_tail"] = jeton[-4:]
+            if "vizproof_api_base" in patch:
+                base = str(patch["vizproof_api_base"] or "").strip() or "https://vizproof.com"
+                if not base.startswith("https://"):
+                    return 400, {"error": "base API : https exigé"}
+                patch["vizproof_api_base"] = base.rstrip("/")
+            for k, v in patch.items():
+                if k == "incident_rules" and isinstance(v, dict):
+                    # Comme le backend : le sous-dictionnaire est RECOMPOSÉ à
+                    # partir des valeurs par défaut, jamais fusionné.
+                    base = {"backup_max_age_h": 48, "cert_warn_days": 21, "cert_critical_days": 7,
+                            "vuln_high_is_incident": False,
+                            "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"]}
+                    base.update({kk: vv for kk, vv in v.items() if kk in base})
+                    SETTINGS["incident_rules"] = base
+                elif k in SETTINGS:
+                    SETTINGS[k] = v
+            return 200, {"ok": True, "settings": json.loads(json.dumps(SETTINGS))}
+
+        if chemin == "/api/mgmt/vizproof/test":
+            if not SETTINGS["vizproof_token_set"]:
+                return 200, {"ok": False, "total": None, "error": "aucun jeton enregistré"}
+            return 200, {"ok": True, "total": 12, "error": None,
+                         "api_base": SETTINGS["vizproof_api_base"]}
+
+        if chemin == "/api/mgmt/alerts":
+            ALERTES["enabled"] = bool(corps.get("enabled"))
+            ALERTES["chat_id"] = str(corps.get("chat_id") or "")
+            jeton = str(corps.get("token") or "").strip()
+            if jeton:
+                ALERTES["token_set"] = True
+                ALERTES["token_tail"] = jeton[-4:]
+            regles = corps.get("rules")
+            if isinstance(regles, dict):
+                for k, v in regles.items():
+                    if k in ALERTES["rules"]:
+                        ALERTES["rules"][k] = v
+            return 200, {"ok": True, **json.loads(json.dumps(ALERTES))}
+        if chemin == "/api/mgmt/alerts/test":
+            return 200, {"ok": bool(ALERTES["token_set"] and ALERTES["chat_id"]),
+                         "error": "" if ALERTES["token_set"] else "aucun jeton enregistré"}
+
+        if chemin in ("/api/mgmt/dash_connect", "/api/mgmt/dash_disconnect"):
+            return 200, {"ok": True, "rc": 0, "output": "agent : opération simulée"}
+        return None
 
 
 def main():

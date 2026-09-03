@@ -97,14 +97,14 @@ Le front est un ensemble de fichiers servis tels quels : **le code déployé est
 le code écrit**. Pas de bundler, pas de transpilation, aucune dépendance npm —
 les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
 
-> **Phase 2 de la refonte (septembre 2026).** Le **tiroir** de fiche site a été
-> retiré : il est remplacé par une **page site** à part entière,
-> `#site/<clé>[/<onglet>]`, avec cinq onglets (Aperçu, Extensions, Sécurité,
-> Sauvegardes, Historique). Les passages ci-dessous qui disent encore « tiroir »
-> décrivent le même contenu, désormais dans cette page ; la console
-> d'exécution y vit en bas, et les boutons de la colonne ont les mêmes effets.
-> L'écran Parc s'ouvre en plus sur une file **« À traiter »** alimentée par
-> `GET /api/incidents`, et la recherche globale se déclenche par ⌘K / Ctrl+K.
+> **Phase 2 de la refonte (septembre 2026).** La fiche d'un site est une
+> **page site** à part entière, `#site/<clé>[/<onglet>]`, avec cinq onglets
+> (Aperçu, Extensions, Sécurité, Sauvegardes, Historique) : la console
+> d'exécution y vit en bas, et les boutons de la colonne y ont les mêmes
+> effets. Partout où ce document parle de la **page site**, c'est d'elle qu'il
+> s'agit. L'écran Parc s'ouvre en plus sur une file **« À traiter »** alimentée
+> par `GET /api/incidents`, et la recherche globale se déclenche par
+> ⌘K / Ctrl+K.
 
 > **Phase 3 de la refonte (septembre 2026).** Les **sous-onglets** de Sécurité
 > (huit) et de Changements (deux) ont disparu : chaque destination est une page
@@ -112,6 +112,16 @@ les navigateurs chargent des modules ES nativement, nginx sert des fichiers.
 > **Incidents** existe pour de bon (file complète, groupée par gravité, avec
 > action en ligne). Les pastilles de la barre latérale viennent toutes de
 > `GET /api/mgmt/counts`, c'est-à-dire du **même agrégat** que `/api/incidents`.
+
+> **Phase 4 de la refonte (septembre 2026).** **Gestion** perd ses six
+> sous-onglets et **Réglages** cesse d'être une modale : les deux sont des
+> pages à ancres. Il n'existe donc plus un seul sous-onglet dans
+> l'application — tout sous-slug d'URL (`#gestion/serveurs`,
+> `#reglages/cles-ssh`) désigne une **ancre**. Les serveurs s'ajoutent et se
+> modifient dans un **formulaire** (un champ par attribut, validation miroir de
+> `validate_server()`, refus 400 affiché sur le champ concerné) ; l'éditeur JSON
+> reste en repli. L'écran Changements fusionne enfin les **évènements des
+> agents** (`GET /api/mgmt/events`) avec les changements et les actions.
 
 ### Arborescence
 
@@ -140,13 +150,17 @@ public/
     format.js           dates relatives, durées, URL, cadences UpdraftPlus, bruit PHP
     icons.js            icon() / iconEl() + injection du sprite
   components/
-    actions-menu.js  button.js  chip.js  confirm.js  job.js  rollback.js
-    search.js  shell.js  table.js  tip.js  toast.js  viz.js
+    actions-menu.js  add-site.js  button.js  chip.js  confirm.js  job.js
+    log.js  rollback.js  search.js  shell.js  table.js  tip.js  toast.js
+    viz.js  wpauth.js
+      add-site.js  assistant « Ajouter un WordPress » (URL → méthode → appairage)
+      log.js       modale « Journal des actions » (transversale, hors écran)
+      wpauth.js    autorisation WordPress (mot de passe d'application) + bandeau
   screens/
     parc.js  site.js  incidents.js  securite.js  changements → historique.js
     gestion.js  reglages.js
-    (incidents, securite et historique sont des pages à ancres : plus de
-     sous-onglets, tout est construit avec h())
+    (toutes les destinations sauf Parc et la page site sont des pages à
+     ancres : plus un seul sous-onglet, tout est construit avec h())
   fonts/                Archivo, IBM Plex Sans, IBM Plex Mono (woff2, latin + latin-ext)
 ```
 
@@ -215,7 +229,7 @@ seulement pour le premier affichage (les deux faces latines). Licence SIL OFL
 
 ### Icônes
 
-Un sprite unique, `public/icons.svg` (34 icônes Lucide, trait 1,5 px, 7 Ko).
+Un sprite unique, `public/icons.svg` (35 icônes Lucide, trait 1,5 px, 7 Ko).
 `lib/icons.js` l'injecte une fois dans le document — `<use href="#i-…">` ne
 fonctionne de façon fiable qu'en référence **interne**, pas vers un autre
 fichier. `app.js` attend cette injection avant le premier rendu.
@@ -262,6 +276,12 @@ python3 tools/preview.py --scenario anomalie  # anomalie visuelle VizProof
 `window.fetch` y est remplacé par des fixtures : aucune requête ne sort. Les
 vraies réponses déposées dans `scratchpad/fixture/<route>.json` (le `/` du
 chemin devenant `_`) sont utilisées en priorité.
+
+Les routes d'**écriture** et les routes de Gestion / Réglages ne répondent pas
+un `{"ok":true}` figé : le serveur bouchonné tient un état (serveurs, docroots,
+overrides, moniteurs, sites REST, clés, réglages, alertes) et **rejoue la
+validation du backend**, refus HTTP 400 compris — c'est ce qui permet de vérifier
+que l'erreur d'un serveur s'affiche bien sur le bon champ du formulaire.
 
 Contrôles automatiques, à passer avant chaque déploiement :
 
@@ -476,20 +496,20 @@ l'URL du dashboard est saisie à l'appairage.
 
 ### Les destinations
 
-La barre latérale porte cinq destinations. L'adresse est partageable :
-`#parc`, `#incidents`, `#securite/<section>`, `#changements/<section>`,
-`#gestion/<section>`. Les anciens fragments (`#dash`, `#sec/…`, `#hist/…`,
-`#mgmt/…`) redirigent automatiquement — les liens déjà partagés continuent de
-tomber au bon endroit.
+La barre latérale porte cinq destinations, plus **Réglages** en pied de barre.
+L'adresse est partageable : `#parc`, `#incidents`, `#securite/<section>`,
+`#changements/<section>`, `#gestion/<section>`, `#reglages/<section>`. Les
+anciens fragments (`#dash`, `#sec/…`, `#hist/…`, `#mgmt/…`) redirigent
+automatiquement — les liens déjà partagés continuent de tomber au bon endroit.
 
-Depuis la phase 3, `<section>` ne désigne plus un sous-onglet pour Sécurité et
-Changements (ils n'en ont plus) mais une **ancre** : `#securite/vulnerabilites`
-ouvre la page et défile jusqu'à la section. Les deux familles de noms tombent
-juste — les anciens slugs (`vulnerabilites`, `erreurs-php`, `administrateurs`,
-`recherche-plugin`, `php-obsolete`, `certificats`, `plugins-a-risque`,
-`integrite-core`, `tendance`, `changements`) et ceux que le backend pose dans le
-champ `link` des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`,
-`checksums`). Seule **Gestion** garde des sous-onglets, jusqu'à la phase 4.
+Depuis la phase 4, **plus aucune destination n'a de sous-onglet** : `<section>`
+désigne toujours une **ancre**, `#securite/vulnerabilites` ouvre la page et
+défile jusqu'à la section. Les deux familles de noms tombent juste — les anciens
+slugs (`vulnerabilites`, `erreurs-php`, `administrateurs`, `recherche-plugin`,
+`php-obsolete`, `certificats`, `plugins-a-risque`, `integrite-core`, `tendance`,
+`changements`, et pour Gestion `serveurs`, `installs`, `mode-rest`, `moniteurs`,
+`docroots`, `sites-non-geres`) et ceux que le backend pose dans le champ `link`
+des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`, `checksums`).
 
 | Destination | Contenu |
 |---|---|
@@ -497,12 +517,27 @@ champ `link` des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`,
 | **Incidents** | La file « à traiter » complète (`GET /api/incidents`), groupée par gravité : sites down, erreurs PHP fatales, vulnérabilités critiques corrigeables, checksums en anomalie, administrateurs inconnus, serveurs injoignables, sauvegardes en retard, certificats, PHP en fin de support. Filtres gravité / type / recherche, action en ligne (même confirmation que la fiche site) ou lien vers la section concernée ; une source en échec s'affiche en « source incomplète ». |
 | **Sécurité** | **Une seule page à ancres**, ouverte par un sommaire chiffré : vulnérabilités (vue par site ou par extension, action groupée), comptes administrateurs et référence, erreurs PHP, extensions à risque, PHP obsolète regroupé par version, certificats, intégrité du cœur, recherche transversale d'extension. |
 | **Changements** | Une **chronologie** groupée par jour qui fusionne les changements d'état détectés par la collecte (`/api/mgmt/changes`) et les actions lancées depuis le dashboard (`/api/actions/log`), filtrable par site, type, gravité et texte — puis la **tendance du parc** (quatre courbes) en bas de page. |
-| **Gestion** | Ajout d'un site par URL, sites supervisés non gérés, serveurs, clés SSH, moniteurs Kuma, docroots. |
+| **Gestion** | **Une seule page à ancres** : serveurs (en formulaires), installs découverts, sites sans SSH et assistant d'ajout par URL, moniteurs Kuma, docroots supplémentaires, sites supervisés non gérés. |
+| **Réglages** | **Une seule page à ancres** : cadence de collecte, alertes Telegram, VizProof, contrôle visuel, règles d'incidents, clés SSH, apparence, session. |
 
-En bas de la barre : **Réglages** (aussi accessible par `#reglages`),
-**Journal** des actions, bascule de **thème** (auto / clair / sombre) et
-déconnexion. Sous 1000 px la barre se replie en icônes, sous 720 px elle
-s'ouvre par le bouton menu.
+En bas de la barre : **Réglages** (`#reglages`), **Journal** des actions (une
+modale, volontairement : on la consulte en passant depuis n'importe quel écran),
+bascule de **thème** (auto / clair / sombre) et déconnexion. Sous 1000 px la
+barre se replie en icônes, sous 720 px elle s'ouvre par le bouton menu.
+
+### Gestion
+
+La page répond à « comment le parc est-il branché ? », dans l'ordre du
+branchement.
+
+| Section | Ce qu'on y fait |
+|---|---|
+| **Serveurs** (`#gestion/serveurs`) | Le tableau de `servers.json` : hôte, port, utilisateur, clé, priorité, parallélisme, motifs de docroot, nombre d'installs relevées et état du dernier relevé. **Ajouter** / **Modifier** ouvrent un **formulaire**, un champ par attribut, avec son aide. La validation reproduit `validate_server()` à la saisie, et un refus du serveur (HTTP 400) s'affiche **sur le champ concerné** — le message backend nomme le serveur et l'attribut. **Tester la connexion** ouvre une session SSH avec la clé choisie (sur un serveur déjà enregistré). **éditer le JSON** reste disponible en repli, pour une clé que le formulaire ne connaît pas. |
+| **Installs découverts** (`#gestion/installs`) | Tous les WordPress trouvés en SSH, filtrables par serveur, par visibilité et par « sans moniteur ». Par ligne : moniteur Kuma (ou **créer moniteur**, avec choix du client et du type de contrôle), **visibilité** (auto / toujours afficher / masquer), **alias** de moniteur, **Dashboard** (connecter ou dissocier l'agent), **WordPress** (identifiants d'application : Autoriser / Révoquer). |
+| **Sites sans SSH** (`#gestion/mode-rest`) | L'assistant **« Ajouter un site par URL »** en trois étapes : analyse de l'URL (`discover`), choix de la méthode (SSH ou appairage), puis ZIP de l'agent + code d'appairage à usage unique avec son compte à rebours et l'adresse du dashboard à recopier. En dessous, la liste des sites pilotés par l'agent, avec leurs identifiants WordPress et le retrait (qui propose de supprimer, ou non, le compte dédié créé sur le site). |
+| **Moniteurs Kuma** (`#gestion/moniteurs`) | Pause, réactivation, suppression. Chaque modification redémarre Kuma (~15 s sans monitoring). |
+| **Docroots** (`#gestion/docroots`) | Chemins scannés en plus des motifs du serveur. Même règle de validation que les motifs, appliquée à la saisie et côté serveur. |
+| **Non gérés** (`#gestion/sites-non-geres`) | Sites vus par le monitoring mais absents du parc : **Ajouter par URL** ouvre l'assistant, URL pré-remplie. |
 
 ### Mettre à jour un site
 
@@ -540,10 +575,10 @@ MAJ sûre, action groupée, collecte, vérification des checksums.
   **indéterminée** sinon (une action unitaire ne sait pas où elle en est).
 - À la fin, la ligne devient un **verdict** : vert et effacé après 8 s ; **orange**
   (anomalie visuelle, lot partiellement réussi) ou **rouge** conservés jusqu'au ✕.
-  Un clic ouvre le tiroir du site concerné, ou la modale de l'action groupée.
-- Elle **survit** à la fermeture du tiroir, de la modale groupée et au changement
-  d'onglet : c'est tout son intérêt. Elle ne remplace ni la console du tiroir ni
-  la modale groupée, elle les résume.
+  Un clic ouvre la page du site concerné, ou la modale de l'action groupée.
+- Elle **survit** au changement d'écran, à la fermeture de la modale groupée et
+  au changement d'onglet : c'est tout son intérêt. Elle ne remplace ni la console
+  de la page site ni la modale groupée, elle les résume.
 
 Corollaire : fermer la modale d'une action groupée n'arrête plus son suivi — le
 job continuait déjà côté serveur, il reste maintenant visible.
@@ -622,15 +657,34 @@ qu'au premier niveau des [Réglages](#réglages).
 
 ### Réglages
 
-**Réglages ⚙** regroupe la cadence de collecte, les clés SSH, les alertes
-Telegram, le jeton VizProof et deux réglages de comportement, stockés dans
-`data/settings.json` (fichier **0600**) :
+**Réglages** est une **page** (`#reglages`), plus une modale, découpée en huit
+sections qui ont chacune leur bouton d'enregistrement et leur message de
+résultat :
+
+| Section | Contenu |
+|---|---|
+| **Collecte** (`#reglages/collecte`) | Cadence du cron (`/api/mgmt/schedule`), cron actuel affiché, et un raccourci vers la collecte manuelle. |
+| **Alertes Telegram** (`#reglages/alertes`) | Interrupteur général, jeton du bot, `chat_id`, quatre déclencheurs booléens et trois seuils, plus **Envoyer un test** (qui utilise la configuration **enregistrée**). |
+| **VizProof** (`#reglages/vizproof`) | Jeton de compte, base de l'API, **Tester**, **Effacer**. |
+| **Contrôle visuel** (`#reglages/controle-visuel`) | Les quatre cases décrites ci-dessous, enregistrées à la volée. |
+| **Règles d'incidents** (`#reglages/incidents`) | `incident_rules` en champs typés : âge maximal d'une sauvegarde, seuils de certificat (avertissement / critique), vulnérabilités `high` comptées ou non, versions PHP en fin de support. |
+| **Clés SSH** (`#reglages/cles-ssh`) | Liste (nom, type, empreinte, clé publique dépliable), génération d'une clé dédiée, affectation par serveur avec **Tester** avant **Assigner**, et l'assignation à tous les serveurs. |
+| **Apparence** (`#reglages/apparence`) | Thème (auto / clair / sombre) et densité des tableaux. Préférences **de ce navigateur** : elles ne partent pas au serveur. |
+| **Session** (`#reglages/session`) | Utilisateur connecté, adresse du dashboard, déconnexion. |
+
+Les **secrets** (jeton Telegram, jeton VizProof) ne sont **jamais réinjectés**
+dans un champ : l'API n'en renvoie qu'un témoin et les quatre derniers
+caractères, un champ laissé vide veut dire « inchangé », et effacer est un geste
+explicite.
+
+Les réglages de comportement sont stockés dans `data/settings.json` (fichier
+**0600**) :
 
 | Réglage | Défaut | Effet |
 |---|---|---|
 | **Retour arrière automatique sur anomalie visuelle** (`viz_anomaly_rollback`) | décoché | Pendant une **MAJ sûre**, une anomalie VizProof (rc 2) annule la mise à jour au lieu de la conserver. Voir [VizProof](#vizproof). |
-| **Contrôle visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis le tiroir (cœur, extensions, thèmes), le dashboard récupère **en arrière-plan** le verdict visuel des sites reliés : il **attend le scan que le plugin lance lui-même** et ne scanne qu'en repli. Il **informe seulement**. Voir [Contrôle visuel après une mise à jour unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire). |
-| **Baseline VizProof avant chaque mise à jour unitaire** (`viz_baseline_before_update`) | **coché** | Sur un site relié, la mise à jour lancée depuis le tiroir passe par un **job suivi** : baseline → mise à jour → verdict visuel → inventaire. Sans baseline, le verdict d'après compare au dernier état connu de VizProof. Voir [Baseline avant, verdict après](#baseline-avant-verdict-après--le-job-viz_update). |
+| **Contrôle visuel VizProof après chaque mise à jour** (`viz_scan_after_update`) | **coché** | Après une mise à jour lancée depuis la page site (cœur, extensions, thèmes), le dashboard récupère **en arrière-plan** le verdict visuel des sites reliés : il **attend le scan que le plugin lance lui-même** et ne scanne qu'en repli. Il **informe seulement**. Voir [Contrôle visuel après une mise à jour unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire). |
+| **Baseline VizProof avant chaque mise à jour unitaire** (`viz_baseline_before_update`) | **coché** | Sur un site relié, la mise à jour lancée depuis la page site passe par un **job suivi** : baseline → mise à jour → verdict visuel → inventaire. Sans baseline, le verdict d'après compare au dernier état connu de VizProof. Voir [Baseline avant, verdict après](#baseline-avant-verdict-après--le-job-viz_update). |
 | **Exiger la baseline** (`viz_baseline_required`) | décoché | Décoché : une baseline ratée est un **avertissement**, la mise à jour se fait quand même. Coché : la mise à jour est **annulée** tant qu'aucun témoin d'avant n'a pu être pris. |
 | **Seuils de la file d'incidents** (`incident_rules`) | voir le tableau | Sous-dictionnaire : âge maximal d'une sauvegarde, seuils de certificat, prise en compte des vulnérabilités `high`, versions PHP hors support. Voir [Incidents](#incidents). |
 
@@ -662,7 +716,7 @@ site dans la colonne **Vizproof** du tableau.
 | CLI présente, non reliée | `v1.3.6 · non connecté` + **Connecter** | Voir ci-dessous. |
 | Reliée | `v1.3.6 · N pages` (vert) | Rien. La pastille du dernier scan suit. |
 
-Un site sans inventaire d'extensions affiche `—`. Le tiroir reprend le même état
+Un site sans inventaire d'extensions affiche `—`. La page site reprend le même état
 en une phrase, avec les mêmes boutons, un lien **ouvrir dans wp-admin** et, pour
 un site relié, la ligne **Dernier scan** : date relative, verdict (aucune
 anomalie / N anomalies / échec) et lien vers le rapport.
@@ -728,7 +782,7 @@ rend `{"ok":false,"error":"aucun token VizProof dans les Réglages"}`.
 
 #### Connecter un site
 
-Le bouton **Connecter** (colonne ou tiroir) ouvre une modale. Avec un token
+Le bouton **Connecter** (colonne ou page site) ouvre une modale. Avec un token
 enregistré, c'est un clic : l'identifiant est **facultatif** (vide = résolution
 par URL), le champ jeton est replié derrière « utiliser un autre token », et un
 aperçu s'affiche à l'ouverture. Sans token enregistré, la modale reste celle
@@ -767,7 +821,7 @@ extension absente) sont écartés de la liste.
   `site_created`, jamais le token.
 
 `POST /api/actions/viz_disconnect {server, domain}` fait l'inverse (bouton
-**Dissocier** du tiroir) ; l'extension reste installée.
+**Dissocier** de la page site) ; l'extension reste installée.
 
 #### Anomalie visuelle pendant une MAJ sûre
 
@@ -793,7 +847,7 @@ Le réglage se lit et s'écrit aussi en direct (voir [Réglages](#réglages)).
 
 #### Contrôle visuel après une mise à jour unitaire
 
-Le bouton **MAJ** du tiroir passe par `/api/actions/run`, qui ne faisait
+Le bouton **MAJ** de la page site passe par `/api/actions/run`, qui ne faisait
 **aucun** contrôle visuel : seules la MAJ sûre et l'action groupée « vérifiée
 visuellement » en faisaient un. Avec le réglage **« Contrôle visuel VizProof
 après chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
@@ -887,7 +941,7 @@ Le job enchaîne :
 | `baseline` | `wp vizproof baseline --wait --format=json` (300 s), journalisé sous la source `pre-update`. Absente si `viz_baseline_before_update` est décoché. |
 | `update` | exactement la mise à jour qu'aurait faite la route, journalisée comme avant ; `t0` est pris juste avant. |
 | `viz` | le verdict visuel décrit plus haut : attente du scan du plugin, repli sur le nôtre. Absente si `viz_scan_after_update` est décoché ; en `warn` sans rien lancer si la mise à jour a échoué. |
-| `rescan` | inventaire rafraîchi, pour que le tiroir montre le dernier scan. |
+| `rescan` | inventaire rafraîchi, pour que la page site montre le dernier scan. |
 
 Chaque étape porte un `status` : `attente`, `en cours`, `ok`, `warn`, `erreur`.
 
@@ -913,11 +967,11 @@ Un domaine sans job répond un job **vide** (`running: false`, `steps: []`) plut
 qu'une erreur. Comme `viz_last`, c'est une **mémoire de processus** bornée, vidée
 au redémarrage du service : l'historique reste dans `actions.log`.
 
-Côté interface, la console du tiroir affiche les étapes **en direct**, du même
+Côté interface, la console de la page site affiche les étapes **en direct**, du même
 rendu que la MAJ sûre, et la barre de notifications passe en progression
 déterminée (« baseline VizProof… », « mise à jour… », « le plugin VizProof
 scanne… », puis le verdict). Les boutons de mise à jour du site sont désactivés
-pendant le job ; le tiroir peut être fermé et rouvert — à la réouverture, un job
+pendant le job ; la page site peut être quittée et rouverte — au retour, un job
 en cours est **ré-affiché et re-suivi**.
 
 ##### Quand la réponse reste synchrone
@@ -972,11 +1026,11 @@ curl -s ... '/api/actions/viz_last?domain=elwave.fr'
   sortie = résumé) : sans cette entrée, un scan lancé par le plugin ne laisserait
   **aucune trace** dans l'historique du site, puisqu'il ne passe pas par nous. Le
   scan de repli reste en plus journalisé comme `viz_scan`. Un `rescan` suit dans
-  tous les cas, pour que la ligne « Dernier scan » du tiroir soit à jour.
+  tous les cas, pour que la ligne « Dernier scan » de la page site soit à jour.
 - `GET /api/actions/viz_last?domain=` est une **mémoire de processus** (bornée,
   vidée au redémarrage du service) : l'historique, lui, est dans `actions.log`.
 
-Côté interface : la console du tiroir ajoute « Contrôle visuel VizProof : le
+Côté interface : la console de la page site ajoute « Contrôle visuel VizProof : le
 plugin VizProof scanne… », remplacée au fil des phases puis par le verdict —
 « aucune anomalie *(scan du plugin)* », « anomalies détectées (3) *(scan
 dashboard)* » — avec le lien du rapport ; la

@@ -347,7 +347,9 @@ function brancherModale() {
     const f = document.getElementById('vz-token');
     if (f) f.focus();
   };
-  document.getElementById('vz-setlink').onclick = () => { closeViz(); document.getElementById('setbtn').click(); };
+  // Depuis la phase 4, Réglages est une page à ancres : on vise directement
+  // sa section VizProof plutôt que d'ouvrir la page en haut.
+  document.getElementById('vz-setlink').onclick = () => { closeViz(); location.hash = '#reglages/vizproof'; };
   registerModalCloser('vizmodal', closeViz);
 }
 brancherModale();

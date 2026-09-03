@@ -9,7 +9,12 @@
    anciens sous-slugs (#sec/vulnerabilites, #hist/tendance) et ceux des liens
    d'incidents (#securite/vulns) désignent maintenant une ANCRE dans la page.
    Les anciens fragments (#dash, #sec/…, #hist/…, #mgmt/…) redirigent toujours
-   vers les nouveaux : des liens et des habitudes existent. */
+   vers les nouveaux : des liens et des habitudes existent.
+
+   Phase 4 : Gestion perd ses six sous-onglets et Réglages cesse d'être une
+   modale — les deux sont des pages à ancres. Il n'existe donc PLUS un seul
+   sous-onglet dans l'application : `buildSubtabs` et `SUBSLUG` ont disparu, et
+   tout sous-slug d'URL désigne une ancre. */
 
 import { esc as H } from './lib/dom.js';
 import { initIcons } from './lib/icons.js';
@@ -17,7 +22,7 @@ import { stopPoll } from './lib/poll.js';
 import { store, subscribe, loadFleet, loadStatus } from './lib/state.js';
 import { V } from './version.js';
 
-import { initModals, askInfo, registerModalCloser } from './components/confirm.js';
+import { initModals, askInfo } from './components/confirm.js';
 import { initTips } from './components/tip.js';
 import { initJob, setSecRefresh, reouvrirBulk } from './components/job.js';
 import { setOuvreurs } from './components/toast.js';
@@ -27,13 +32,14 @@ import {
 import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
 import { setVizSettings } from './components/viz.js';
 import { fermerMenus } from './components/actions-menu.js';
+import { wpauthBanner } from './components/wpauth.js';
 
 import { onFleetChange, loadViews, chargerIncidents, filtrerSurExtension } from './screens/parc.js';
 import { renderSite, quitterSite, cleDeSite, siteParCle } from './screens/site.js';
-import { loadMgmt, wpauthBanner } from './screens/gestion.js';
+import { loadMgmt } from './screens/gestion.js';
 import { loadSec, majCompteurSec } from './screens/securite.js';
 import { loadHist } from './screens/historique.js';
-import { ouvrirReglages, ensureSettings } from './screens/reglages.js';
+import { loadReglages, ensureSettings } from './screens/reglages.js';
 import { renderIncidents } from './screens/incidents.js';
 
 /* ---- destinations ---------------------------------------------------------
@@ -46,21 +52,10 @@ const DESTINATIONS = [
   { route: 'securite',    page: 'sec',       titre: 'Sécurité',    legacy: 'sec' },
   { route: 'changements', page: 'hist',      titre: 'Changements', legacy: 'hist' },
   { route: 'gestion',     page: 'mgmt',      titre: 'Gestion',     legacy: 'mgmt' },
+  { route: 'reglages',    page: 'reglages',  titre: 'Réglages' },
 ];
 const PAR_ROUTE = Object.fromEntries(DESTINATIONS.map(d => [d.route, d]));
 const PAR_LEGACY = Object.fromEntries(DESTINATIONS.filter(d => d.legacy).map(d => [d.legacy, d]));
-const ROUTE_DE_PAGE = Object.fromEntries(DESTINATIONS.map(d => [d.page, d.route]));
-
-/* Fil d'Ariane dans l'URL : #destination/sous-section — partageable et
-   rechargeable. Les slugs de sous-section sont inchangés : les liens déjà
-   partagés (#sec/vulnerabilites) continuent de tomber au bon endroit.
-
-   Seule Gestion a encore des SOUS-ONGLETS (un volet à la fois) ; Sécurité et
-   Changements sont, depuis la phase 3, des pages uniques dont les sous-slugs
-   désignent une ANCRE. */
-const SUBSLUG = {
-  gestion: ['sites-non-geres', 'installs', 'mode-rest', 'moniteurs', 'docroots', 'serveurs'],
-};
 
 /* Sous-slug → identifiant de section. Deux familles de noms cohabitent, et les
    deux doivent tomber juste : les slugs des anciens sous-onglets (partagés dans
@@ -79,7 +74,27 @@ const ANCRES = {
   },
   changements: {
     changements: 'hist-chrono', chronologie: 'hist-chrono',
-    actions: 'hist-chrono', tendance: 'hist-tendance',
+    actions: 'hist-chrono', evenements: 'hist-chrono', tendance: 'hist-tendance',
+  },
+  // Phase 4 : les six anciens sous-onglets de Gestion sont devenus des ancres.
+  gestion: {
+    serveurs: 'mgmt-serveurs',
+    installs: 'mgmt-installs',
+    'mode-rest': 'mgmt-rest', rest: 'mgmt-rest', 'sites-sans-ssh': 'mgmt-rest',
+    moniteurs: 'mgmt-moniteurs', kuma: 'mgmt-moniteurs',
+    docroots: 'mgmt-docroots',
+    'sites-non-geres': 'mgmt-nongeres', 'non-geres': 'mgmt-nongeres',
+    candidats: 'mgmt-nongeres',
+  },
+  reglages: {
+    collecte: 'set-collecte', cadence: 'set-collecte',
+    alertes: 'set-alertes', telegram: 'set-alertes',
+    vizproof: 'set-vizproof',
+    'controle-visuel': 'set-visuel', visuel: 'set-visuel', 'maj-sure': 'set-visuel',
+    incidents: 'set-incidents', 'regles-incidents': 'set-incidents',
+    'cles-ssh': 'set-cles', cles: 'set-cles', sshkeys: 'set-cles',
+    apparence: 'set-apparence', theme: 'set-apparence',
+    session: 'set-session',
   },
 };
 
@@ -118,21 +133,12 @@ function allerAncre(route, sub) {
 let NAVLOCK = false;   // évite que l'écriture de l'URL relance la navigation
 let ROUTE = 'parc';    // destination affichée ('site' pour la page d'un site)
 
-function currentSub(route) {
-  const d = PAR_ROUTE[route];
-  const nav = d && document.querySelector(`#page-${d.page}> .subtabs`);
-  if (!nav) return -1;
-  return [...nav.querySelectorAll('.subtab')].findIndex(b => b.classList.contains('active'));
-}
-
-/* `push` : seule une navigation VOULUE par l'utilisateur (clic de destination
-   ou de sous-onglet) empile une entrée d'historique. Sans elle, `replaceState`
-   seul faisait sortir de l'application au premier clic sur « Précédent ». */
-function writeHash(route, sub, push) {
+/* `push` : seule une navigation VOULUE par l'utilisateur (clic de destination)
+   empile une entrée d'historique. Sans elle, `replaceState` seul faisait sortir
+   de l'application au premier clic sur « Précédent ». */
+function writeHash(route, push) {
   if (NAVLOCK) return;
-  const i = (sub === undefined) ? currentSub(route) : sub;
-  const slugs = SUBSLUG[route] || [];
-  const h = '#' + route + (i >= 0 && slugs[i] ? '/' + slugs[i] : '');
+  const h = '#' + route;
   if (location.hash === h) return;
   NAVLOCK = true;                    // pushState ne déclenche pas hashchange, ceinture et bretelles
   try { history[push ? 'pushState' : 'replaceState'](null, '', h); } catch (e) { /* historique verrouillé */ }
@@ -173,7 +179,8 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   if (route === 'securite') loadSec();
   if (route === 'changements') loadHist();
   if (route === 'incidents') renderIncidents();
-  if (ecrire) writeHash(route, undefined, push);
+  if (route === 'reglages') loadReglages();
+  if (ecrire) writeHash(route, push);
   return true;
 }
 
@@ -211,15 +218,6 @@ function applyHash() {
 
   if (tete === 'site' && parts[1]) { showSite(parts[1], parts[2] || ''); return; }
 
-  // Réglages : encore une modale en phase 2. On garde l'écran courant dessous
-  // et on rend la main à l'URL précédente à la fermeture.
-  if (tete === 'reglages') {
-    NAVLOCK = true;
-    if (ROUTE !== 'site') showDest(ROUTE, { ecrire: false });
-    NAVLOCK = false;
-    ouvrirReglages();
-    return;
-  }
   // Compatibilité : #dash, #sec/…, #hist/…, #mgmt/… → nouvelles destinations.
   if (PAR_LEGACY[tete]) {
     const d = PAR_LEGACY[tete];
@@ -231,53 +229,10 @@ function applyHash() {
   }
   NAVLOCK = true;
   const ok = showDest(tete || 'parc', { ecrire: false });
-  if (ok && sub && SUBSLUG[tete]) {
-    const i = SUBSLUG[tete].indexOf(sub);
-    const nav = document.querySelector(`#page-${PAR_ROUTE[tete].page}> .subtabs`);
-    if (i >= 0 && nav) { const b = nav.querySelectorAll('.subtab')[i]; if (b) b.click(); }
-  }
   if (ok && sub && ANCRES[tete]) allerAncre(tete, sub);
   NAVLOCK = false;
   // Fragment inconnu : on retombe sur Parc pour de bon (l'URL ET l'écran).
   if (!ok) showDest('parc');
-}
-
-/* ---- sous-onglets ---------------------------------------------------------
-   Les libellés viennent des <h2> existants — rien à maintenir en double.
-   Il n'en reste qu'un jeu, celui de Gestion : Sécurité et Changements sont
-   passées en pages à ancres (phase 3), Gestion suivra en phase 4. */
-function buildSubtabs(pageId, key, shortLabels) {
-  const page = document.getElementById(pageId); if (!page) return;
-  const secs = [...page.querySelectorAll(':scope> .section')];
-  if (secs.length < 2) return;
-  let nav = page.querySelector(':scope> .subtabs');
-  if (!nav) {
-    nav = document.createElement('nav'); nav.className = 'subtabs';
-    const anchor = page.querySelector(':scope> .filters');
-    if (anchor) anchor.after(nav); else page.prepend(nav);
-  }
-  nav.innerHTML = secs.map((s, i) => {
-    const t = s.querySelector('h2');
-    const raw = t ? (t.childNodes[0]?.textContent || t.textContent) : 'Section ' + (i + 1);
-    const label = (shortLabels && shortLabels[i]) || raw.trim().replace(/\s*\(.*$/, '');
-    return `<button class="subtab" type="button" data-i="${i}">${H(label)}</button>`;
-  }).join('');
-  // `push` : seul un clic de l'utilisateur empile une entrée d'historique ;
-  // la restauration au chargement ou depuis l'URL remplace.
-  const sel = (i, push) => {
-    secs.forEach((s, j) => { s.hidden = (j !== i); });
-    nav.querySelectorAll('.subtab').forEach((b, j) => {
-      b.classList.toggle('active', j === i);
-      b.setAttribute('aria-current', j === i ? 'true' : 'false');
-    });
-    try { localStorage[key] = String(i); } catch (e) { /* stockage refusé */ }
-    const route = ROUTE_DE_PAGE[pageId.replace('page-', '')];
-    if (document.getElementById(pageId).classList.contains('active')) writeHash(route, i, push);
-  };
-  nav.querySelectorAll('.subtab').forEach((b, i) => { b.onclick = () => sel(i, true); });
-  let start = parseInt((() => { try { return localStorage[key]; } catch (e) { return '0'; } })() || '0', 10);
-  if (!(start >= 0 && start < secs.length)) start = 0;
-  sel(start, false);
 }
 
 /* ---- démarrage ------------------------------------------------------------ */
@@ -303,26 +258,10 @@ async function boot() {
   document.getElementById('searchbtn').onclick = ouvrirRecherche;
   document.getElementById('searchkbd').textContent = raccourciLabel();
 
-  // La modale Réglages rend la main à l'URL de l'écran affiché.
-  const rendreLaMain = () => {
-    if (location.hash !== '#reglages') return;
-    if (ROUTE === 'site') history.back(); else writeHash(ROUTE);
-  };
-  registerModalCloser('setmodal', () => {
-    document.getElementById('setmodal').classList.remove('open');
-    rendreLaMain();
-  });
-  document.getElementById('setmodal').addEventListener('click', e => {
-    if (e.target.id === 'setmodal') rendreLaMain();
-  });
-
   document.querySelectorAll('.nav-i[data-dest]').forEach(b => {
     b.onclick = e => { e.preventDefault(); showDest(b.dataset.dest, { push: true }); };
   });
   window.addEventListener('hashchange', applyHash);
-
-  buildSubtabs('page-mgmt', 'dashSubMgmt',
-    ['Sites non gérés', 'Installs découverts', 'Mode REST', 'Moniteurs Kuma', 'Docroots', 'Serveurs']);
 
   /* Un écran se redessine quand le store change ; plus personne ne l'appelle
      depuis le chargeur de données. La page site, elle, se rafraîchit sur ordre

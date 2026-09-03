@@ -19,7 +19,7 @@ import { menuOuvert, fermerMenus } from './actions-menu.js';
    les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
    viennent en tête. */
 const MODALES = ['searchmodal', 'askmodal', 'vizmodal', 'rbmodal', 'addmodal',
-  'bulkmodal', 'setmodal', 'logmodal'];
+  'bulkmodal', 'srvmodal', 'jsonmodal', 'logmodal'];
 
 const CLOSERS = {};
 

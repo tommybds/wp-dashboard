@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1108">
-<link rel="stylesheet" href="css/base.css?v=2026-09-03-1108">
-<link rel="stylesheet" href="css/components.css?v=2026-09-03-1108">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1108">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-03-1157">
+<link rel="stylesheet" href="css/base.css?v=2026-09-03-1157">
+<link rel="stylesheet" href="css/components.css?v=2026-09-03-1157">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-03-1157">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,32 +21,35 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-03-1108",
-    "./lib/api.js": "./lib/api.js?v=2026-09-03-1108",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1108",
-    "./lib/format.js": "./lib/format.js?v=2026-09-03-1108",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1108",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1108",
-    "./lib/state.js": "./lib/state.js?v=2026-09-03-1108",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1108",
-    "./components/button.js": "./components/button.js?v=2026-09-03-1108",
-    "./components/chip.js": "./components/chip.js?v=2026-09-03-1108",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1108",
-    "./components/job.js": "./components/job.js?v=2026-09-03-1108",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1108",
-    "./components/search.js": "./components/search.js?v=2026-09-03-1108",
-    "./components/shell.js": "./components/shell.js?v=2026-09-03-1108",
-    "./components/table.js": "./components/table.js?v=2026-09-03-1108",
-    "./components/tip.js": "./components/tip.js?v=2026-09-03-1108",
-    "./components/toast.js": "./components/toast.js?v=2026-09-03-1108",
-    "./components/viz.js": "./components/viz.js?v=2026-09-03-1108",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1108",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1108",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1108",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1108",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1108",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1108",
-    "./screens/site.js": "./screens/site.js?v=2026-09-03-1108"
+    "./version.js": "./version.js?v=2026-09-03-1157",
+    "./lib/api.js": "./lib/api.js?v=2026-09-03-1157",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-03-1157",
+    "./lib/format.js": "./lib/format.js?v=2026-09-03-1157",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-03-1157",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-03-1157",
+    "./lib/state.js": "./lib/state.js?v=2026-09-03-1157",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-03-1157",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-03-1157",
+    "./components/button.js": "./components/button.js?v=2026-09-03-1157",
+    "./components/chip.js": "./components/chip.js?v=2026-09-03-1157",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-03-1157",
+    "./components/job.js": "./components/job.js?v=2026-09-03-1157",
+    "./components/log.js": "./components/log.js?v=2026-09-03-1157",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-03-1157",
+    "./components/search.js": "./components/search.js?v=2026-09-03-1157",
+    "./components/shell.js": "./components/shell.js?v=2026-09-03-1157",
+    "./components/table.js": "./components/table.js?v=2026-09-03-1157",
+    "./components/tip.js": "./components/tip.js?v=2026-09-03-1157",
+    "./components/toast.js": "./components/toast.js?v=2026-09-03-1157",
+    "./components/viz.js": "./components/viz.js?v=2026-09-03-1157",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-03-1157",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-03-1157",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-03-1157",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-03-1157",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-03-1157",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-03-1157",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-03-1157",
+    "./screens/site.js": "./screens/site.js?v=2026-09-03-1157"
   }
 }
 </script>
@@ -83,9 +86,10 @@
   </ul>
   <span class="nav-sep"></span>
   <div class="nav-foot">
-    <button class="nav-i" type="button" id="setbtn" title="Réglages (cadence, clés SSH, alertes)">
+    <a class="nav-i" href="#reglages" data-dest="reglages" id="setbtn"
+       title="Réglages (collecte, alertes, VizProof, clés SSH, apparence)">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-settings"></use></svg>
-      <span class="nav-l">Réglages</span></button>
+      <span class="nav-l">Réglages</span></a>
     <button class="nav-i" type="button" id="logbtn" title="Journal des actions">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-scroll-text"></use></svg>
       <span class="nav-l">Journal</span></button>
@@ -142,63 +146,14 @@
 <!-- ===================== INCIDENTS (écran de la phase 3) ===================== -->
 <div class="page" id="page-incidents"></div>
 
-<!-- ===================== GESTION ===================== -->
-<div class="page" id="page-mgmt">
-  <div class="filters">
-    <button class="btn primary" type="button" id="addsite">
-      <svg class="ic" aria-hidden="true"><use href="#i-plus"></use></svg> Ajouter un site</button>
-    <span class="muted small">Analyse l'URL, choisit la méthode (SSH ou appairage) et guide l'installation de l'agent.</span>
-  </div>
-  <div class="section">
-    <h2>Sites supervisés non gérés <span class="muted small" id="cand-count"></span></h2>
-    <p class="hint">Sites vus par le monitoring mais absents du parc géré : ajoutez-les en un clic, l'URL est reprise automatiquement.</p>
-    <div id="cand-body" class="small muted">chargement…</div>
-  </div>
-  <div class="section">
-    <h2>Installs découverts <span class="muted small" id="mgmt-count"></span></h2>
-    <p class="hint">Tous les WordPress trouvés en SSH. « Visibilité » prime sur le filtre Kuma du tableau de bord. L'alias force le rattachement à un moniteur nommé différemment du domaine.</p>
-    <p class="hint">Connecter un site installe la liaison temps réel : le site pousse ses événements (nouvel administrateur, activation de plugin) au dashboard sans attendre la collecte horaire.</p>
-    <div class="wrap"><table><thead><tr>
-      <th>Install (vhost)</th><th>Serveur</th><th>Moniteur Kuma</th><th>Visibilité</th><th>Alias</th><th>Dashboard</th><th><span class="sr-only">Enregistrer</span></th>
-    </tr></thead><tbody id="mgmt-tb"></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Sites en mode REST (sans SSH) <span class="muted small" id="rest-count"></span></h2>
-    <p class="hint">Sites gérés par l'agent Dash à travers l'API REST : l'inventaire remonte sans accès SSH au serveur. L'ajout manuel ci-dessous ne sert que si l'agent est déjà installé et appairé sur le site — sinon passez par « Ajouter un site ».</p>
-    <div id="rest-body" class="small muted">chargement…</div>
-    <div class="filters mt2">
-      <input class="inp w-md" id="rest-url" placeholder="https://exemple.fr" aria-label="URL du site">
-      <input class="inp w-sm" id="rest-name" placeholder="nom du site (facultatif)" aria-label="Nom du site">
-      <button class="btn sm" type="button" id="rest-add">
-        <svg class="ic" aria-hidden="true"><use href="#i-plus"></use></svg> Ajouter manuellement</button>
-      <span id="rest-msg" class="small"></span>
-    </div>
-  </div>
-  <div class="section">
-    <h2>Moniteurs Uptime Kuma</h2>
-    <p class="hint">Mettre en pause ou supprimer un moniteur. Toute modification redémarre Kuma (~15 s d'interruption du monitoring).</p>
-    <div class="wrap"><table><thead><tr>
-      <th>Moniteur</th><th>Client</th><th>État</th><th><span class="sr-only">Actions</span></th>
-    </tr></thead><tbody id="mon-tb"></tbody></table></div>
-  </div>
-  <div class="section">
-    <h2>Docroots supplémentaires</h2>
-    <p class="hint">Chemins à scanner en plus des patterns par défaut (ex. dev, sous-installs). Le prochain scan les prend en compte.</p>
-    <div id="doc-list"></div>
-    <div class="filters mt2">
-      <select id="doc-srv" aria-label="Serveur"></select>
-      <input class="inp w-lg" id="doc-path" placeholder="/var/www/vhosts/xxx/httpdocs" aria-label="Chemin du docroot">
-      <button class="btn sm" type="button" id="doc-add">
-        <svg class="ic" aria-hidden="true"><use href="#i-plus"></use></svg> Ajouter</button>
-    </div>
-  </div>
-  <div class="section">
-    <h2>Serveurs (avancé)</h2>
-    <p class="hint">Liste des serveurs interrogés (JSON). Modifier avec prudence.</p>
-    <textarea class="code" id="srv-json" aria-label="Serveurs (JSON)"></textarea>
-    <div class="mt2"><button class="btn sm" type="button" id="srv-save">Enregistrer les serveurs</button> <span id="srv-msg" class="small muted"></span></div>
-  </div>
-</div>
+<!-- ===================== GESTION =====================
+     Page à ancres (six sections) construite par screens/gestion.js avec h(). -->
+<div class="page" id="page-mgmt"></div>
+
+<!-- ===================== RÉGLAGES =====================
+     Page à ancres (huit sections) construite par screens/reglages.js avec h().
+     Ce n'est plus une modale depuis la phase 4. -->
+<div class="page" id="page-reglages"></div>
 
 <!-- ===================== CHANGEMENTS (chronologie + tendance) =====================
      Page à ancres construite par screens/historique.js avec h(). -->
@@ -213,18 +168,33 @@
 
 <div class="modal" id="logmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="log-title"><h2 class="mt0" id="log-title">Journal des actions</h2><div id="loglist">…</div></div></div>
 
-<div class="modal" id="setmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="set-title">
-  <h2 class="mt0" id="set-title">Réglages</h2>
-  <h3>Cadence de collecte</h3>
-  <div id="sched-body"><span class="muted small">chargement…</span></div>
-  <h3>Clés SSH</h3>
-  <div id="set-body"><span class="muted small">chargement…</span></div>
-  <h3>Mise à jour sûre</h3>
-  <div id="mset-body"><span class="muted small">chargement…</span></div>
-  <h3>VizProof</h3>
-  <div id="viz-body"><span class="muted small">chargement…</span></div>
-  <h3>Alertes Telegram</h3>
-  <div id="alert-body"><span class="muted small">chargement…</span></div>
+<!-- Formulaire d'un serveur : un champ par attribut, la validation du backend
+     (validate_server) est reproduite à la saisie et son refus 400 se pose sur
+     le champ concerné. -->
+<div class="modal" id="srvmodal"><div class="box medium" role="dialog" aria-modal="true" aria-labelledby="srvm-title">
+  <h2 class="mt0" id="srvm-title">Ajouter un serveur</h2>
+  <p class="hint" id="srvm-intro"></p>
+  <div id="srvm-body"></div>
+  <div id="srvm-err" class="small"></div>
+  <div class="actions jend mt4">
+    <button class="btn" type="button" id="srvm-cancel">Annuler</button>
+    <button class="btn" type="button" id="srvm-test">Tester la connexion</button>
+    <button class="btn primary" type="button" id="srvm-ok">Enregistrer</button>
+  </div>
+</div></div>
+
+<!-- Repli d'expert : servers.json tel quel. Il reste là pour qu'une clé que le
+     formulaire ne connaît pas ne soit jamais hors d'atteinte. -->
+<div class="modal" id="jsonmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="jsonm-title">
+  <h2 class="mt0" id="jsonm-title">Serveurs (JSON)</h2>
+  <p class="hint">Le fichier <code>servers.json</code> tel quel. Le serveur applique les mêmes règles de
+    validation qu'au formulaire : un refus s'affiche ci-dessous.</p>
+  <textarea class="code" id="srv-json" aria-label="Serveurs (JSON)"></textarea>
+  <div id="srv-msg" class="small mt2"></div>
+  <div class="actions jend mt4">
+    <button class="btn" type="button" id="jsonm-cancel">Fermer</button>
+    <button class="btn primary" type="button" id="srv-save">Enregistrer les serveurs</button>
+  </div>
 </div></div>
 
 <div class="modal" id="addmodal"><div class="box" role="dialog" aria-modal="true" aria-labelledby="add-title">
@@ -333,6 +303,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-03-1108"></script>
+<script type="module" src="app.js?v=2026-09-03-1157"></script>
 </body>
 </html>

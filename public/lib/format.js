@@ -87,6 +87,51 @@ export function udRulesFr(rules) {
   }).join(' · ');
 }
 
+/* ---- évènements poussés par les agents ------------------------------------
+   L'agent envoie du JSON brut (`{"login":"admin","ip":"10.0.0.9"}`) : illisible
+   tel quel dans une chronologie. On le rend en une phrase, par type
+   d'évènement, avec un repli « clé : valeur » pour les types inconnus — un
+   agent plus récent que l'interface reste lisible.
+
+   NOTE : screens/site.js porte encore sa propre copie (`tlDetail`) pour son
+   onglet Historique. Elle disparaîtra quand cet écran sera réécrit ; en
+   attendant, l'écran Changements se sert de celle-ci. */
+export function detailEvenement(label, brut) {
+  if (brut === null || brut === undefined || brut === '') return '';
+  let d;
+  try { d = JSON.parse(brut); } catch (err) { return stripPhpNoise(String(brut)).slice(0, 220); }
+  if (!d || typeof d !== 'object') return String(brut).slice(0, 220);
+  const slug = f => String(f).split('/')[0];
+  const lab = String(label || '');
+  if (lab === 'upgrader_process_complete') {
+    const items = (d.items || []).map(slug).filter(Boolean);
+    const quoi = { plugin: 'extension', theme: 'thème', core: 'cœur', translation: 'traduction' }[d.type]
+      || d.type || 'élément';
+    if (!items.length) return `${quoi} · ${d.action || 'mise à jour'}`;
+    return `${quoi}${items.length > 1 ? 's' : ''} : ${items.join(', ')}`;
+  }
+  if (lab === 'wp_login') return `${d.login || '?'}${d.ip ? ' · depuis ' + d.ip : ''}`;
+  if (lab === 'user_register' || lab === 'set_user_role' || lab === 'grant_super_admin') {
+    return `${d.login || '?'}${d.email ? ' <' + d.email + '>' : ''}`
+      + `${(d.roles || []).length ? ' · ' + d.roles.join(', ') : ''}`;
+  }
+  if (lab === 'deleted_user') return `${d.login || d.id || '?'}`;
+  if (lab === 'activated_plugin' || lab === 'deactivated_plugin') return slug(d.plugin || d.file || '?');
+  if (lab === 'switch_theme') return d.name || d.stylesheet || '?';
+  return Object.entries(d).filter(([, v]) => v !== null && v !== '' && v !== undefined)
+    .map(([k, v]) => `${k} : ${Array.isArray(v) ? v.map(slug).join(', ') : v}`).join(' · ').slice(0, 220);
+}
+
+/* Évènements considérés comme une alerte immédiate : mêmes que côté serveur
+   (CRITICAL_EVENTS), plus un changement de rôle vers administrateur. */
+const EVT_ALERTE = ['user_register', 'activated_plugin'];
+
+export function evenementAlerte(label, detail) {
+  const l = String(label || '');
+  if (EVT_ALERTE.includes(l)) return true;
+  return l === 'set_user_role' && /administrator/i.test(String(detail || ''));
+}
+
 /* Retire le bruit PHP des sorties wp-cli : ces lignes noient l'information utile. */
 export function stripPhpNoise(s) {
   return String(s ?? '').split('\n').filter(l => {
