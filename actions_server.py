@@ -854,6 +854,24 @@ def record_checksum(domain, rc, out):
         save_json(CHECKSUMS_PATH, store)
 
 
+# ---------- seuils de la file « à traiter » ----------
+# Déclarés ici parce qu'ils entrent dans SETTINGS_DEFAULTS juste en dessous ;
+# la logique qui les consomme vit plus bas, avec les incidents.
+INCIDENT_RULES_DEFAULTS = {
+    # Sauvegarde UpdraftPlus jugée en retard au-delà de ce nombre d'heures.
+    "backup_max_age_h": 48,
+    # Certificat TLS signalé en dessous de ce nombre de jours restants…
+    "cert_warn_days": 21,
+    # …et compté comme critique en dessous de celui-ci.
+    "cert_critical_days": 7,
+    # Une vulnérabilité « high » corrigeable devient-elle un incident critique ?
+    # Non par défaut : sinon la file d'attente est illisible, et l'écran
+    # Sécurité montre déjà l'ensemble des vulnérabilités.
+    "vuln_high_is_incident": False,
+    # Versions PHP majeure.mineure hors support (une entrée par serveur).
+    "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"],
+}
+
 # ---------- réglages persistants (data/settings.json) ----------
 # Un seul fichier pour les réglages qui ne sont ni des alertes, ni une cadence
 # de cron. Le type de la valeur par défaut fait foi à l'écriture : une clé
@@ -882,6 +900,10 @@ SETTINGS_DEFAULTS = {
     # et la valeur n'est JAMAIS renvoyée par l'API : cf. settings_public().
     "vizproof_token": "",
     "vizproof_api_base": VIZ_API_BASE_DEFAULT,
+    # Seuils de la file d'incidents (GET /api/incidents). Sous-dictionnaire :
+    # les clés inconnues y sont ignorées comme au premier niveau, et chaque
+    # valeur est ramenée au type de sa valeur par défaut.
+    "incident_rules": dict(INCIDENT_RULES_DEFAULTS),
 }
 # Réglages qui sont des secrets : exclus de toute réponse HTTP et de tout journal.
 SETTINGS_SECRETS = ("vizproof_token",)
@@ -904,7 +926,10 @@ def settings_public(cfg=None):
 def settings_cfg():
     """Réglages persistants, complétés par les valeurs par défaut."""
     raw = load_json(SETTINGS_PATH, {})
-    cfg = dict(SETTINGS_DEFAULTS)
+    # dict() seul serait une copie de SURFACE : le sous-dictionnaire
+    # `incident_rules` et sa liste seraient partagés avec les valeurs par défaut.
+    cfg = {k: (coerce_value(v, v) if isinstance(v, (dict, list)) else v)
+           for k, v in SETTINGS_DEFAULTS.items()}
     if isinstance(raw, dict):
         for k, v in raw.items():
             if k in SETTINGS_DEFAULTS:
@@ -912,9 +937,15 @@ def settings_cfg():
     return cfg
 
 
-def coerce_setting(key, value):
-    """Normalise un réglage selon le type de sa valeur par défaut."""
-    ref = SETTINGS_DEFAULTS.get(key)
+def coerce_value(ref, value):
+    """Normalise une valeur selon le TYPE de la valeur de référence.
+
+    Récursive : un réglage peut être un sous-dictionnaire de seuils
+    (`incident_rules`) ou une liste homogène (`php_eol_versions`). La référence
+    fait foi de bout en bout — une clé absente de la référence est ignorée, une
+    valeur d'un autre type est ramenée au type attendu, une liste est bornée.
+    `bool` est testé avant `int` : en Python, True EST un int.
+    """
     if isinstance(ref, bool):
         return bool(value)
     if isinstance(ref, int):
@@ -922,9 +953,37 @@ def coerce_setting(key, value):
             return int(value)
         except (TypeError, ValueError):
             return ref
+    if isinstance(ref, float):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return ref
     if isinstance(ref, str):
         return str("" if value is None else value).strip()
+    if isinstance(ref, dict):
+        # Copie PROFONDE de la référence : rendre le sous-dictionnaire de
+        # SETTINGS_DEFAULTS tel quel exposerait les valeurs par défaut à la
+        # mutation d'un appelant, pour tout le processus.
+        out = {k: (coerce_value(v, v) if isinstance(v, (dict, list)) else v)
+               for k, v in ref.items()}
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k in ref:
+                    out[k] = coerce_value(ref[k], v)
+        return out
+    if isinstance(ref, list):
+        if not isinstance(value, (list, tuple)):
+            return list(ref)
+        modele = ref[0] if ref else ""
+        # borne dure : un réglage de liste est une poignée de valeurs, pas un
+        # dépôt de données que l'API réécrirait à chaque enregistrement.
+        return [coerce_value(modele, v) for v in list(value)[:100]]
     return value
+
+
+def coerce_setting(key, value):
+    """Normalise un réglage selon le type de sa valeur par défaut."""
+    return coerce_value(SETTINGS_DEFAULTS.get(key), value)
 
 
 def settings_write(patch):
@@ -2569,6 +2628,62 @@ def kuma_state():
     return groups, monitors
 
 
+# ---------- Kuma : dernier battement de chaque moniteur ----------
+# Le statut « live » de l'interface vient de la status page publique (HTTP).
+# La file d'incidents, elle, ne doit faire AUCUN appel réseau : elle lit le
+# dernier battement directement dans la base, comme les autres lectures Kuma.
+KUMA_HEARTBEAT_SQL = (
+    "SELECT m.name||char(9)||h.status||char(9)||COALESCE(h.time,'')||char(9)||"
+    "REPLACE(REPLACE(COALESCE(h.msg,''),char(9),' '),char(10),' ') "
+    "FROM heartbeat h JOIN monitor m ON m.id=h.monitor_id "
+    "WHERE h.id IN (SELECT MAX(id) FROM heartbeat GROUP BY monitor_id) "
+    "AND m.active=1 AND m.type!='group';")
+
+
+def kuma_heartbeat_epoch(value):
+    """Horodatage d'un battement Kuma → epoch.
+
+    Kuma écrit la colonne `time` en UTC (« 2026-09-03 07:12:44.123 »). On la
+    convertit explicitement : la lire comme une heure locale décalait l'âge des
+    incidents de la valeur du fuseau.
+    """
+    s = str(value or "").strip().replace("T", " ")
+    if not s:
+        return None
+    s = s.split("+")[0].split("Z")[0].split(".")[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            d = datetime.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        return d.replace(tzinfo=datetime.timezone.utc).timestamp()
+    return None
+
+
+def kuma_heartbeats():
+    """{nom du moniteur: {status, time, msg, ts}} — dernier battement connu.
+
+    LÈVE si la base est hors d'atteinte (docker absent, conteneur arrêté) :
+    l'appelant en fait une ligne `errors`, au lieu de conclure « rien n'est
+    down » sur une lecture qui n'a pas eu lieu.
+    """
+    rc, out = kuma_sql(KUMA_HEARTBEAT_SQL)
+    if rc != 0:
+        raise RuntimeError((out or f"rc={rc}")[-200:])
+    battements = {}
+    for line in (out or "").splitlines():
+        p = line.split("\t")
+        if len(p) < 4:
+            continue
+        try:
+            statut = int(p[1])
+        except (TypeError, ValueError):
+            continue
+        battements[p[0]] = {"status": statut, "time": p[2], "msg": p[3].strip(),
+                            "ts": kuma_heartbeat_epoch(p[2])}
+    return battements
+
+
 def kuma_create(domain, monitor_name, group_id, url, mtype, keyword):
     name = monitor_name or domain
     esc = lambda s: str(s).replace('"', '""')
@@ -2920,6 +3035,463 @@ def evaluate_alerts():
                           "🕳 <b>Collecteur muet</b>"
                           f"\nDernière collecte : {esc_html(detail)} — seuil {dead_h:g} h")
     return {"enabled": True, "sent": sent}
+
+
+# ---------------------------------------------------------------------------
+#  Incidents : la file « à traiter » (§4 du plan de refonte)
+# ---------------------------------------------------------------------------
+# Un SEUL agrégat sert l'écran Incidents et les pastilles de la barre latérale :
+# deux calculs séparés finiraient par ne plus dire la même chose, et c'est
+# précisément ce que le plan demande d'éviter (« les pastilles de compteur
+# correspondent aux règles de la file à traiter »).
+#
+# Contrat de la route : aucune sortie RÉSEAU ni SSH. On ne lit que des fichiers
+# de data/ et la base SQLite de Kuma (docker exec local, comme /api/sec/certs).
+# Chaque source est isolée : celle qui échoue laisse une ligne dans `errors`,
+# les autres remontent quand même leurs incidents.
+INCIDENT_FATAL_SEVERITIES = ("Fatal error", "Parse error")
+INCIDENT_CACHE_TTL = 30          # secondes, pour /api/mgmt/counts
+
+
+def incident_rules(cfg=None):
+    """Seuils de la file d'incidents, complétés par les valeurs par défaut."""
+    raw = (cfg if cfg is not None else settings_cfg()).get("incident_rules")
+    rules = dict(INCIDENT_RULES_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in rules:
+            if k in raw:
+                rules[k] = raw[k]
+    return rules
+
+
+def incident_json(path, default):
+    """Lit un JSON de data/ pour la file d'incidents.
+
+    Différence volontaire avec `load_json` : un fichier ILLISIBLE lève, au lieu
+    de se confondre avec « rien à signaler ». Un fichier simplement absent
+    (source jamais lancée) rend la valeur par défaut, ce n'est pas une erreur.
+    """
+    if not os.path.exists(path):
+        return default
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def incident_iso(epoch):
+    """Epoch → ISO 8601 local (secondes), ou None."""
+    if epoch is None:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(float(epoch)).replace(microsecond=0).isoformat()
+    except (OverflowError, OSError, TypeError, ValueError):
+        return None
+
+
+def make_incident(kind, severity, key, title, detail, site="", server="", arg="",
+                  since=None, action=None, link=None, now=None):
+    """Une entrée de la file. `id` = kind:cible:arg — stable d'un appel à l'autre.
+
+    La « cible » est la clé du site (clé Kuma ou domaine) ou, pour les incidents
+    qui portent sur un serveur (`server_stale`, `php_eol`), son nom : c'est ce
+    qui rend l'identifiant unique, et c'est lui qui sert au dédoublonnage.
+    """
+    age = 0.0
+    if since is not None:
+        # Un `since` dans le futur (horloge distante en avance) donnerait un âge
+        # négatif, donc un tri à l'envers : on plafonne à 0.
+        age = max(0.0, ((time.time() if now is None else now) - float(since)) / 3600.0)
+    return {"id": f"{kind}:{key}:{arg}", "severity": severity, "kind": kind,
+            "site": site, "server": server or "", "title": title, "detail": detail,
+            "since": incident_iso(since), "age_h": round(age, 2),
+            "action": action, "link": link}
+
+
+def incident_fleet():
+    """fleet.json → (sites visibles, index par clé, serveurs).
+
+    `sites` : [(nom du serveur, site)] · `index` : clé Kuma ou domaine →
+    (nom du serveur, site). Un même domaine peut exister sur deux serveurs
+    (copie legacy) : l'install rattaché à Kuma l'emporte, comme partout ailleurs.
+    """
+    fleet = incident_json(FLEET_PATH, {"servers": []})
+    sites, index, servers = [], {}, []
+    for srv in (fleet.get("servers") or []):
+        if not isinstance(srv, dict):
+            continue
+        nom = srv.get("name") or ""
+        servers.append(srv)
+        for s in (srv.get("sites") or []):
+            if not isinstance(s, dict) or not site_visible(s):
+                continue
+            sites.append((nom, s))
+            for cle in (s.get("kuma"), s.get("domain")):
+                if cle and (cle not in index or s.get("kuma")):
+                    index[cle] = (nom, s)
+    return sites, index, servers
+
+
+def inc_down(sites, now):
+    """Moniteur Kuma dont le dernier battement est en échec (status 0)."""
+    battements = kuma_heartbeats()
+    out = []
+    for server, s in sites:
+        nom = s.get("kuma")
+        if not nom:
+            continue                      # site non supervisé : rien à conclure
+        hb = battements.get(nom)
+        if not hb or hb.get("status") != 0:
+            continue
+        out.append(make_incident(
+            "down", "critical", nom, f"{nom} injoignable",
+            hb.get("msg") or "moniteur Kuma en échec, sans détail",
+            site=nom, server=server, since=hb.get("ts"), now=now,
+            action={"label": "Re-scan", "act": "rescan", "arg": ""},
+            link={"tab": "incidents", "sub": ""}))
+    return out
+
+
+def inc_php_fatal(index, now):
+    """Erreurs PHP fatales de la fenêtre courante de php_errors.json."""
+    res = incident_json(PHPERR_PATH, {})
+    out = []
+    for s in (res.get("sites") or []):
+        dom = s.get("domain") or ""
+        if dom not in index:
+            continue                      # site masqué ou disparu du parc
+        server, _site = index[dom]
+        for g in (s.get("groups") or []):
+            if g.get("severity") not in INCIDENT_FATAL_SEVERITIES:
+                continue
+            ou = str(g.get("short") or g.get("file") or "?")
+            if g.get("line"):
+                ou = f"{ou}:{g['line']}"
+            try:
+                n = int(g.get("count") or 1)
+            except (TypeError, ValueError):
+                n = 1
+            out.append(make_incident(
+                "php_fatal", "critical", dom,
+                f"{g.get('severity') or 'Fatal error'} sur {dom}",
+                f"{g.get('message') or 'erreur sans message'} — {ou} (×{n})",
+                site=dom, server=server, arg=ou,
+                since=parse_ts(g.get("first")), now=now,
+                link={"tab": "securite", "sub": "phperrors"}))
+    return out
+
+
+def inc_vulns(index, rules, now):
+    """Vulnérabilité grave AVEC correctif disponible : une entrée par (site, composant)."""
+    res = incident_json(VULNS_FOUND_PATH, {})
+    graves = {"critical"}
+    if rules.get("vuln_high_is_incident"):
+        graves.add("high")
+    out, vus = [], set()
+    for s in (res.get("sites") or []):
+        cle = s.get("domain") or ""
+        if cle not in index:
+            continue
+        server, site = index[cle]
+        rest = site.get("via") == "rest"   # aucune action wp-cli possible
+        for v in (s.get("findings") or []):
+            if str(v.get("severity") or "").lower() not in graves:
+                continue
+            vers = str(v.get("update_to") or "").strip()
+            if not vers:
+                continue                  # pas de correctif : rien à proposer
+            comp = str(v.get("component") or "?")
+            if (cle, comp) in vus:
+                continue
+            vus.add((cle, comp))
+            if v.get("kind") == "core":
+                action = {"label": f"Mettre à jour WordPress → {vers}",
+                          "act": "core_update", "arg": ""}
+            else:
+                action = {"label": f"MAJ {comp} → {vers}",
+                          "act": "plugin_update", "arg": comp}
+            titre = f"{comp} {v.get('version') or ''} · {v.get('severity')} corrigeable"
+            detail = str(v.get("title") or "vulnérabilité")
+            if v.get("cve"):
+                detail += f" ({v['cve']})"
+            out.append(make_incident(
+                "vuln_critical_fixable", "critical", cle, " ".join(titre.split()),
+                detail + f" — correctif en {vers}",
+                site=cle, server=server, arg=comp, now=now,
+                action=None if rest else action,
+                link={"tab": "securite", "sub": "vulns"}))
+    return out
+
+
+def inc_checksums(index, now):
+    """Dernier `verify_checksums` en échec : des fichiers du cœur ont été modifiés."""
+    store = incident_json(CHECKSUMS_PATH, {})
+    out = []
+    for dom, rec in (store if isinstance(store, dict) else {}).items():
+        if not isinstance(rec, dict) or rec.get("ok") is not False:
+            continue
+        if dom not in index:
+            continue
+        server, _site = index[dom]
+        queue = str(rec.get("output_tail") or "")
+        touches = len(re.findall(r"doesn't verify against checksum", queue, re.I))
+        detail = (f"{touches} fichier(s) ne correspondent pas au cœur officiel"
+                  if touches else "vérification en échec")
+        out.append(make_incident(
+            "checksums_modified", "critical", dom,
+            f"Intégrité du cœur en échec sur {dom}",
+            detail + " — " + (queue[-200:].strip() or "aucune sortie conservée"),
+            site=dom, server=server, since=parse_ts(rec.get("ts")), now=now,
+            link={"tab": "securite", "sub": "checksums"}))
+    return out
+
+
+def inc_admins(sites, now):
+    """Administrateur absent de la référence admins_baseline.json.
+
+    Un site SANS référence enregistrée est ignoré : sans point de comparaison,
+    tous ses comptes seraient « inconnus » et la file d'attente deviendrait
+    illisible au premier site ajouté.
+    """
+    base = incident_json(os.path.join(DATA, "admins_baseline.json"), {})
+    out = []
+    for server, s in sites:
+        admins = s.get("admins")
+        if not isinstance(admins, list):
+            continue
+        cle = s.get("kuma") or s.get("domain") or ""
+        ref = base.get(cle) if isinstance(base, dict) else None
+        if not isinstance(ref, dict):
+            continue
+        connus = set(ref.get("logins") or [])
+        for a in admins:
+            login = (a or {}).get("login") if isinstance(a, dict) else None
+            if not login or login in connus:
+                continue
+            detail = f"compte « {login} » absent de la référence"
+            if a.get("registered"):
+                detail += f" (inscrit le {a['registered']})"
+            out.append(make_incident(
+                "admin_unknown", "critical", cle,
+                f"Administrateur inconnu sur {cle}", detail,
+                site=cle, server=server, arg=str(login),
+                since=parse_ts(a.get("registered")), now=now,
+                link={"tab": "securite", "sub": "admins"}))
+    return out
+
+
+def inc_server_stale(servers, now):
+    """Serveur injoignable à la dernière collecte (fleet.json, `stale`)."""
+    out = []
+    for srv in servers:
+        if not srv.get("stale"):
+            continue
+        nom = srv.get("name") or "?"
+        essai = str(srv.get("last_attempt") or "")
+        detail = str(srv.get("error") or "serveur injoignable")
+        if essai:
+            detail += f" — dernière tentative {essai}"
+        detail += (f" — {len(srv.get('sites') or [])} site(s) affichés d'après "
+                   "la collecte précédente")
+        out.append(make_incident(
+            "server_stale", "warning", nom, f"Serveur {nom} injoignable", detail,
+            server=nom, since=parse_ts(essai), now=now,
+            link={"tab": "gestion", "sub": "serveurs"}))
+    return out
+
+
+def inc_backup(sites, rules, now):
+    """Sauvegarde UpdraftPlus plus vieille que le seuil, ou jamais faite.
+
+    Un site SANS UpdraftPlus (`updraft` absent) est ignoré : il n'y a rien à
+    comparer et rien à déclencher — même règle que l'alerte Telegram.
+    """
+    seuil = to_number(rules.get("backup_max_age_h")) or INCIDENT_RULES_DEFAULTS["backup_max_age_h"]
+    out = []
+    for server, s in sites:
+        up = s.get("updraft")
+        if not isinstance(up, dict):
+            continue
+        cle = s.get("kuma") or s.get("domain") or ""
+        ts = to_number(up.get("last_backup_ts"))
+        age_h = (now - ts) / 3600.0 if ts else None
+        if age_h is not None and age_h <= seuil:
+            continue
+        # Site géré sans SSH : l'incident reste, mais aucune action à proposer —
+        # `updraft_backup` y répondrait « action indisponible ».
+        rest = s.get("via") == "rest"
+        out.append(make_incident(
+            "backup_late", "warning", cle, f"Sauvegarde en retard sur {cle}",
+            (f"dernière sauvegarde il y a {age_h:.0f} h" if age_h is not None
+             else "aucune sauvegarde connue") + f" — seuil {seuil:g} h",
+            site=cle, server=server, since=ts if ts else None, now=now,
+            action=None if rest else {"label": "Sauvegarder",
+                                      "act": "updraft_backup", "arg": ""},
+            link={"tab": "parc", "sub": ""}))
+    return out
+
+
+def inc_certs(index, rules, now):
+    """Certificat TLS proche de l'expiration (info relevée par Kuma)."""
+    res = ssl_certs()
+    if res.get("error"):
+        raise RuntimeError(str(res["error"])[-200:])
+    warn = to_number(rules.get("cert_warn_days")) or INCIDENT_RULES_DEFAULTS["cert_warn_days"]
+    crit = to_number(rules.get("cert_critical_days")) or INCIDENT_RULES_DEFAULTS["cert_critical_days"]
+    out = []
+    for c in (res.get("certs") or []):
+        jours = c.get("days_left", c.get("days"))
+        try:
+            jours = int(jours)
+        except (TypeError, ValueError):
+            continue                       # jours inconnus : rien à comparer
+        if jours >= warn:
+            continue
+        nom = c.get("monitor") or "?"
+        server = (index.get(nom) or ("", None))[0]
+        detail = (f"expire dans {jours} jour(s)" if jours >= 0
+                  else f"expiré depuis {-jours} jour(s)")
+        if c.get("valid_to"):
+            detail += f" (le {c['valid_to']})"
+        out.append(make_incident(
+            "cert_expiring", "critical" if jours < crit else "warning", nom,
+            f"Certificat de {nom} à renouveler", detail + f" — seuil {warn:g} j",
+            site=nom, server=server, now=now,
+            link={"tab": "securite", "sub": "certs"}))
+    return out
+
+
+def inc_php_eol(sites, rules, now):
+    """PHP hors support : UNE entrée par serveur et par version, sites regroupés."""
+    eol = {str(v).strip() for v in (rules.get("php_eol_versions") or []) if str(v).strip()}
+    if not eol:
+        return []
+    groupes = {}
+    for server, s in sites:
+        m = re.match(r"^(\d+)\.(\d+)", str(s.get("php_version") or ""))
+        if not m:
+            continue
+        court = f"{m.group(1)}.{m.group(2)}"
+        if court not in eol:
+            continue
+        groupes.setdefault((server, court), []).append(s.get("kuma") or s.get("domain") or "?")
+    out = []
+    for (server, court), doms in sorted(groupes.items()):
+        doms = sorted(set(doms))
+        out.append(make_incident(
+            "php_eol", "warning", server or "?",
+            f"PHP {court} en fin de support sur {server or '?'}",
+            f"{len(doms)} site(s) : " + ", ".join(doms[:12]) + ("…" if len(doms) > 12 else ""),
+            server=server, arg=court, now=now,
+            link={"tab": "securite", "sub": "php"}))
+    return out
+
+
+def inc_counters(sites, index):
+    """Compteurs de la barre latérale qui ne sont PAS des incidents.
+
+    `vulns_fixable` compte toutes les vulnérabilités corrigeables (pas seulement
+    les critiques) : c'est le nombre affiché sur la destination Sécurité.
+    """
+    res = incident_json(VULNS_FOUND_PATH, {})
+    fixables = 0
+    for s in (res.get("sites") or []):
+        if (s.get("domain") or "") not in index:
+            continue
+        for v in (s.get("findings") or []):
+            if str(v.get("update_to") or "").strip():
+                fixables += 1
+    maj = sum(1 for _srv, s in sites
+              if s.get("core_update") or (s.get("plugins_updates") or 0)
+              or (s.get("themes_updates") or 0))
+    return {"vulns_fixable": fixables, "updates_sites": maj}
+
+
+def incidents_snapshot(now=None):
+    """Agrégat complet → (réponse de /api/incidents, compteurs annexes)."""
+    now = time.time() if now is None else float(now)
+    rules = incident_rules()
+    incidents, errors = [], []
+
+    def source(nom, fn):
+        """Une source qui échoue laisse une trace et n'emporte pas les autres.
+
+        `list(fn())` est construit DANS le try : une source qui casse à mi-course
+        n'injecte donc aucun incident partiel.
+        """
+        try:
+            incidents.extend(list(fn()))
+        except Exception as e:
+            errors.append({"source": nom, "error": f"{type(e).__name__}: {e}"[:300]})
+
+    try:
+        sites, index, servers = incident_fleet()
+    except Exception as e:
+        sites, index, servers = [], {}, []
+        errors.append({"source": "fleet", "error": f"{type(e).__name__}: {e}"[:300]})
+
+    source("kuma", lambda: inc_down(sites, now))
+    source("php_errors", lambda: inc_php_fatal(index, now))
+    source("vulns", lambda: inc_vulns(index, rules, now))
+    source("checksums", lambda: inc_checksums(index, now))
+    source("admins", lambda: inc_admins(sites, now))
+    source("fleet_servers", lambda: inc_server_stale(servers, now))
+    source("updraft", lambda: inc_backup(sites, rules, now))
+    source("certs", lambda: inc_certs(index, rules, now))
+    source("php_eol", lambda: inc_php_eol(sites, rules, now))
+
+    # Dédoublonnage par identifiant stable : la PREMIÈRE occurrence gagne.
+    vus, uniques = set(), []
+    for i in incidents:
+        if i["id"] in vus:
+            continue
+        vus.add(i["id"])
+        uniques.append(i)
+    # Critique avant avertissement, puis le plus ancien d'abord ; `id` en
+    # dernier ressort pour que deux appels rendent exactement le même ordre.
+    uniques.sort(key=lambda i: (0 if i["severity"] == "critical" else 1, -i["age_h"], i["id"]))
+
+    extra = {"vulns_fixable": 0, "updates_sites": 0,
+             "admins_unknown": sum(1 for i in uniques if i["kind"] == "admin_unknown")}
+    try:
+        extra.update(inc_counters(sites, index))
+    except Exception as e:
+        errors.append({"source": "counters", "error": f"{type(e).__name__}: {e}"[:300]})
+
+    payload = {"generated_at": incident_iso(now),
+               "counts": {"critical": sum(1 for i in uniques if i["severity"] == "critical"),
+                          "warning": sum(1 for i in uniques if i["severity"] == "warning")},
+               "incidents": uniques, "errors": errors}
+    return payload, extra
+
+
+# Cache mémoire de 30 s : la barre latérale demande ses compteurs à chaque
+# changement d'écran, et l'agrégat relit une demi-douzaine de fichiers.
+_INCIDENTS_CACHE = {"ts": 0.0, "payload": None, "extra": None}
+_INCIDENTS_CACHE_LOCK = threading.Lock()
+
+
+def incidents_cached(max_age=INCIDENT_CACHE_TTL, refresh=False):
+    """Agrégat, recalculé au plus une fois par `max_age` secondes.
+
+    Le calcul se fait HORS verrou : deux requêtes simultanées peuvent le faire
+    deux fois (sans effet de bord, tout est en lecture), mais aucune n'attend.
+    """
+    with _INCIDENTS_CACHE_LOCK:
+        if (not refresh and _INCIDENTS_CACHE["payload"] is not None
+                and time.time() - _INCIDENTS_CACHE["ts"] < max_age):
+            return _INCIDENTS_CACHE["payload"], _INCIDENTS_CACHE["extra"]
+    payload, extra = incidents_snapshot()
+    with _INCIDENTS_CACHE_LOCK:
+        _INCIDENTS_CACHE.update({"ts": time.time(), "payload": payload, "extra": extra})
+    return payload, extra
+
+
+def sidebar_counts():
+    """Pastilles de la barre latérale, dérivées du MÊME agrégat que les incidents."""
+    payload, extra = incidents_cached()
+    return {"incidents": dict(payload["counts"]),
+            "securite": {"vulns_fixable": extra.get("vulns_fixable", 0),
+                         "admins_unknown": extra.get("admins_unknown", 0)},
+            "parc": {"updates_sites": extra.get("updates_sites", 0)}}
 
 
 # ---------- évènements poussés par les sites (B1) ----------
@@ -4453,6 +5025,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"enabled": bool(cfg.get("enabled")), "chat_id": cfg.get("chat_id") or "",
                              "rules": cfg.get("rules"), "token_set": bool(token),
                              "token_tail": token[-4:] if token else ""})
+        elif p == "/api/incidents":
+            # File « à traiter » : agrégat des sources déjà collectées, sans
+            # aucun appel réseau ni ssh. Toujours recalculée (c'est l'écran qui
+            # fait autorité), ce qui rafraîchit au passage le cache des compteurs.
+            payload, _extra = incidents_cached(refresh=True)
+            self._send(200, payload)
+        elif p == "/api/mgmt/counts":
+            # Pastilles de la barre latérale : même agrégat, mis en cache 30 s.
+            self._send(200, sidebar_counts())
         elif p == "/api/sec/certs":
             self._send(200, ssl_certs())
         elif p == "/api/sec/checksums":
