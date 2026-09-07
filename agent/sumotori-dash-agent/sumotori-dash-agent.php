@@ -3,7 +3,7 @@
  * Plugin Name: Sumotori Dash Agent
  * Plugin URI: https://github.com/tommybds/wp-dashboard
  * Description: Connects this site to a monitoring dashboard of your choice: reports sensitive administration events and answers signed, read-only inventory requests.
- * Version: 1.4.0
+ * Version: 1.5.0
  * Requires at least: 5.2
  * Requires PHP: 7.0
  * Author: Tommy Bordas
@@ -82,7 +82,8 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const PAIR_TIMEOUT     = 10;
 		const MAX_EVENT_ITEMS  = 25;
 		const MAX_SITES_LISTED = 500;
-		const VERSION          = '1.4.0';
+		const MAX_THEMES_LISTED = 100;
+		const VERSION          = '1.5.0';
 		const SECRET_MIN_LEN   = 16;
 		const SECRET_MAX_LEN   = 512;
 
@@ -1716,6 +1717,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				'blogname'            => sanitize_text_field( (string) get_option( 'blogname' ) ),
 				'php_version'         => PHP_VERSION,
 				'plugins'             => $this->get_plugins_inventory(),
+				'themes'              => $this->get_themes_inventory(),
 				'themes_updates'      => $this->get_themes_updates_count(),
 				'admins'              => $this->get_admins_inventory(),
 				'updraft'             => $this->get_updraft_inventory(),
@@ -2064,6 +2066,131 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			}
 
 			return 'inactive';
+		}
+
+		/**
+		 * Charge l'API des mises à jour si besoin, comme le fait déjà
+		 * ensure_plugin_api() pour les extensions.
+		 *
+		 * @return bool
+		 */
+		private function ensure_theme_update_api() {
+			if ( function_exists( 'get_theme_updates' ) ) {
+				return true;
+			}
+
+			$update_file = ABSPATH . 'wp-admin/includes/update.php';
+			if ( ! file_exists( $update_file ) ) {
+				return false;
+			}
+			require_once $update_file;
+
+			return function_exists( 'get_theme_updates' );
+		}
+
+		/**
+		 * Inventaire des thèmes installés.
+		 *
+		 * Sur un multisite, cette méthode est appelée depuis
+		 * build_site_inventory(), donc déjà dans le contexte du sous-site
+		 * demandé (switch_to_blog() dans rest_get_inventory(), restauré dans
+		 * tous les cas) : get_stylesheet() et get_template() décrivent bien le
+		 * thème actif du sous-site inventorié, comme l'état d'activation des
+		 * extensions. La liste des thèmes installés, elle, est celle du
+		 * serveur : les thèmes sont partagés par tout le réseau.
+		 *
+		 * Aucune donnée personnelle : uniquement des noms de thèmes, des
+		 * numéros de version et un état d'activation.
+		 *
+		 * @return array
+		 */
+		private function get_themes_inventory() {
+			if ( ! function_exists( 'wp_get_themes' ) ) {
+				return array();
+			}
+
+			$all_themes = wp_get_themes();
+			if ( ! is_array( $all_themes ) ) {
+				return array();
+			}
+
+			$updates = array();
+			if ( $this->ensure_theme_update_api() ) {
+				$updates = get_theme_updates();
+				if ( ! is_array( $updates ) ) {
+					$updates = array();
+				}
+			}
+
+			$active_stylesheet = (string) get_stylesheet();
+			$active_template   = (string) get_template();
+
+			$inventory = array();
+			foreach ( $all_themes as $stylesheet => $theme ) {
+				if ( count( $inventory ) >= self::MAX_THEMES_LISTED ) {
+					break;
+				}
+
+				$stylesheet = (string) $stylesheet;
+				if ( '' === $stylesheet || ! is_object( $theme ) ) {
+					continue;
+				}
+
+				$status = 'inactive';
+				if ( $stylesheet === $active_stylesheet ) {
+					$status = 'active';
+				} elseif ( $stylesheet === $active_template && $active_template !== $active_stylesheet ) {
+					$status = 'parent';
+				}
+
+				$template = method_exists( $theme, 'get_template' ) ? (string) $theme->get_template() : '';
+				$parent   = ( '' !== $template && $template !== $stylesheet ) ? sanitize_text_field( $template ) : null;
+
+				$update_version = '';
+				if ( isset( $updates[ $stylesheet ] ) && is_object( $updates[ $stylesheet ] ) && ! empty( $updates[ $stylesheet ]->update['new_version'] ) ) {
+					$update_version = sanitize_text_field( (string) $updates[ $stylesheet ]->update['new_version'] );
+				}
+
+				$inventory[] = array(
+					'name'           => sanitize_text_field( $stylesheet ),
+					'title'          => $this->get_theme_title( $theme, $stylesheet ),
+					'status'         => $status,
+					'version'        => sanitize_text_field( (string) $theme->get( 'Version' ) ),
+					'update_version' => ( '' !== $update_version ) ? $update_version : null,
+					'update'         => isset( $updates[ $stylesheet ] ),
+					'parent'         => $parent,
+				);
+			}
+
+			return $inventory;
+		}
+
+		/**
+		 * Nom lisible d'un thème, avec repli sur son slug.
+		 *
+		 * @param WP_Theme|object $theme      Thème.
+		 * @param string          $stylesheet Slug du thème.
+		 * @return string
+		 */
+		private function get_theme_title( $theme, $stylesheet ) {
+			$title = '';
+			if ( method_exists( $theme, 'display' ) ) {
+				$displayed = $theme->display( 'Name', false );
+				if ( is_string( $displayed ) ) {
+					$title = $displayed;
+				}
+			}
+			if ( '' === $title && method_exists( $theme, 'get' ) ) {
+				$raw = $theme->get( 'Name' );
+				if ( is_string( $raw ) ) {
+					$title = $raw;
+				}
+			}
+			if ( '' === $title ) {
+				$title = (string) $stylesheet;
+			}
+
+			return sanitize_text_field( $title );
 		}
 
 		/**

@@ -4,7 +4,7 @@ Tags: maintenance, monitoring, management, inventory, multisite
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.0
-Stable tag: 1.4.0
+Stable tag: 1.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -134,6 +134,10 @@ Data transmitted in the response:
 * site URL and name, PHP version;
 * **inventory of installed plugins**: slug, activation state, installed version,
   whether an update is pending and the target version;
+* **inventory of installed themes**: directory slug, display name, state (active,
+  parent theme of the active child theme, or inactive), installed version,
+  whether an update is pending and the target version, and the slug of the parent
+  theme for a child theme;
 * number of themes with a pending update;
 * **administrator accounts**: numeric ID, **login name**, **email address** and
   registration date;
@@ -262,6 +266,23 @@ administration (`manage_network_options` capability). The inventory can target
 any sub-site through the `blog_id` parameter.
 
 == Changelog ==
+
+= 1.5.0 =
+
+* The inventory answer now carries the **list of installed themes**, not only a
+  count of the ones awaiting an update: for each theme its directory slug,
+  display name, state (active, parent theme of the active child theme, or
+  inactive), installed version, whether an update is pending and the target
+  version, and the parent theme of a child theme. A dashboard can therefore
+  show the themes of a site and cross-check them against a public vulnerability
+  database, as it already does for plugins. At most 100 themes are listed.
+* On multisite, the state of each theme is reported for the sub-site being
+  inventoried, exactly as the plugin inventory already does.
+* The existing `themes_updates` count is unchanged, so dashboards written
+  against an earlier version keep working.
+* Nothing else moves: the inventory stays strictly read-only, no personal data
+  is added — a theme name and a version number are not personal data — and no
+  outbound request is made.
 
 = 1.4.0 =
 
