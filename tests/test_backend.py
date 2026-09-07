@@ -949,6 +949,12 @@ class TestVizConnectRoute(BaseTmp):
         self.addCleanup(self.srv.server_close)
         self.cookie = "dash_session=" + A.make_token("tommy")
         self.appels = []
+        # Réglages isolés : sinon le jeton VizProof enregistré sur l'instance qui
+        # exécute la suite ferait passer « ni jeton ni code » pour une demande
+        # valide, et le test ne prouverait plus rien.
+        self._sp = A.SETTINGS_PATH
+        A.SETTINGS_PATH = os.path.join(self.data, "settings.json")
+        self.addCleanup(lambda: setattr(A, "SETTINGS_PATH", self._sp))
         p = mock.patch.object(A, "viz_connect_run", self._faux)
         p.start()
         self.addCleanup(p.stop)

@@ -17,7 +17,13 @@ from pathlib import Path
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "tools"))
 
-import check_front  # noqa: E402
+# `tools/` ne part pas en production (seuls les modules du service y sont copiés)
+# et la suite y tourne aussi : sans ce garde, l'import échouerait sur le serveur
+# et masquerait de vrais échecs derrière une erreur de collecte.
+try:
+    import check_front  # noqa: E402
+except ImportError:  # pragma: no cover - dépend de l'endroit où la suite tourne
+    raise unittest.SkipTest("tools/check_front.py absent (déploiement sans tools/)")
 
 
 def faux_front(racine, fichiers):
