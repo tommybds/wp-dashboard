@@ -880,6 +880,7 @@ async function loadRestSites() {
       h('thead', {}, h('tr', {},
         h('th', { text: 'Domaine' }), h('th', { text: 'Nom' }), h('th', { text: 'Ajouté le' }),
         h('th', { text: 'Multisite' }), h('th', { text: 'WordPress' }),
+        h('th', { text: 'Agent Dash' }),
         h('th', {}, h('span', { class: 'sr-only', text: 'Actions' })))),
       h('tbody', {}, RESTSITES.map(ligneRest)))));
 }
@@ -897,7 +898,135 @@ function ligneRest(x) {
     h('td', { class: 'muted', title: absTime(x.added_at), text: x.added_at ? relTime(x.added_at) : '—' }),
     h('td', {}, x.multisite ? chipEl('oui', 'warn') : chipEl('non', 'mut')),
     h('td', {}, celluleWp(d, x.server || x.srv || '')),
+    h('td', {}, celluleAgentRest(x)),
     h('td', {}, del, ' ', res));
+}
+
+/* ---- agent Dash d'un site sans SSH -----------------------------------------
+   Même façon de parler que vizEtatTexte : UNE ligne d'état, puis la seule
+   action qui a un sens dans cet état-là. Sans identifiants WordPress il n'y a
+   rien à proposer — la colonne voisine porte déjà « Autoriser ». */
+function agentEtatRest(x, relie) {
+  const v = x.agent_version ? ' · v' + x.agent_version : '';
+  if (relie) {
+    return { etat: 'relie', niveau: 'ok', court: 'relié' + v,
+      long: 'relié — c’est lui qui pousse l’inventaire de ce site' };
+  }
+  return { etat: 'absent', niveau: 'mut', court: 'absent',
+    long: 'agent absent — le site n’envoie encore rien au dashboard' };
+}
+
+/** Le site est-il déjà servi par l'agent ? (version connue, ou install en mode REST) */
+function agentRelie(x) {
+  if (x.agent_version) return true;
+  const d = restDomain(x);
+  return toutesInstalls().some(s => s.domain === d && s.via === 'rest');
+}
+
+function celluleAgentRest(x) {
+  const cell = h('span', { class: 'small' }, h('span', { class: 'muted', text: '…' }));
+  const d = restDomain(x);
+  if (CRED.has(d)) remplirAgent(cell, x);
+  else fileCred(() => remplirAgent(cell, x));
+  return cell;
+}
+
+async function remplirAgent(cell, x) {
+  const d = restDomain(x);
+  if (!d) { mount(cell, h('span', { class: 'muted', text: '—' })); return; }
+  let j = CRED.get(d);
+  if (j === undefined) {
+    j = await wpCredentials(d);
+    CRED.set(d, j);
+  }
+  const t = agentEtatRest(x, agentRelie(x));
+  const etat = chipEl(t.court, t.niveau, { title: t.long });
+  if (!j || !j.has_password) {
+    mount(cell, etat, ' ',
+      h('span', { class: 'muted small', text: 'autorisez WordPress d’abord' }));
+    return;
+  }
+  const res = h('span', { class: 'small' });
+  if (t.etat === 'relie') {
+    const bt = h('button', { type: 'button', class: 'btn sm' }, iconEl('x'), ' Retirer l’agent');
+    bt.onclick = () => retirerAgent(x, bt, res);
+    mount(cell, etat, ' ', bt, ' ', res);
+    return;
+  }
+  const bt = h('button', { type: 'button', class: 'btn sm primary' }, iconEl('plus'), ' Installer l’agent');
+  bt.onclick = () => installerAgent(x, bt, res, false);
+  mount(cell, etat, ' ', bt, ' ', res);
+}
+
+const AGENT_POSE = 'L’extension « sumotori-dash-agent » sera téléchargée depuis wordpress.org, '
+  + 'installée et activée sur le site, puis reliée à ce dashboard. Aucune donnée du site n’est '
+  + 'transmise avant que la liaison soit établie.';
+
+async function installerAgent(x, bt, res, force) {
+  const d = restDomain(x);
+  const ok = await askConfirm(
+    `Installer l’agent Dash sur <b>${H(d)}</b> ?<br><br>${H(AGENT_POSE)}`
+    + (force ? '<br><br><b>La liaison existante de cet agent sera remplacée.</b>' : ''),
+    { titre: 'Installer l’agent Dash', ok: force ? 'Remplacer la liaison' : 'Installer' });
+  if (!ok) return;
+  setBusy(bt);
+  mount(res);
+  let j;
+  try { j = await api('/api/mgmt/rest_agent_install', { domain: d, force: !!force }) || {}; }
+  catch (e) { j = { ok: false, message: String(e) }; }
+  setIdle(bt);
+  const msg = String(j.message || j.error || '');
+  if (j.ok && j.mode === 'code') { mount(res, blocCodeAgent(j, msg)); return; }
+  if (j.ok) {
+    mount(res, chipEl('relié', 'ok', { title: msg }), ' ',
+      h('span', { class: 'muted small', text: msg }));
+    CRED.delete(d);
+    loadRestSites();
+    loadFleet();
+    return;
+  }
+  if (j.code !== 'conflict') {
+    mount(res, chipEl('échec', 'err', { title: msg }), ' ',
+      h('span', { class: 'muted small', text: msg }));
+    return;
+  }
+  // Seul échec qui se rattrape d'un clic : l'agent était déjà relié ailleurs.
+  const rej = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), ' Remplacer la liaison');
+  rej.onclick = () => installerAgent(x, rej, res, true);
+  mount(res, chipEl('déjà relié', 'warn', { title: msg }), ' ',
+    h('span', { class: 'muted small', text: msg }), ' ', rej);
+}
+
+/** Repli « code » : l'agent est trop ancien pour se relier tout seul. */
+function blocCodeAgent(j, msg) {
+  const u = safeUrl(j.admin_url);
+  const min = Math.max(1, Math.round(Number(j.expires_in || 0) / 60));
+  return h('span', {},
+    chipEl('code à coller', 'warn'), ' ',
+    h('code', { text: String(j.code || '') }), ' ',
+    h('span', { class: 'muted small', text: 'valable ' + min + ' min · ' + msg }), ' ',
+    u ? h('a', { class: 'small', href: u, target: '_blank', rel: 'noopener noreferrer',
+      text: 'ouvrir les réglages du site' }) : null);
+}
+
+async function retirerAgent(x, bt, res) {
+  const d = restDomain(x);
+  const garder = await askChoice('Retirer l’agent Dash',
+    `L’agent sera débranché de <b>${H(d)}</b> : le site cesse d’envoyer son inventaire et ses `
+    + 'évènements, et le secret local est effacé. Que faire de l’extension elle-même ?',
+    [{ value: '0', label: 'Désactiver et supprimer l’extension (recommandé)' },
+      { value: '1', label: 'La laisser installée sur le site' }], '0');
+  if (garder === null) return;
+  setBusy(bt);
+  mount(res);
+  let j;
+  try { j = await api('/api/mgmt/rest_agent_remove', { domain: d, keep_plugin: garder === '1' }) || {}; }
+  catch (e) { j = { ok: false, message: String(e) }; }
+  setIdle(bt);
+  const msg = String(j.message || j.error || '');
+  mount(res, chipEl(j.ok ? 'retiré' : 'échec', j.ok ? 'ok' : 'err', { title: msg }), ' ',
+    h('span', { class: 'muted small', text: msg }));
+  if (j.ok) { CRED.delete(d); loadRestSites(); loadFleet(); }
 }
 
 async function retirerRest(d, bouton, res) {

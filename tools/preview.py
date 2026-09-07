@@ -568,16 +568,30 @@ SSHKEYS = {"keys": [
     "assignments": [{"server": "plesk-mutu", "key": "/root/.ssh/id_dashboard"},
                     {"server": "vps-1", "key": "/root/.ssh/id_dashboard"},
                     {"server": "vps-2", "key": "/root/.ssh/dash_sumotori"}]}
+# Quatre lignes, une par état de la colonne « Agent Dash » :
+#   site-07   autorisé + agent 1.4.0        → relié, bouton « Retirer l'agent »
+#   neuf      autorisé, aucun agent          → « Installer l'agent » → liaison directe
+#   ancien    autorisé, agent antérieur      → « Installer l'agent » → repli par code
+#   site-14   autorisé, agent antérieur      → repli par code (site présent dans fleet.json,
+#                                                donc joignable aussi depuis la page site)
+#   boutique  sans identifiants WordPress    → aucun bouton, « autorisez WordPress d'abord »
 REST_SITES = [
     {"domain": "site-07.exemple.fr", "url": "https://site-07.exemple.fr", "name": "Site 7",
-     "added_at": now(48), "multisite": False, "server": ""},
+     "added_at": now(48), "multisite": False, "server": "", "agent_version": "1.4.0"},
+    {"domain": "neuf.exemple.fr", "url": "https://neuf.exemple.fr", "name": "Site neuf",
+     "added_at": now(2), "multisite": False, "server": ""},
+    {"domain": "ancien.exemple.fr", "url": "https://ancien.exemple.fr", "name": "Site ancien",
+     "added_at": now(700), "multisite": False, "server": ""},
+    {"domain": "site-14.exemple.fr", "url": "https://site-14.exemple.fr", "name": "Site 14",
+     "added_at": now(500), "multisite": False, "server": ""},
     {"domain": "boutique.exemple.fr", "url": "https://boutique.exemple.fr", "name": "Boutique",
      "added_at": now(300), "multisite": True, "server": ""},
 ]
-# Identifiants WordPress : un site sur deux est autorisé, pour que les deux
+# Identifiants WordPress : « boutique » reste non autorisé, pour que les deux
 # états (« autorisé + Révoquer » et « non autorisé + Autoriser ») se voient.
-WPCRED = {"site-07.exemple.fr": {"has_password": True, "user": "dash_bot",
-                                 "verified": True, "checked_ts": now(5)}}
+WPCRED = {d: {"has_password": True, "user": "dash_bot", "verified": True, "checked_ts": now(5)}
+          for d in ("site-07.exemple.fr", "neuf.exemple.fr", "ancien.exemple.fr",
+                    "site-14.exemple.fr")}
 
 # Pages surveillées par VizProof : huit pages, l'accueil en tête et UNE SEULE
 # pré-cochée — c'est le cas qu'il faut voir, l'étape « Pages surveillées » doit
@@ -1107,6 +1121,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             WPCRED.pop(dom, None)
             return 200, {"ok": True,
                          "cleanup": "non demandé" if corps.get("keep_account") else "compte supprimé"}
+
+        if chemin == "/api/mgmt/rest_agent_install":
+            # Installation + liaison de l'agent sur un site sans SSH. Deux
+            # issues à voir : la liaison directe, et le repli par code quand
+            # l'agent déjà posé est antérieur à 1.4.0.
+            dom = str(corps.get("domain") or "")
+            if not any(x["domain"] == dom for x in REST_SITES):
+                return 500, {"ok": False, "rc": 92, "mode": "", "code": "unknown",
+                             "message": "site sans SSH inconnu du dashboard"}
+            if dom in ("ancien.exemple.fr", "site-14.exemple.fr"):
+                # Agent 1.3.0 : pas de route d'appairage, d'où le repli par code.
+                return 200, {"ok": True, "rc": 0, "mode": "code", "code": "K7F2-9QMD",
+                             "expires_in": 1800, "agent_version": "1.3.0",
+                             "admin_url": "https://" + dom + "/wp-admin/"
+                                          "options-general.php?page=sumotori-dash-agent",
+                             "message": "sumotori-dash-agent déjà présent sur le site et déjà "
+                                        "active — agent antérieur à 1.4.0 : il ne sait pas se "
+                                        "relier à distance. Reste à faire : coller le code "
+                                        "d'appairage dans « Réglages → Dash Agent » du site."}
+            for x in REST_SITES:
+                if x["domain"] == dom:
+                    x["agent_version"] = "1.4.0"
+            return 200, {"ok": True, "rc": 0, "mode": "direct", "agent_version": "1.4.0",
+                         "paired_at": now(0), "endpoint": "https://dashboard.exemple.fr/api/ingest",
+                         "message": "sumotori-dash-agent installé et activé (version 1.4.0) · "
+                                    "site relié au dashboard, inventaire en route"}
+
+        if chemin == "/api/mgmt/rest_agent_remove":
+            dom = str(corps.get("domain") or "")
+            for x in REST_SITES:
+                if x["domain"] == dom:
+                    x.pop("agent_version", None)
+            garde = bool(corps.get("keep_plugin"))
+            return 200, {"ok": True, "rc": 0, "mode": "", "message":
+                         "liaison retirée côté site · "
+                         + ("extension conservée sur le site, à la demande" if garde
+                            else "extension désactivée puis supprimée")
+                         + " · secret local effacé"}
 
         if chemin == "/api/mgmt/wp_authorize":
             return 200, {"authorize_url": "https://" + str(corps.get("domain") or "exemple.fr")

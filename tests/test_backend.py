@@ -3172,3 +3172,349 @@ class TestVizReportRoute(BaseTmp):
     def test_viz_report_n_est_pas_une_action_wp_cli(self):
         """Elle ne doit pas être atteignable par /api/actions/run."""
         self.assertNotIn("viz_report", A.ACTIONS)
+
+
+# --------------------------------------------------------------------------- #
+#  Agent Dash sur un site SANS SSH : installation depuis wordpress.org puis     #
+#  appairage par l'API REST de WordPress.                                      #
+#                                                                             #
+#  Tout le réseau est bouché au niveau de `_open_no_redirect` : on inspecte     #
+#  la méthode, l'URL et le CORPS réellement envoyés, et l'on rejoue ce que      #
+#  répondrait chaque version de l'agent (1.4.0 appaire, 1.3.x n'a pas la        #
+#  route). Aucun sous-processus : la collecte de rattrapage est bouchée aussi.  #
+# --------------------------------------------------------------------------- #
+class AgentRestBase(BaseTmp):
+
+    DOM = "sans-ssh.fr"
+    URL = "https://sans-ssh.fr"
+    CHEMIN = "/wp-json/wp/v2/plugins/sumotori-dash-agent/sumotori-dash-agent"
+
+    def setUp(self):
+        super().setUp()
+        self._sauv2 = {k: getattr(A, k) for k in ("REST_SITES_PATH", "FLEET_PATH", "PAIRINGS_PATH")}
+        A.REST_SITES_PATH = os.path.join(self.data, "rest_sites.json")
+        A.FLEET_PATH = os.path.join(self.data, "fleet.json")
+        A.PAIRINGS_PATH = os.path.join(self.data, "pairings.json")
+        self.addCleanup(lambda: [setattr(A, k, v) for k, v in self._sauv2.items()])
+        self.appels, self.reponses, self.collectes = [], [], []
+        for cible, valeur in (("_open_no_redirect", self._transport),
+                              ("validate_public_url", self._url_ok),
+                              ("rest_collect_async", self.collectes.append)):
+            p = mock.patch.object(A, cible, valeur)
+            p.start()
+            self.addCleanup(p.stop)
+        A.save_json(A.REST_SITES_PATH, [{"domain": self.DOM, "url": self.URL, "name": "Sans SSH",
+                                         "added_ts": time.time(), "multisite": False}])
+
+    @staticmethod
+    def _url_ok(url):
+        return urllib.parse.urlsplit(str(url or "")), None
+
+    def _transport(self, req, timeout=20, max_bytes=None, ssrf_guard=True):
+        self.appels.append({"method": req.get_method(), "url": req.full_url,
+                            "auth": req.get_header("Authorization"),
+                            "body": json.loads(req.data.decode()) if req.data else None})
+        if not self.reponses:
+            raise AssertionError("appel HTTP non prévu : "
+                                 + req.get_method() + " " + req.full_url)
+        r = self.reponses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        st, obj = r
+        return st, json.dumps(obj).encode()
+
+    @staticmethod
+    def err(code, obj=None):
+        return urllib.error.HTTPError("https://sans-ssh.fr/wp-json", code, "erreur", {},
+                                      io.BytesIO(json.dumps(obj or {}).encode()))
+
+    def autoriser(self):
+        A.wp_cred_save(self.DOM, {"user": "dash_bot", "password": "abcd EFGH 1234",
+                                  "url": self.URL, "domain": self.DOM, "verified": True})
+
+    def log_brut(self):
+        if not os.path.exists(A.LOG):
+            return ""
+        with open(A.LOG) as fh:
+            return fh.read()
+
+    # ---- réponses type ----
+    INSTALL_OK = (201, {"plugin": "sumotori-dash-agent/sumotori-dash-agent",
+                        "status": "active", "version": "1.4.0"})
+
+    @staticmethod
+    def paire_ok(version="1.4.0"):
+        return (200, {"paired": True, "endpoint": A.DASH_ENDPOINT, "paired_at": "2026-09-07 10:00",
+                      "site_url": "https://sans-ssh.fr", "agent_version": version,
+                      "message": "site relié"})
+
+
+class TestAgentRestInstall(AgentRestBase):
+
+    def test_installation_puis_appairage_direct(self):
+        self.autoriser()
+        self.reponses = [self.INSTALL_OK, self.paire_ok()]
+        res = A.rest_agent_install(self.DOM)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["mode"], "direct")
+        self.assertEqual(res["rc"], 0)
+        self.assertEqual(res["agent_version"], "1.4.0")
+
+        pose, paire = self.appels
+        self.assertEqual(pose["method"], "POST")
+        self.assertTrue(pose["url"].endswith("/wp-json/wp/v2/plugins"), pose["url"])
+        self.assertEqual(pose["body"], {"slug": A.AGENT_SLUG, "status": "active"})
+        self.assertEqual(paire["method"], "POST")
+        self.assertTrue(paire["url"].endswith(A.AGENT_PAIR_ROUTE), paire["url"])
+        self.assertEqual(paire["body"]["endpoint"], A.DASH_ENDPOINT)
+        self.assertFalse(paire["body"]["force"])
+        self.assertTrue(A.SECRET_RE.match(paire["body"]["secret"]))
+        self.assertTrue(paire["auth"].startswith("Basic "))
+
+        secret = paire["body"]["secret"]
+        self.assertEqual(A.site_secrets()[self.DOM], secret)
+        self.assertNotIn(secret, json.dumps(res, ensure_ascii=False))
+        self.assertNotIn(secret, self.log_brut())
+        self.assertIn("rest_agent_install", self.log_brut())
+        self.assertIn('"arg": "direct"', self.log_brut())
+        self.assertIn("agent 1.4.0", self.log_brut())
+        self.assertEqual(self.collectes, [self.DOM])
+        # la version relevée est retenue avec le site
+        self.assertEqual(A.rest_sites()[0]["agent_version"], "1.4.0")
+        self.assertEqual(A.rest_sites()[0]["name"], "Sans SSH")
+
+    def test_dossier_deja_present_et_actif_est_un_succes(self):
+        self.autoriser()
+        self.reponses = [self.err(400, {"code": "folder_exists", "message": "dossier existant"}),
+                         (200, {"status": "active", "version": "1.4.0"}),
+                         self.paire_ok()]
+        res = A.rest_agent_install(self.DOM)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["mode"], "direct")
+        self.assertIn("déjà présent", res["message"])
+        self.assertEqual(self.appels[1]["method"], "GET")
+        self.assertTrue(self.appels[1]["url"].endswith(self.CHEMIN), self.appels[1]["url"])
+
+    def test_extension_presente_mais_inactive_est_activee(self):
+        self.autoriser()
+        self.reponses = [self.err(400, {"code": "folder_exists"}),
+                         (200, {"status": "inactive", "version": "1.4.0"}),
+                         (200, {"status": "active", "version": "1.4.0"}),
+                         self.paire_ok()]
+        res = A.rest_agent_install(self.DOM)
+        self.assertTrue(res["ok"], res)
+        activation = self.appels[2]
+        self.assertEqual(activation["method"], "PUT")
+        self.assertTrue(activation["url"].endswith(self.CHEMIN), activation["url"])
+        self.assertEqual(activation["body"], {"status": "active"})
+        self.assertIn("activée", res["message"])
+
+    def test_deja_appaire_409_puis_succes_avec_force(self):
+        self.autoriser()
+        self.reponses = [self.INSTALL_OK, self.err(409, {"message": "déjà appairé"})]
+        res = A.rest_agent_install(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["code"], "conflict")
+        self.assertEqual(res["rc"], 1)
+        self.assertIn("reste à la RELIER", res["message"])
+        # aucun secret orphelin : la liaison n'a pas eu lieu
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+        self.assertEqual(self.collectes, [])
+
+        self.appels.clear()
+        self.reponses = [self.INSTALL_OK, self.paire_ok()]
+        res = A.rest_agent_install(self.DOM, force=True)
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(self.appels[1]["body"]["force"])
+        self.assertEqual(A.site_secrets()[self.DOM], self.appels[1]["body"]["secret"])
+
+    def test_capacite_refusee_403(self):
+        self.autoriser()
+        self.reponses = [self.INSTALL_OK, self.err(403, {"message": "droits insuffisants"})]
+        res = A.rest_agent_install(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["code"], "denied")
+        self.assertIn("reste à la RELIER", res["message"])
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+
+    def test_agent_trop_ancien_404_repli_par_code(self):
+        self.autoriser()
+        self.reponses = [(201, {"plugin": "sumotori-dash-agent/sumotori-dash-agent",
+                                "status": "active", "version": "1.3.0"}),
+                         self.err(404, {"code": "rest_no_route"})]
+        res = A.rest_agent_install(self.DOM)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["mode"], "code")
+        self.assertEqual(res["rc"], 0)
+        self.assertTrue(A.PAIR_CODE_RE.match(res["code"]), res["code"])
+        self.assertEqual(res["expires_in"], A.PAIR_TTL)
+        self.assertEqual(res["admin_url"],
+                         self.URL + "/wp-admin/options-general.php?page=sumotori-dash-agent")
+        # le code rendu est réellement consommable
+        rec, err = A.consume_pair_code(res["code"], self.URL)
+        self.assertIsNone(err)
+        self.assertTrue(rec)
+        # pas de secret local tant que le site n'a pas répondu
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+        self.assertIn('"arg": "code"', self.log_brut())
+        self.assertEqual(self.collectes, [])   # rien à collecter tant que le site n'est pas relié
+
+    def test_secret_absent_des_journaux_meme_en_echec(self):
+        self.autoriser()
+        self.reponses = [self.INSTALL_OK, self.err(409, {"message": "déjà appairé"})]
+        A.rest_agent_install(self.DOM)
+        envoye = self.appels[1]["body"]["secret"]
+        self.assertNotIn(envoye, self.log_brut())
+
+    def test_site_sans_identifiants(self):
+        self.reponses = [self.INSTALL_OK]     # ne doit jamais être consommé
+        res = A.rest_agent_install(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["code"], "no_cred")
+        self.assertEqual(res["rc"], 98)
+        self.assertIn("Autoriser", res["message"])
+        self.assertEqual(self.appels, [])
+
+    def test_site_inconnu(self):
+        A.save_json(A.REST_SITES_PATH, [])
+        res = A.rest_agent_install(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["rc"], 92)
+        self.assertEqual(self.appels, [])
+
+    def test_installation_refusee_ne_relie_rien(self):
+        self.autoriser()
+        self.reponses = [self.err(403, {"message": "droits insuffisants"})]
+        res = A.rest_agent_install(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["code"], "install")
+        self.assertIn("le site est inchangé", res["message"])
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+
+
+class TestAgentRestRemove(AgentRestBase):
+
+    def setUp(self):
+        super().setUp()
+        self.autoriser()
+        A.set_site_secret(self.DOM, "x" * 32)
+
+    def test_retrait_route_presente(self):
+        self.reponses = [(200, {"paired": False, "message": "liaison retirée"}),
+                         (200, {"status": "inactive"}),
+                         (200, {"deleted": True})]
+        res = A.rest_agent_remove(self.DOM)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["rc"], 0)
+        self.assertEqual(self.appels[0]["method"], "DELETE")
+        self.assertTrue(self.appels[0]["url"].endswith(A.AGENT_PAIR_ROUTE))
+        self.assertEqual(self.appels[1]["method"], "PUT")
+        self.assertEqual(self.appels[1]["body"], {"status": "inactive"})
+        self.assertEqual(self.appels[2]["method"], "DELETE")
+        self.assertTrue(self.appels[2]["url"].endswith(self.CHEMIN))
+        self.assertIn("supprimée", res["message"])
+        self.assertIn("secret local effacé", res["message"])
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+        self.assertIn("rest_agent_remove", self.log_brut())
+
+    def test_retrait_route_absente_reste_propre(self):
+        self.reponses = [self.err(404, {"code": "rest_no_route"}),
+                         (200, {"status": "inactive"}),
+                         (200, {"deleted": True})]
+        res = A.rest_agent_remove(self.DOM)
+        self.assertTrue(res["ok"], res)
+        self.assertIn(A.AGENT_PAIR_MIN, res["message"])
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+
+    def test_extension_conservee_sur_demande(self):
+        self.reponses = [(200, {"paired": False})]
+        res = A.rest_agent_remove(self.DOM, keep_plugin=True)
+        self.assertTrue(res["ok"], res)
+        self.assertIn("conservée", res["message"])
+        self.assertEqual(len(self.appels), 1)
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+
+    def test_suppression_refusee_dit_ce_qui_reste(self):
+        self.reponses = [(200, {"paired": False}),
+                         (200, {"status": "inactive"}),
+                         self.err(500, {"message": "écriture impossible"})]
+        res = A.rest_agent_remove(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["rc"], 1)
+        self.assertIn("reste à faire", res["message"])
+        # le secret local part quand même : le dashboard ne parle plus à ce site
+        self.assertIsNone(A.site_secrets().get(self.DOM))
+
+    def test_sans_identifiants(self):
+        A.wp_cred_forget(self.DOM)
+        res = A.rest_agent_remove(self.DOM)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["rc"], 98)
+        self.assertEqual(self.appels, [])
+
+
+class TestAgentRestRoutes(AgentRestBase):
+    """Les deux routes HTTP : session exigée, domaine validé, code de statut."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+
+    def post(self, chemin, corps, cookie=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            entetes = {"X-Dash": "1", "Content-Type": "application/json"}
+            if cookie is not False:
+                entetes["Cookie"] = cookie or self.cookie
+            c.request("POST", chemin, body=json.dumps(corps).encode(), headers=entetes)
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def test_domaine_invalide(self):
+        for chemin in ("/api/mgmt/rest_agent_install", "/api/mgmt/rest_agent_remove"):
+            st, j = self.post(chemin, {"domain": "a b"})
+            self.assertEqual(st, 400, chemin)
+            self.assertIn("domaine", j["error"])
+
+    def test_sans_session(self):
+        st, _j = self.post("/api/mgmt/rest_agent_install", {"domain": self.DOM}, cookie=False)
+        self.assertEqual(st, 401)
+
+    def test_succes_et_refus_repondent_200(self):
+        """Un refus attendu n'est pas une panne : 200 avec ok:false, comme les rc
+        « soft » des actions. Le 500 reste pour ce qui a vraiment échoué."""
+        self.autoriser()
+        self.reponses = [self.INSTALL_OK, self.paire_ok()]
+        st, j = self.post("/api/mgmt/rest_agent_install", {"domain": self.DOM})
+        self.assertEqual(st, 200)
+        self.assertEqual(j["mode"], "direct")
+        self.assertNotIn("secret", json.dumps(j))
+
+        self.reponses = [self.INSTALL_OK, self.err(409, {"message": "déjà appairé"})]
+        st, j = self.post("/api/mgmt/rest_agent_install", {"domain": self.DOM})
+        self.assertEqual(st, 200)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["code"], "conflict")
+
+        # Une panne réelle (installation impossible) garde le 500.
+        self.reponses = [self.err(500, {"message": "boom"})]
+        st, j = self.post("/api/mgmt/rest_agent_install", {"domain": self.DOM})
+        self.assertEqual(st, 500)
+        self.assertFalse(j["ok"])
+
+    def test_retrait_par_la_route(self):
+        self.autoriser()
+        A.set_site_secret(self.DOM, "y" * 32)
+        self.reponses = [(200, {"paired": False}), (200, {"status": "inactive"}),
+                         (200, {"deleted": True})]
+        st, j = self.post("/api/mgmt/rest_agent_remove", {"domain": self.DOM,
+                                                          "keep_plugin": False})
+        self.assertEqual(st, 200)
+        self.assertTrue(j["ok"])

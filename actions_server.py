@@ -110,6 +110,14 @@ if not os.path.exists(AGENT_FILE):
     AGENT_FILE = os.path.join(AGENT_DIR, AGENT_NAME)
 AGENT_NS = "sumotori-dash/v1"
 AGENT_INVENTORY_ROUTE = f"/wp-json/{AGENT_NS}/inventory"  # inventaire REST sans SSH
+# Appairage à distance, exposé par l'agent à partir de 1.4.0 : POST relie le
+# site, DELETE le débranche. Sur un agent plus ancien la route n'existe pas
+# (404) — c'est le signal du repli par code, pas une panne.
+AGENT_PAIR_ROUTE = f"/wp-json/{AGENT_NS}/pair"
+AGENT_PAIR_MIN = "1.4.0"
+# Écran de réglages de l'agent (`const MENU_SLUG` du plugin) : c'est là que se
+# colle un code d'appairage quand la route ci-dessus manque.
+AGENT_ADMIN_PAGE = "/wp-admin/options-general.php?page=" + AGENT_SLUG
 AGENT_TIMEOUT = 60  # installer un plugin est lent : marge large
 VIZ_SLUG = "vizproof-timeline"  # seul slug accepté par l'agent (liste blanche côté site)
 # actions impossibles sans SSH : l'agent est en lecture seule (hors installation de vizproof)
@@ -4996,16 +5004,25 @@ def pair_site(code, site_url, agent_version=None, multisite=False):
     secret = set_site_secret(key, secrets.token_urlsafe(32))
     entry = add_rest_site(url, name=(rec.get("url_hint") or None), multisite=bool(multisite),
                           agent_version=agent_version)
-    # Première collecte immédiate : le site apparaît dans le dashboard sans attendre le cron.
-    def _first_collect(domain):
+    rest_collect_async(entry["domain"])
+    return {"secret": secret, "endpoint": DASH_ENDPOINT, "domain": entry["domain"]}, None
+
+
+def rest_collect_async(domain):
+    """Collecte REST immédiate d'un seul site, en tâche de fond.
+
+    Un site fraîchement relié n'a encore aucun inventaire : sans cela il
+    resterait vide jusqu'au prochain passage du cron. L'échec est muet — c'est
+    un confort d'affichage, pas une étape de la liaison.
+    """
+    def _collect():
         try:
             subprocess.run(["/usr/bin/python3", os.path.join(BASE, "collect.py"),
                             "--only", "rest", "--match", domain],
                            capture_output=True, text=True, timeout=180)
         except Exception:
             pass
-    threading.Thread(target=_first_collect, args=(entry["domain"],), daemon=True).start()
-    return {"secret": secret, "endpoint": DASH_ENDPOINT, "domain": entry["domain"]}, None
+    threading.Thread(target=_collect, daemon=True).start()
 
 
 # ---------- sites gérés via l'agent REST (aucun accès SSH) ----------
@@ -5444,8 +5461,16 @@ def wp_callback(params):
     return domain, ("ok" if ok else "error")
 
 
-def wp_install_plugin(site, slug=VIZ_SLUG):
-    """Installe une extension publique via l'API REST native de WordPress."""
+def wp_install_plugin(site, slug=VIZ_SLUG, info=None):
+    """Installe une extension publique via l'API REST native de WordPress.
+
+    `info` : dictionnaire facultatif rempli au passage avec ce que l'API dit de
+    l'extension — `plugin` (le CHEMIN au sens WordPress, « dossier/fichier »
+    SANS le « .php », par exemple « sumotori-dash-agent/sumotori-dash-agent »),
+    `version`, `status`, et `already` quand le dossier était déjà là. C'est ce
+    chemin qu'attendent /wp/v2/plugins/<chemin> en PUT et en DELETE ; le
+    reconstruire à la main serait un pari sur le nom du fichier principal.
+    """
     domain = site.get("domain") or ""
     url = site.get("siteurl") or site.get("url") or ""
     _, cred = wp_cred_for(domain, url)
@@ -5462,15 +5487,21 @@ def wp_install_plugin(site, slug=VIZ_SLUG):
     try:
         _st, blob = _open_no_redirect(req, timeout=AGENT_TIMEOUT)
         data = json.loads(blob.decode("utf-8", "replace"))
+        if isinstance(info, dict) and isinstance(data, dict):
+            info.update({"plugin": str(data.get("plugin") or ""),
+                         "version": str(data.get("version") or ""),
+                         "status": str(data.get("status") or ""), "already": False})
         return 0, f"{slug} installé et activé (version {data.get('version', '?')})"
     except urllib.error.HTTPError as e:
         raw = e.read(HTTP_MAX_BYTES).decode("utf-8", "replace")[:400]
         try:
-            info = json.loads(raw)
-            code, message = info.get("code", ""), info.get("message", raw)
+            detail = json.loads(raw)
+            code, message = detail.get("code", ""), detail.get("message", raw)
         except ValueError:
             code, message = "", raw
         if code == "folder_exists":
+            if isinstance(info, dict):
+                info.update({"plugin": "", "version": "", "status": "", "already": True})
             return 0, f"{slug} déjà présent sur le site"
         if e.code in (401, 403):
             return 1, f"identifiants refusés ou droits insuffisants : {message}"
@@ -5652,6 +5683,288 @@ def wp_baseline_allow(domain, login):
         update_json(os.path.join(DATA, "admins_baseline.json"), _muter, {})
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+#  Installer ET relier l'agent sur un site sans SSH, sans ouvrir wp-admin      #
+#                                                                             #
+#  Prérequis : le dashboard détient déjà un mot de passe d'application         #
+#  d'administrateur pour le site (voie « Autoriser WordPress »). Il s'en sert  #
+#  deux fois — pour installer l'agent depuis wordpress.org via l'API REST      #
+#  native de WordPress, puis pour appeler la route d'appairage que l'agent     #
+#  expose depuis 1.4.0.                                                        #
+#                                                                             #
+#  Deux issues, toutes deux exploitables :                                     #
+#    * mode « direct » : l'agent a répondu, le site est relié, c'est fini ;    #
+#    * mode « code »   : l'agent installé est antérieur à 1.4.0 et n'a pas la  #
+#      route (404). Plutôt que de laisser un site à moitié fait, on rend un    #
+#      code d'appairage à coller dans l'écran de réglages du site.             #
+#                                                                             #
+#  Le secret ne sort jamais d'ici : ni dans la réponse, ni dans actions.log.   #
+# --------------------------------------------------------------------------- #
+AGENT_NO_CRED_MSG = ("aucun identifiant WordPress pour ce site : autorisez-le d'abord depuis "
+                     "Gestion (bouton « Autoriser »), puis relancez l'opération")
+
+
+def wp_msg(data):
+    """Message lisible d'une réponse d'erreur de l'API REST de WordPress."""
+    return str((data or {}).get("message") or "")[:300] if isinstance(data, dict) else ""
+
+
+def rest_site_by_domain(domain):
+    """Site géré sans SSH → (site, url). Cherche dans fleet.json puis rest_sites.json.
+
+    Un site tout juste ajouté n'a pas encore été collecté : il n'existe que
+    dans rest_sites.json, et c'est justement celui qu'on veut équiper.
+    """
+    key = site_key(domain)
+    site = rest_target("", domain) or rest_target("", key)
+    url = re.sub(r"/+$", "", str((site or {}).get("siteurl") or (site or {}).get("url") or ""))
+    if site and url:
+        return site, url
+    for s in rest_sites():
+        if s.get("domain") in (domain, key):
+            return s, re.sub(r"/+$", "", str(s.get("url") or ""))
+    return site, url
+
+
+def wp_plugin_state(url, cred, plugin_path):
+    """État d'une extension vue par l'API → (statut, version), (None, "") si absente."""
+    st, data = _wp_req(url, "/wp-json/wp/v2/plugins/" + plugin_path,
+                       cred["user"], cred["password"], timeout=AGENT_TIMEOUT)
+    if st == 200 and isinstance(data, dict):
+        return str(data.get("status") or ""), str(data.get("version") or "")
+    return None, ""
+
+
+def wp_plugin_delete(url, cred, plugin_path):
+    """Désactive puis supprime une extension → (rc, message).
+
+    La désactivation est une étape, pas une politesse : WordPress refuse de
+    supprimer une extension active.
+    """
+    path = "/wp-json/wp/v2/plugins/" + plugin_path
+    st, data = _wp_req(url, path, cred["user"], cred["password"], "PUT",
+                       {"status": "inactive"}, timeout=AGENT_TIMEOUT)
+    if st == 404:
+        return 0, "extension déjà absente du site"
+    if st != 200:
+        return 1, f"désactivation refusée (HTTP {st}) : {wp_msg(data)}"
+    st, data = _wp_req(url, path, cred["user"], cred["password"], "DELETE",
+                       timeout=AGENT_TIMEOUT)
+    if st in (200, 204):
+        return 0, "extension désactivée puis supprimée"
+    return 1, f"suppression refusée (HTTP {st}) : {wp_msg(data)}"
+
+
+def wp_agent_ensure(site, url, cred):
+    """Pose l'agent sur le site et le laisse ACTIF → (rc, message, version).
+
+    `wp_install_plugin` demande déjà `status: active` : une installation neuve
+    est active d'office. Le cas à rattraper est celui du dossier déjà présent
+    (`folder_exists`), où WordPress n'a rien fait du tout — l'extension peut
+    alors dormir désactivée.
+    """
+    info = {}
+    rc, pose = wp_install_plugin(site, AGENT_SLUG, info)
+    if rc != 0:
+        return rc, pose, ""
+    version = info.get("version") or ""
+    if not info.get("already"):
+        return 0, pose, version
+    chemin = info.get("plugin") or f"{AGENT_SLUG}/{AGENT_SLUG}"
+    statut, vue = wp_plugin_state(url, cred, chemin)
+    version = vue or version
+    if statut is None:
+        return 0, pose + " (état non relu : l'API ne renvoie pas cette extension)", version
+    if statut == "active":
+        return 0, pose + " et déjà active", version
+    st, data = _wp_req(url, "/wp-json/wp/v2/plugins/" + chemin, cred["user"], cred["password"],
+                       "PUT", {"status": "active"}, timeout=AGENT_TIMEOUT)
+    if st != 200:
+        return 1, pose + f" mais activation refusée (HTTP {st}) : {wp_msg(data)}", version
+    if isinstance(data, dict) and data.get("version"):
+        version = str(data["version"])
+    return 0, pose + " puis activée", version
+
+
+def rest_agent_pair(url, cred, secret, force=False):
+    """Route d'appairage de l'agent (1.4.0+) → (état, données).
+
+    États : « ok » · « old » (route absente, agent antérieur à 1.4.0) ·
+    « conflict » (déjà appairé, `force` non demandé) · « denied » (capacité
+    insuffisante) · « bad » (corps refusé) · « error ».
+    """
+    st, data = _wp_req(url, AGENT_PAIR_ROUTE, cred["user"], cred["password"], "POST",
+                       {"endpoint": DASH_ENDPOINT, "secret": secret, "force": bool(force)},
+                       timeout=AGENT_TIMEOUT)
+    data = data if isinstance(data, dict) else {}
+    if st == 200:
+        return ("ok" if data.get("paired") else "error"), data
+    return {404: "old", 409: "conflict", 403: "denied", 400: "bad"}.get(st, "error"), data
+
+
+def agent_journal(action, domain, res, t0, rc, secret=""):
+    """Trace l'opération dans actions.log et rend la réponse, rc compris.
+
+    `arg` porte le MODE (direct / code) : c'est ce qu'on relit dans l'historique
+    pour savoir si un site est réellement relié ou s'il attend un code.
+    """
+    trace = " · ".join(x for x in (res.get("message") or "",
+                                   "agent " + res["agent_version"] if res.get("agent_version") else "")
+                       if x)
+    append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "source": "dashboard",
+                "server": "rest", "domain": domain, "action": action,
+                "arg": res.get("mode") or "-", "rc": rc,
+                "duration_s": round(time.time() - t0, 1),
+                "output_tail": mask_secret(trace, secret)[-2000:]})
+    return dict(res, rc=rc)
+
+
+# Refus attendus : le dashboard répond 200 avec ok:false et un message, comme
+# pour les rc « soft » des actions (site sans SSH, extension gelée…). Un 500 est
+# réservé à ce qui a réellement échoué côté serveur, pour que le bandeau
+# d'erreur du front ne se déclenche pas sur une situation prévue.
+AGENT_REFUS = ("no_cred", "unknown", "conflict", "denied", "bad")
+
+
+def agent_http_code(res):
+    if res.get("ok"):
+        return 200
+    return 200 if res.get("code") in AGENT_REFUS else 500
+
+
+def rest_agent_install(domain, force=False):
+    """Installe l'agent depuis wordpress.org puis relie le site → dictionnaire JSON."""
+    t0, secret = time.time(), ""
+
+    def journal(res, rc):
+        return agent_journal("rest_agent_install", domain, res, t0, rc, secret)
+
+    site, url = rest_site_by_domain(domain)
+    if not site or not url:
+        return journal({"ok": False, "mode": "", "code": "unknown", "message":
+                        "site sans SSH inconnu du dashboard : ajoutez-le d'abord dans "
+                        "Gestion → Sites sans SSH"}, 92)
+    _, cred = wp_cred_for(domain, url)
+    if not cred:
+        return journal({"ok": False, "mode": "", "code": "no_cred", "message": AGENT_NO_CRED_MSG}, 98)
+    url = re.sub(r"/+$", "", str(cred.get("url") or url))
+    _, err = validate_public_url(url)     # même garde anti-SSRF que le sondage d'URL
+    if err:
+        return journal({"ok": False, "mode": "", "code": "url",
+                        "message": f"url du site : {err}"}, 92)
+
+    rc, pose, version = wp_agent_ensure(site, url, cred)
+    if rc != 0:
+        return journal({"ok": False, "mode": "", "code": "install", "message":
+                        pose + " — rien n'a été relié : le site est inchangé"}, rc)
+
+    secret = secrets.token_urlsafe(32)
+    if not SECRET_RE.match(secret):       # garde-fou : même contrôle que dash_connect
+        return journal({"ok": False, "mode": "", "code": "secret",
+                        "message": "secret invalide"}, 91)
+    prev = site_secrets().get(site_key(domain))
+    set_site_secret(domain, secret)
+    try:
+        etat, data = rest_agent_pair(url, cred, secret, force)
+    except Exception as e:
+        etat, data = "error", {"message": f"{type(e).__name__}: {e}"}
+    version = str(data.get("agent_version") or version or "")
+
+    if etat == "ok":
+        entry = next((s for s in rest_sites() if s.get("domain") == site_key(domain)), {})
+        add_rest_site(url, name=entry.get("name"), multisite=bool(entry.get("multisite")),
+                      blog_id=entry.get("blog_id"), agent_version=version or None)
+        rest_collect_async(site_key(domain))
+        return journal({"ok": True, "mode": "direct", "code": "", "agent_version": version,
+                        "paired_at": str(data.get("paired_at") or ""), "endpoint": DASH_ENDPOINT,
+                        "message": pose + " · site relié au dashboard, inventaire en route"}, 0)
+
+    # Rien n'a abouti côté liaison : le secret local ne doit pas rester orphelin.
+    if prev:
+        set_site_secret(domain, prev)
+    else:
+        forget_site_secret(domain)
+
+    if etat == "old":
+        # Repli : l'extension est là, elle attend juste qu'on lui donne le
+        # dashboard. Un code d'appairage évite de repartir de zéro.
+        return journal({"ok": True, "mode": "code", "code": create_pair_code(url),
+                        "expires_in": PAIR_TTL, "admin_url": url + AGENT_ADMIN_PAGE,
+                        "agent_version": version, "message":
+                        pose + f" — agent antérieur à {AGENT_PAIR_MIN} : il ne sait pas se relier "
+                        "à distance. Reste à faire : coller le code d'appairage dans "
+                        "« Réglages → Dash Agent » du site."}, 0)
+
+    reste = ("L'extension est installée et active sur le site ; il reste à la RELIER.")
+    if etat == "conflict":
+        return journal({"ok": False, "mode": "", "code": "conflict", "agent_version": version,
+                        "message": "l'agent est déjà relié à un dashboard. " + reste
+                        + " Relancez en cochant « remplacer la liaison existante » pour le "
+                          "rebrancher ici."}, 1)
+    if etat == "denied":
+        return journal({"ok": False, "mode": "", "code": "denied", "agent_version": version,
+                        "message": "le compte WordPress du dashboard n'a pas les droits exigés "
+                        "par l'agent pour l'appairage. " + reste}, 1)
+    if etat == "bad":
+        return journal({"ok": False, "mode": "", "code": "bad", "agent_version": version,
+                        "message": "l'agent a refusé la demande d'appairage : "
+                        + (wp_msg(data) or "corps invalide") + ". " + reste}, 1)
+    return journal({"ok": False, "mode": "", "code": "pair", "agent_version": version,
+                    "message": "appairage impossible : " + (wp_msg(data) or "site injoignable")
+                    + ". " + reste}, 1)
+
+
+def rest_agent_remove(domain, keep_plugin=False):
+    """Débranche l'agent d'un site sans SSH, et le désinstalle sauf demande contraire."""
+    t0 = time.time()
+
+    def journal(res, rc):
+        return agent_journal("rest_agent_remove", domain, res, t0, rc)
+
+    site, url = rest_site_by_domain(domain)
+    if not site or not url:
+        return journal({"ok": False, "mode": "", "code": "unknown",
+                        "message": "site sans SSH inconnu du dashboard"}, 92)
+    _, cred = wp_cred_for(domain, url)
+    if not cred:
+        return journal({"ok": False, "mode": "", "code": "no_cred", "message":
+                        AGENT_NO_CRED_MSG + " (sans identifiants, l'extension doit être "
+                        "retirée à la main depuis wp-admin)"}, 98)
+    url = re.sub(r"/+$", "", str(cred.get("url") or url))
+    _, err = validate_public_url(url)
+    if err:
+        return journal({"ok": False, "mode": "", "code": "url",
+                        "message": f"url du site : {err}"}, 92)
+
+    etapes, dur = [], False
+    try:
+        st, data = _wp_req(url, AGENT_PAIR_ROUTE, cred["user"], cred["password"], "DELETE",
+                           timeout=AGENT_TIMEOUT)
+    except Exception as e:
+        st, data = 0, {"message": f"{type(e).__name__}: {e}"}
+    if st == 200:
+        etapes.append("liaison retirée côté site")
+    elif st == 404:
+        # Repli propre : agent antérieur à 1.4.0, ou déjà désinstallé. Retirer
+        # l'extension et oublier le secret suffit à couper la liaison.
+        etapes.append(f"agent antérieur à {AGENT_PAIR_MIN} : aucune route de désappairage")
+    else:
+        etapes.append(f"désappairage refusé par le site (HTTP {st}) : {wp_msg(data)}")
+
+    if keep_plugin:
+        etapes.append("extension conservée sur le site, à la demande")
+    else:
+        rc, mot = wp_plugin_delete(url, cred, f"{AGENT_SLUG}/{AGENT_SLUG}")
+        etapes.append(mot)
+        dur = rc != 0
+    etapes.append("secret local effacé" if forget_site_secret(domain)
+                  else "aucun secret local à effacer")
+    if dur:
+        etapes.append("reste à faire : retirer l'extension depuis wp-admin")
+    return journal({"ok": not dur, "mode": "", "code": "remove" if dur else "",
+                    "message": " · ".join(etapes)}, 1 if dur else 0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -6626,6 +6939,20 @@ class Handler(BaseHTTPRequestHandler):
             ok, err = telegram_send_sync("✅ <b>Dashboard parc</b> — message de test.")
             alerts_log("test: " + ("ok" if ok else f"échec ({err})"))
             return self._send(200, {"ok": ok, "error": err})
+
+        if p == "/api/mgmt/rest_agent_install":
+            domain = site_key(body.get("domain", ""))
+            if not SLUG_RE.match(domain):
+                return self._send(400, {"error": "domaine invalide"})
+            res = rest_agent_install(domain, force=bool(body.get("force")))
+            return self._send(agent_http_code(res), res)
+
+        if p == "/api/mgmt/rest_agent_remove":
+            domain = site_key(body.get("domain", ""))
+            if not SLUG_RE.match(domain):
+                return self._send(400, {"error": "domaine invalide"})
+            res = rest_agent_remove(domain, keep_plugin=bool(body.get("keep_plugin")))
+            return self._send(agent_http_code(res), res)
 
         if p == "/api/mgmt/dash_connect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))

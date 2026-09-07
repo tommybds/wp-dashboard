@@ -391,33 +391,46 @@ function groupeConnecter(s) {
   // 'inactif' et 'nocli' : rien à proposer d'ici, la ligne d'état dit quoi faire
   // (activer l'extension, ou la mettre à jour depuis l'onglet Extensions).
 
+  /* --- autorisation WordPress ---
+     Elle n'existe que pour les sites sans SSH : en SSH le dashboard agit déjà
+     directement. Lue AVANT le bloc agent : sans SSH, c'est elle qui décide si
+     l'agent peut être posé d'ici. */
+  const cred = rest ? WPETAT.get(s.domain) : undefined;
+  // `su` : true autorisé · false non autorisé · null on ne sait pas encore.
+  const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;
+
   /* --- agent Dash ---
      La collecte ne relève pas sa présence : sur un site en SSH, l'état est
-     honnêtement INCONNU, et les deux actions restent offertes. Sur un site
-     REST, en revanche, l'agent est là par construction — c'est lui qui pousse
-     l'inventaire. */
+     honnêtement INCONNU, et les deux actions restent offertes par SSH. Sur un
+     site REST, l'agent est là par construction — c'est lui qui pousse
+     l'inventaire — et les deux gestes passent par l'API REST de WordPress. */
   items.push({
     etat: true, ic: 'link', label: 'Agent Dash :',
     detail: rest
       ? 'relié — c’est lui qui pousse l’inventaire de ce site'
       : 'état inconnu — la collecte ne relève pas sa présence',
   });
-  items.push({
-    label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
-    disabled: rest, raison: rest ? "site sans SSH : l'agent y est déjà, c'est lui qui pousse l'inventaire" : '',
-    onSelect: () => dashAgent(s, true),
-  }, {
-    label: 'Dissocier l’agent Dash', ic: 'x', attention: true,
-    disabled: rest, raison: rest ? "site sans SSH : dissocier l'agent couperait tout inventaire" : '',
-    onSelect: () => dashAgent(s, false),
-  });
+  if (rest) {
+    const bloque = su === true ? '' : 'autorisez d’abord WordPress sur ce site';
+    items.push({
+      label: 'Réinstaller et relier l’agent Dash', ic: 'refresh-cw', attention: true,
+      disabled: !!bloque, raison: bloque,
+      onSelect: () => agentRest(s, true),
+    }, {
+      label: 'Retirer l’agent Dash', ic: 'x', attention: true,
+      disabled: !!bloque, raison: bloque,
+      onSelect: () => agentRest(s, false),
+    });
+  } else {
+    items.push({
+      label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
+      onSelect: () => dashAgent(s, true),
+    }, {
+      label: 'Dissocier l’agent Dash', ic: 'x', attention: true,
+      onSelect: () => dashAgent(s, false),
+    });
+  }
 
-  /* --- autorisation WordPress ---
-     Elle n'existe que pour les sites sans SSH : en SSH le dashboard agit déjà
-     directement. Autoriser OU Révoquer, jamais les deux. */
-  const cred = rest ? WPETAT.get(s.domain) : undefined;
-  // `su` : true autorisé · false non autorisé · null on ne sait pas encore.
-  const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;
   items.push({
     etat: true, ic: 'link', label: 'WordPress :',
     detail: !rest ? 'sans objet — ce site est piloté en SSH'
@@ -493,6 +506,49 @@ async function dashAgent(s, connecter) {
   const out = stripPhpNoise(String(j.output ?? j.error ?? '')).slice(-200);
   NOTIF.done(nid, { ok: !!j.ok, message: j.ok ? 'agent ' + (connecter ? 'installé' : 'dissocié') : out });
   if (!j.ok) askInfo(quoi + ' — échec', H(out || 'échec'));
+}
+
+/* ---- agent Dash sur un site SANS SSH --------------------------------------
+   Tout passe par l'API REST de WordPress et le mot de passe d'application déjà
+   autorisé : l'extension vient de wordpress.org, puis le dashboard appelle la
+   route d'appairage de l'agent. Le repli « code » n'est PAS un échec — l'agent
+   déjà en place est antérieur à 1.4.0 et ne sait pas se relier à distance : on
+   rend alors le code à coller dans l'écran de réglages du site. */
+const AGENT_REST_POSE = 'L’extension « sumotori-dash-agent » sera téléchargée depuis '
+  + 'wordpress.org, installée et activée sur le site, puis reliée à ce dashboard. Aucune '
+  + 'donnée du site n’est transmise avant que la liaison soit établie.';
+
+async function agentRest(s, installer) {
+  const quoi = installer ? 'Installer l’agent Dash' : 'Retirer l’agent Dash';
+  const msg = installer
+    ? `Installer l’agent Dash sur <b>${H(s.domain)}</b> ?<br><br>${H(AGENT_REST_POSE)}`
+    : `Retirer l’agent Dash de <b>${H(s.domain)}</b> ?<br><br>Le site cesse d’envoyer son `
+      + 'inventaire et ses évènements, l’extension est désactivée puis supprimée, et le secret '
+      + 'local est effacé.';
+  if (!await askConfirm(msg, { titre: quoi, ok: installer ? 'Installer' : 'Retirer', danger: !installer })) return;
+  const nid = NOTIF.start({ kind: 'connect', label: quoi + ' · ' + (kName(s) || s.domain), site: { srv: s.srv, domain: s.domain } });
+  let j;
+  // Deux routes écrites en toutes lettres : une URL construite par concaténation
+  // échappe au croisement front ↔ backend de tools/check_front.py.
+  try {
+    j = installer
+      ? await api('/api/mgmt/rest_agent_install', { domain: s.domain }) || {}
+      : await api('/api/mgmt/rest_agent_remove', { domain: s.domain }) || {};
+  } catch (e) { j = { ok: false, message: String(e) }; }
+  const out = String(j.message ?? j.error ?? '').slice(-300);
+  const code = j.ok && j.mode === 'code';
+  NOTIF.done(nid, { ok: !!j.ok, message: code ? 'code d’appairage à coller sur le site' : out });
+  if (code) { askInfo('Code d’appairage', codeAgentHtml(j, out)); return; }
+  if (!j.ok) { askInfo(quoi + ' — échec', H(out || 'échec')); return; }
+  loadFleet();
+}
+
+function codeAgentHtml(j, out) {
+  const u = safeUrl(j.admin_url);
+  const min = Math.max(1, Math.round(Number(j.expires_in || 0) / 60));
+  return `${H(out)}<br><br><code>${H(String(j.code || ''))}</code> — valable ${min} min.`
+    + (u ? `<br><br><a href="${H(u)}" target="_blank" rel="noopener noreferrer">Ouvrir `
+      + 'l’écran de réglages du site</a>' : '');
 }
 
 /* ---- bandeau d'indicateurs ------------------------------------------------ */

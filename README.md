@@ -577,6 +577,57 @@ l'URL du dashboard est saisie à l'appairage.
 - Détail des données échangées : voir `agent/sumotori-dash-agent/readme.txt`,
   section « External services ».
 
+### Installer l'agent sur un site sans SSH
+
+L'agent est publié sur wordpress.org sous le slug `sumotori-dash-agent` : sur un
+site que le dashboard a déjà **autorisé**, on peut donc l'installer *et* le
+relier sans jamais ouvrir wp-admin.
+
+**Prérequis** — le site est dans **Gestion → Sites sans SSH**, et sa colonne
+« WordPress » affiche `autorisé` (voie « Autoriser », c'est-à-dire un mot de
+passe d'application d'administrateur obtenu par le flux natif de WordPress).
+Sans cela, le bouton laisse la place à la mention « autorisez WordPress
+d'abord » : rien n'est tenté.
+
+**Déroulé** — bouton **« Installer l'agent »** de la ligne (ou, sur la page du
+site, menu **Actions → Connecter → Réinstaller et relier l'agent Dash**). La
+confirmation dit ce qui va se passer ; puis `POST /api/mgmt/rest_agent_install`
+enchaîne :
+
+1. `POST <site>/wp-json/wp/v2/plugins` `{"slug":"sumotori-dash-agent",
+   "status":"active"}` — installation depuis wordpress.org. Un dossier déjà
+   présent (`folder_exists`) est un succès : l'extension est alors relue, et
+   **activée** si elle dormait (`PUT /wp-json/wp/v2/plugins/<dossier>/<fichier>`
+   avec `{"status":"active"}`).
+2. Un secret HMAC est tiré (`token_urlsafe(32)`), enregistré dans
+   `data/site_secrets.json`, puis envoyé au site :
+   `POST <site>/wp-json/sumotori-dash/v1/pair` avec le corps
+   `{"endpoint": <DASH_ENDPOINT>, "secret": …, "force": false}`.
+3. En cas de succès, la version de l'agent est retenue avec le site et une
+   collecte REST immédiate est lancée (`collect.py --only rest --match …`) :
+   l'inventaire arrive sans attendre le cron.
+
+**Replis** — chacun dit ce qui a été fait et ce qui reste à faire :
+
+| Réponse de l'agent | Ce que fait le dashboard |
+|---|---|
+| `404` (agent antérieur à 1.4.0, route absente) | mode **`code`** : le secret local est retiré, un **code d'appairage** est généré et affiché avec son délai et un lien vers `…/wp-admin/options-general.php?page=sumotori-dash-agent`. L'extension, elle, est bien installée et active. |
+| `409` (déjà appairé) | échec `conflict` : le secret local est retiré, et un bouton **« Remplacer la liaison »** rejoue l'appel avec `force: true`. |
+| `403` (capacité insuffisante) | échec `denied` : l'extension reste installée et active, il reste à la relier. |
+| `400` (corps refusé) | échec `bad`, même règle. |
+
+**Retirer** — bouton **« Retirer l'agent »** (`POST /api/mgmt/rest_agent_remove`) :
+`DELETE <site>/wp-json/sumotori-dash/v1/pair`, puis — sauf `keep_plugin` —
+désactivation et suppression de l'extension, puis effacement du secret local.
+Une route absente (`404`) n'est pas une erreur : retirer l'extension et oublier
+le secret suffit à couper la liaison.
+
+**Ce qui est journalisé** (`data/actions.log`) — une ligne
+`rest_agent_install` ou `rest_agent_remove` par appel, avec le `rc`, le **mode**
+dans `arg` (`direct` / `code` / `-`), le message rendu et la version de l'agent.
+**Le secret n'y figure jamais** (`mask_secret`), pas plus que dans la réponse
+HTTP.
+
 ---
 
 ## Sécurité
