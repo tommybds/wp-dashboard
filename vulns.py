@@ -3,9 +3,10 @@
 
 Données : WPVulnerability (https://www.wpvulnerability.net/), API ouverte, sans
 clé ni compte, qui agrège plusieurs sources publiques (CVE.org, Patchstack,
-Wordfence, WPScan) et indexe par *slug* d'extension — exactement ce que produit
-notre inventaire. Aucune information sur le parc n'est transmise : on demande
-« quelles failles connaît-on pour l'extension X ? », jamais « voici mes sites ».
+Wordfence, WPScan) et indexe par *slug* d'extension ET DE THÈME — exactement ce
+que produit notre inventaire. Aucune information sur le parc n'est transmise :
+on demande « quelles failles connaît-on pour l'extension X ? », jamais « voici
+mes sites ».
 
 Le résultat de chaque slug est mis en cache 24 h dans data/vuln_feed.json ; seuls
 les slugs réellement présents dans l'inventaire sont interrogés, avec une pause
@@ -150,6 +151,47 @@ def affects(operator, version):
             and _cmp_ok(version, operator.get("max_operator"), operator.get("max_version")))
 
 
+# Borne lue dans le TITRE de l'enregistrement : « … <= 4.9.4 - Stored XSS »,
+# « Divi < 4.23 — RCE ». Les fiches de thèmes sont beaucoup plus souvent que
+# celles d'extensions dépourvues d'`operator` exploitable ; `affects()` retient
+# alors TOUT (choix conservateur documenté plus haut), ce qui ferait remonter
+# une faille corrigée il y a trois ans sur chaque site sous Divi.
+# On ne devine rien pour autant : la borne n'est utilisée que lorsqu'elle est
+# écrite noir sur blanc dans le titre ET que l'intervalle est muet.
+_TITLE_BOUND_RE = re.compile(r"(?:<=|&lt;=|<|&lt;|≤)\s*v?(\d[\d.]*[0-9A-Za-z.\-]*)")
+
+
+def title_bound(title):
+    """Version maximale annoncée par le titre, ou None. → (opérateur, version)."""
+    m = _TITLE_BOUND_RE.search(str(title or ""))
+    if not m:
+        return None
+    op = "le" if m.group(0).lstrip().startswith(("<=", "&lt;=", "≤")) else "lt"
+    return op, m.group(1).rstrip(".")
+
+
+def has_max_bound(operator):
+    """L'enregistrement borne-t-il déjà le HAUT de l'intervalle ?"""
+    if not isinstance(operator, dict):
+        return False
+    return bool(operator.get("max_version")) and bool(operator.get("max_operator"))
+
+
+def affects_strict(v, version):
+    """`affects()` + garde-fou anti-faux-positif par la borne du titre.
+
+    Sans intervalle exploitable, on se rabat sur la borne écrite dans le titre ;
+    faute de l'une comme de l'autre, on garde le comportement conservateur
+    d'origine (l'enregistrement est retenu, à vérifier à la main).
+    """
+    if not affects(v.get("operator"), version):
+        return False
+    if has_max_bound(v.get("operator")):
+        return True
+    borne = title_bound(v.get("name"))
+    return _cmp_ok(version, borne[0], borne[1]) if borne else True
+
+
 # ---------------------------------------------------------------------------
 #  Cache et appels API
 # ---------------------------------------------------------------------------
@@ -225,8 +267,8 @@ def refresh(kind, key, cache, stats, force=False):
     if not force and entry and (now - entry.get("fetched", 0)) < TTL:
         stats["cache"] += 1
         return
-    path = {"plugin": f"/plugin/{key}/", "core": f"/core/{key}/",
-            "php": f"/php/{key}/"}[kind]
+    path = {"plugin": f"/plugin/{key}/", "theme": f"/theme/{key}/",
+            "core": f"/core/{key}/", "php": f"/php/{key}/"}[kind]
     data, err = api_get(path)
     time.sleep(PAUSE)
     if err == "inconnu":
@@ -243,8 +285,29 @@ def refresh(kind, key, cache, stats, force=False):
     stats["fetched"] += 1
 
 
+def theme_slugs(site):
+    """Slugs de thèmes interrogeables pour un site.
+
+    Un thème ENFANT n'a presque jamais de fiche sur wordpress.org : son slug
+    propre revient « inconnu » et son parent, lui, figure DÉJÀ dans la liste
+    avec `status: "parent"`. On ne substitue donc jamais le slug du parent à
+    celui de l'enfant — ce serait compter deux fois la même faille sur le même
+    site. Chaque slug n'apparaît qu'une fois, quel que soit le nombre d'entrées.
+    """
+    vus, out = set(), []
+    for t in (site.get("themes_list") or []):
+        if not isinstance(t, dict):
+            continue
+        n = str(t.get("name") or "").strip()
+        if not n or n in vus or n in SKIP_SLUGS or n.endswith(".php"):
+            continue
+        vus.add(n)
+        out.append(t)
+    return out
+
+
 def fleet_targets(fleet):
-    """Slugs d'extensions, versions de cœur et de PHP réellement présents."""
+    """Slugs d'extensions et de thèmes, versions de cœur et de PHP réellement présents."""
     retenus = {}
     for srv in fleet.get("servers", []):
         for s in srv.get("sites", []):
@@ -255,7 +318,7 @@ def fleet_targets(fleet):
                 continue
             s = dict(s, srv=srv.get("name"))
             retenus[k] = s
-    slugs, cores, phps = set(), set(), set()
+    slugs, themes, cores, phps = set(), set(), set(), set()
     for s in retenus.values():
         if s.get("core_version"):
             cores.add(str(s["core_version"]))
@@ -265,17 +328,20 @@ def fleet_targets(fleet):
             n = p.get("name")
             if n and n not in SKIP_SLUGS and not str(n).endswith(".php"):
                 slugs.add(n)
-    return retenus, slugs, cores, phps
+        for t in theme_slugs(s):
+            themes.add(str(t["name"]))
+    return retenus, slugs, themes, cores, phps
 
 
 def do_fetch(force=False, verbose=True):
     fleet = load_json(FLEET_PATH, {"servers": []})
-    _, slugs, cores, phps = fleet_targets(fleet)
+    _, slugs, themes, cores, phps = fleet_targets(fleet)
     cache = load_json(FEED_PATH, {})
     stats = {"fetched": 0, "cache": 0, "unknown": 0, "errors": 0, "error_detail": {}}
-    total = len(slugs) + len(cores) + len(phps)
+    total = len(slugs) + len(themes) + len(cores) + len(phps)
     done = 0
-    for kind, keys in (("plugin", sorted(slugs)), ("core", sorted(cores)), ("php", sorted(phps))):
+    for kind, keys in (("plugin", sorted(slugs)), ("theme", sorted(themes)),
+                       ("core", sorted(cores)), ("php", sorted(phps))):
         for k in keys:
             refresh(kind, k, cache, stats, force)
             done += 1
@@ -284,7 +350,9 @@ def do_fetch(force=False, verbose=True):
     cache["_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     save_json(FEED_PATH, cache)
     msg = (f"{stats['fetched']} interrogés, {stats['cache']} déjà en cache, "
-           f"{stats['unknown']} inconnus de la base, {stats['errors']} erreurs")
+           f"{stats['unknown']} inconnus de la base, {stats['errors']} erreurs "
+           f"({len(slugs)} extensions, {len(themes)} thèmes, {len(cores)} cœurs, "
+           f"{len(phps)} PHP)")
     if stats["error_detail"]:
         msg += " (" + ", ".join(f"{k}×{v}" for k, v in stats["error_detail"].items()) + ")"
     # Statut d'échec au-delà de 20 % d'appels ratés : le cache reste alors
@@ -323,13 +391,15 @@ def sev_of(v):
 def do_scan():
     fleet = load_json(FLEET_PATH, {"servers": []})
     cache = load_json(FEED_PATH, {})
-    retenus, _, _, _ = fleet_targets(fleet)
+    retenus, _, _, _, _ = fleet_targets(fleet)
     plugins, cores, phps = cache.get("plugin", {}), cache.get("core", {}), cache.get("php", {})
+    themes_cache = cache.get("theme", {})
 
-    def hits(entry, version, kind, component, extra=None):
+    def hits(entry, version, kind, component, extra=None, strict=False):
         out = []
         for v in (entry or {}).get("vulns", []):
-            if not affects(v.get("operator"), version):
+            garde = affects_strict(v, version) if strict else affects(v.get("operator"), version)
+            if not garde:
                 continue
             item = {"kind": kind, "component": component, "version": version,
                     "title": v["name"], "cve": v.get("cve"), "link": v.get("link"),
@@ -379,10 +449,24 @@ def do_scan():
                 continue
             found += hits(plugins.get(slug), ver, "plugin", slug,
                           {"status": p.get("status"), "update_to": p.get("to") or ""})
+        # Thèmes : même croisement, même sémantique de version, avec en plus le
+        # garde-fou de la borne du titre (`strict`). Les fiches de thèmes sont
+        # souvent dépourvues d'intervalle, et sans ce contrôle chaque site sous
+        # Divi remonterait la totalité de l'historique des CVE du thème.
+        for t in theme_slugs(s):
+            slug = str(t["name"])
+            ver = t.get("version")
+            if not ver:
+                continue
+            found += hits(themes_cache.get(slug), ver, "theme", slug,
+                          {"status": t.get("status"),
+                           "parent": t.get("parent") or "",
+                           "update_to": t.get("update_version") or t.get("to") or ""},
+                          strict=True)
         if not found:
             continue
         found.sort(key=lambda v: (-SEVERITY_ORDER.get(v["severity"], 0),
-                                  v["kind"] != "core", v["component"]))
+                                  v["kind"] != "core", v["kind"], v["component"]))
         for v in found:
             totals[v["severity"]] = totals.get(v["severity"], 0) + 1
         sites.append({"domain": cle, "server": s.get("srv") or "", "via": s.get("via"),
@@ -391,7 +475,8 @@ def do_scan():
     sites.sort(key=lambda x: (-SEVERITY_ORDER.get(x["worst"], 0), -x["count"], x["domain"]))
     res = {"generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
            "feed_updated": cache.get("_updated"),
-           "known_plugins": len(plugins), "sites_scanned": len(retenus),
+           "known_plugins": len(plugins), "known_themes": len(themes_cache),
+           "sites_scanned": len(retenus),
            "sites_affected": len(sites), "totals": totals, "sites": sites,
            "php": php_list}
     save_json(FOUND_PATH, res)
@@ -417,7 +502,8 @@ def main():
                 for v in s["findings"][:6]:
                     fix = f" → MAJ {v['update_to']}" if v.get("update_to") else (
                         " ⚠ non corrigée" if v.get("unfixed") else "")
-                    print(f"    [{v['severity'] or '?':8}] {v['component']} {v['version']}"
+                    quoi = "thème " if v.get("kind") == "theme" else ""
+                    print(f"    [{v['severity'] or '?':8}] {quoi}{v['component']} {v['version']}"
                           f"{fix}  {(v.get('cve') or '')}")
     if not fetch_ok:
         sys.exit(1)   # visible dans le journal cron : la base n'est pas à jour

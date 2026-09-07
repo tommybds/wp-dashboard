@@ -46,7 +46,8 @@ VIZ_ACTIONS = ("viz_baseline", "viz_scan")
 # jusqu'ici par /api/actions/run sans AUCUN contrôle visuel — seules la MAJ sûre
 # et l'action groupée « vérifiée visuellement » en faisaient un.
 VIZ_AFTER_UPDATE_ACTIONS = ("plugin_update", "plugins_update_all",
-                            "plugins_update_except", "core_update", "themes_update_all")
+                            "plugins_update_except", "core_update",
+                            "theme_update", "themes_update_all", "themes_update_except")
 VIZ_AFTER_SOURCE = "auto-after-update"   # source journalisée du scan automatique
 # Le plugin vizproof-timeline (≥ 1.3.6) accroche `upgrader_process_complete`
 # GLOBALEMENT, donc aussi sous WP-CLI : quand son option de site
@@ -185,6 +186,8 @@ ACTIONS = {
     "plugins_update_except": ("MAJ plugins sauf {arg}", True, "plugin update --all --exclude={arg}"),
     "plugin_update":      ("MAJ du plugin {arg}", True,  "plugin update {arg}"),
     "themes_update_all":  ("MAJ de tous les thèmes", False, "theme update --all"),
+    "themes_update_except": ("MAJ thèmes sauf {arg}", True, "theme update --all --exclude={arg}"),
+    "theme_update":       ("MAJ du thème {arg}", True,  "theme update {arg}"),
     "updraft_backup":     ("Backup UpdraftPlus", False, "updraftplus backup"),
     "cache_flush":        ("Vider caches + rewrite", False, "cache flush && WPRUN rewrite flush"),
     "autoupdate_on":      ("Activer auto-updates plugins", False, "plugin auto-updates enable --all"),
@@ -198,7 +201,8 @@ ACTIONS = {
     "viz_disconnect":     ("Dissocier VizProof", False, "vizproof disconnect --format=json"),
 }
 # actions bulk qui doivent d'abord backuper si UpdraftPlus est présent
-BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except", "themes_update_all"}
+BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except",
+                "themes_update_all", "themes_update_except"}
 # actions groupées qui ne sont pas des commandes wp-cli de ACTIONS : la collecte
 # ciblée, et la liaison/déliaison de l'agent (dépôt ou retrait d'un fichier).
 BULK_EXTRA_ACTIONS = ("rescan", "dash_connect", "dash_disconnect")
@@ -722,29 +726,75 @@ def update_policy():
     return d if isinstance(d, dict) else {}
 
 
+# Gel des thèmes : une CLÉ DISTINCTE (`frozen_themes`), pas un préfixe
+# « theme: » glissé dans `frozen`. Trois raisons :
+#   1. les fichiers existants restent valables tels quels — `frozen` continue de
+#      vouloir dire exactement ce qu'il voulait dire, aucune migration à écrire
+#      et aucune ligne de politique à réécrire sur les serveurs en place ;
+#   2. un slug de thème et un slug d'extension peuvent être IDENTIQUES (astra,
+#      neve, blocksy existent des deux côtés) : mêlés dans une même liste, geler
+#      le thème gèlerait l'extension du même nom ;
+#   3. la réponse de `GET /api/actions/policy` garde son champ `frozen` inchangé
+#      pour l'interface, et gagne `frozen_themes` à côté.
+# Un préfixe `theme:` écrit dans `frozen` par une version intermédiaire est
+# néanmoins RELU comme un thème (et retiré des extensions) : c'est la migration
+# en lecture, elle ne coûte rien et évite un gel silencieusement perdu.
+FROZEN_THEME_PREFIX = "theme:"
+
+
+def _frozen_lists(domain):
+    """→ (extensions gelées, thèmes gelés) pour ce site, listes triées."""
+    entry = update_policy().get(str(domain or "")) or {}
+    plugs, themes = set(), set()
+    for x in (entry.get("frozen") or []):
+        x = str(x)
+        if x.startswith(FROZEN_THEME_PREFIX):      # migration en lecture
+            x = x[len(FROZEN_THEME_PREFIX):]
+            if SLUG_RE.match(x):
+                themes.add(x)
+        elif SLUG_RE.match(x):
+            plugs.add(x)
+    for x in (entry.get("frozen_themes") or []):
+        if SLUG_RE.match(str(x)):
+            themes.add(str(x))
+    return sorted(plugs), sorted(themes)
+
+
 def frozen_plugins(domain):
     """Extensions gelées pour ce site (jamais mises à jour automatiquement)."""
-    entry = update_policy().get(str(domain or "")) or {}
-    out = [str(x) for x in (entry.get("frozen") or []) if SLUG_RE.match(str(x))]
-    return sorted(set(out))
+    return _frozen_lists(domain)[0]
 
 
-def set_frozen_plugin(domain, slug, frozen):
-    """Gèle ou dégèle une extension. → nouvelle liste pour ce site."""
+def frozen_themes(domain):
+    """Thèmes gelés pour ce site (jamais mis à jour automatiquement)."""
+    return _frozen_lists(domain)[1]
+
+
+def set_frozen_plugin(domain, slug, frozen, kind="plugin"):
+    """Gèle ou dégèle une extension (`kind="plugin"`) ou un thème (`kind="theme"`).
+
+    → nouvelle liste pour ce site, celle du `kind` demandé.
+    """
+    cle = "frozen_themes" if kind == "theme" else "frozen"
     resultat = []
 
     def _muter(pol):
         if not isinstance(pol, dict):
             pol = {}
         entry = pol.setdefault(str(domain), {})
-        cur = set(entry.get("frozen") or [])
+        cur = set(entry.get(cle) or [])
         if frozen:
             cur.add(str(slug))
         else:
             cur.discard(str(slug))
-        entry["frozen"] = sorted(cur)
+        entry[cle] = sorted(cur)
         entry["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        if not entry["frozen"]:
+        if not entry[cle]:
+            entry.pop(cle, None)
+        # Le site ne disparaît de la politique que lorsqu'il n'a plus AUCUN gel,
+        # extension comme thème — sinon dégeler le dernier thème effacerait les
+        # extensions gelées du même site.
+        if not entry.get("frozen") and not entry.get("frozen_themes"):
             pol.pop(str(domain), None)
         resultat[:] = sorted(cur)
         return pol
@@ -761,18 +811,26 @@ def run_action(server_name, domain, action, arg):
         return r.returncode, (r.stdout + r.stderr).strip()
     if action not in ACTIONS:
         return 1, "action inconnue"
-    # Politique par extension : une extension gelée n'est jamais mise à jour,
-    # que la demande vienne d'un bouton, d'une action groupée ou de la MAJ sûre.
-    gelees = frozen_plugins(domain)
+    # Politique par extension ET par thème : ce qui est gelé n'est jamais mis à
+    # jour, que la demande vienne d'un bouton, d'une action groupée ou de la MAJ
+    # sûre. Deux listes séparées : un slug peut nommer un thème ET une extension.
+    gelees, gelees_th = _frozen_lists(domain)
     if gelees:
         if action == "plugin_update" and str(arg or "") in gelees:
             return FROZEN_RC, f"extension gelée pour ce site : {arg}"
         if action == "plugins_update_all":
             action, arg = "plugins_update_except", ",".join(gelees)
+    if gelees_th:
+        if action == "theme_update" and str(arg or "") in gelees_th:
+            return FROZEN_RC, f"thème gelé pour ce site : {arg}"
+        if action == "themes_update_all":
+            action, arg = "themes_update_except", ",".join(gelees_th)
     label, needs_arg, wp_args = ACTIONS[action]
     if needs_arg:
         arg = str(arg or "")
-        arg_ok = re.match(r"^[a-z0-9][a-z0-9,_-]{0,200}$", arg) if action == "plugins_update_except" else SLUG_RE.match(arg)
+        arg_ok = (re.match(r"^[a-z0-9][a-z0-9,_-]{0,200}$", arg)
+                  if action in ("plugins_update_except", "themes_update_except")
+                  else SLUG_RE.match(arg))
         if not arg_ok:
             return 91, "argument invalide"
         wp_args = wp_args.format(arg=arg)
@@ -2300,10 +2358,16 @@ def viz_report_read(server_name, domain, run=""):
 
 
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
-                    with_core=False, dry_run=False, viz_rollback=None):
+                    with_core=False, dry_run=False, viz_rollback=None,
+                    themes=None, with_themes=True):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
+    `themes` None = tous les thèmes ayant une mise à jour en attente ; une liste
+    restreint à ces slugs ; `with_themes=False` les laisse entièrement de côté.
+    Les thèmes suivent exactement le même parcours que les extensions :
+    archive `theme__<slug>.tgz`, même contrôle d'espace disque, même retour
+    arrière, même trace dans le manifeste et dans `rollback_index.json`.
     `with_core` inclut le cœur WordPress : ses fichiers sont archivés et
     restaurables, MAIS les migrations de base de données déclenchées par
     `core update-db` ne sont PAS annulées par le retour arrière — c'est la
@@ -2359,12 +2423,37 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                    if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
         if slugs:
             pending = [p for p in pending if p in slugs]
-        gelees = frozen_plugins(domain)
+        gelees, gelees_th = _frozen_lists(domain)
         if gelees:
             ecartees = [p for p in pending if p in gelees]
             pending = [p for p in pending if p not in gelees]
             if ecartees:
                 safe_step("Extensions gelées, écartées", True, ", ".join(ecartees))
+
+        # 2 bis. mêmes règles pour les thèmes : liste réelle depuis le site
+        #        (`--update=available`), restriction éventuelle, gel appliqué.
+        pending_th = []
+        if with_themes:
+            rct, outt = remote_bash(srv, site,
+                                    'asuser "$base wp theme list --update=available --field=name '
+                                    '--format=csv --skip-plugins --skip-themes $extra --no-color"',
+                                    timeout=120)
+            if rct != 0:
+                # Non bloquant : un site peut n'avoir aucun thème à jour et
+                # l'opération sur les extensions reste parfaitement valable.
+                safe_step("Liste des thèmes à mettre à jour", False,
+                          "liste indisponible, les thèmes sont laissés de côté : "
+                          + (outt or "")[-200:])
+            else:
+                pending_th = [l.strip() for l in (outt or "").splitlines()
+                              if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
+            if themes:
+                pending_th = [t for t in pending_th if t in themes]
+            if gelees_th:
+                ecartes_th = [t for t in pending_th if t in gelees_th]
+                pending_th = [t for t in pending_th if t not in gelees_th]
+                if ecartes_th:
+                    safe_step("Thèmes gelés, écartés", True, ", ".join(ecartes_th))
 
         # Cœur : présent seulement si une mise à jour est réellement disponible.
         # `core_before` = version installée AVANT l'opération, écrite au manifeste
@@ -2389,13 +2478,16 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
             core_target = cand[0] if rcc == 0 and cand else ""
             with_core = bool(core_target)
 
-        if not pending and not with_core:
-            safe_step("Rien à mettre à jour", True, "aucune extension ni cœur en attente")
+        if not pending and not pending_th and not with_core:
+            safe_step("Rien à mettre à jour", True,
+                      "aucune extension, aucun thème ni cœur en attente")
             SAFE["verdict"] = "rien à faire"
             return
         quoi = []
         if pending:
             quoi.append(f"{len(pending)} extension(s) : " + ", ".join(pending[:20]))
+        if pending_th:
+            quoi.append(f"{len(pending_th)} thème(s) : " + ", ".join(pending_th[:20]))
         if with_core:
             quoi.append(f"cœur WordPress → {core_target}")
         safe_step("À mettre à jour", True, " | ".join(quoi))
@@ -2416,6 +2508,15 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
             bout = ligne.strip().split(",")
             if len(bout) == 2 and bout[0] in pending:
                 versions_avant[bout[0]] = bout[1]
+        versions_avant_th = {}
+        if pending_th:
+            rcvt, outvt = remote_bash(srv, site,
+                                      'asuser "$base wp theme list --fields=name,version --format=csv '
+                                      '--skip-plugins --skip-themes $extra --no-color"', timeout=120)
+            for ligne in (outvt or "").splitlines():
+                bout = ligne.strip().split(",")
+                if len(bout) == 2 and bout[0] in pending_th:
+                    versions_avant_th[bout[0]] = bout[1]
         if with_core:
             safe_step("Avertissement sur le cœur", True,
                       "les fichiers du cœur sont archivés et restaurables, mais les migrations "
@@ -2432,19 +2533,27 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #    On archive UNIQUEMENT les extensions réellement mises à jour, jamais
         #    tout le dossier plugins : sur un gros site c'est 400 Mo contre 30.
         lst = " ".join(sq(p) for p in pending)
+        lst_th = " ".join(sq(t) for t in pending_th)
         core_arch = "oui" if with_core else "non"
         manifest = json.dumps({"domain": domain, "ts": stamp,
                                "core_before": core_before if with_core else None,
                                "core_target": core_target if with_core else None,
-                               "plugins": versions_avant}, ensure_ascii=False)
+                               "plugins": versions_avant,
+                               "themes": versions_avant_th}, ensure_ascii=False)
         body = f'''
 set -o pipefail
 PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
 [ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
 echo "PLUGDIR=$PLUGDIR"
+# `wp theme path` rend le dossier des thèmes : il n'est pas toujours frère de
+# celui des extensions (WP_CONTENT_DIR déplacé, thèmes hors docroot).
+THEMEDIR=$(asuser "$base wp theme path $extra --no-color" 2>/dev/null | tail -1)
+[ -d "$THEMEDIR" ] || THEMEDIR="$D/wp-content/themes"
+echo "THEMEDIR=$THEMEDIR"
 # Liste passée en tableau : une mise à jour du seul cœur laisse `pending` vide,
 # et « for s in ; do » serait une erreur de syntaxe bash (script entier perdu).
 SLUGS=({lst})
+THEMES=({lst_th})
 
 # Purge des archives d'anciennes exécutions (retour arrière conservé 7 jours).
 find {sq(SAFE_ROLLBACK_DIR)} -maxdepth 1 -type d -mtime +{SAFE_KEEP_DAYS} -exec rm -rf {{}} + 2>/dev/null
@@ -2455,6 +2564,10 @@ besoin=0
 for s in "${{SLUGS[@]}}"; do
   [ -d "$PLUGDIR/$s" ] || continue
   besoin=$((besoin + $(du -sm "$PLUGDIR/$s" 2>/dev/null | cut -f1)))
+done
+for t in "${{THEMES[@]}}"; do
+  [ -d "$THEMEDIR/$t" ] || continue
+  besoin=$((besoin + $(du -sm "$THEMEDIR/$t" 2>/dev/null | cut -f1)))
 done
 if [ "{core_arch}" = "oui" ]; then
   besoin=$((besoin + $(du -sm --exclude=wp-content "$D" 2>/dev/null | cut -f1)))
@@ -2484,6 +2597,14 @@ for s in "${{SLUGS[@]}}"; do
     echo "archivé $s"
   else
     echo "absent $s"
+  fi
+done
+for t in "${{THEMES[@]}}"; do
+  if [ -d "$THEMEDIR/$t" ]; then
+    tar czf {sq(arc)}/theme__"$t".tgz -C "$THEMEDIR" "$t" || exit 82
+    echo "archivé $t"
+  else
+    echo "absent $t"
   fi
 done
 if [ "{core_arch}" = "oui" ]; then
@@ -2554,6 +2675,8 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             return
         plugdir = next((l.split("=", 1)[1] for l in (out or "").splitlines()
                         if l.startswith("PLUGDIR=")), "")
+        themedir = next((l.split("=", 1)[1] for l in (out or "").splitlines()
+                         if l.startswith("THEMEDIR=")), "")
         n_arc = sum(1 for l in (out or "").splitlines()
                     if l.startswith("archivé") and "(base)" not in l)
         db_ok = "archivé (base)" in (out or "")
@@ -2568,7 +2691,8 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             safe_step("Interrompu", False, "sans archive, aucun retour arrière possible")
             SAFE["verdict"] = "annulé"
             return
-        rollback_index_add(domain, arc, pending, versions_avant)
+        rollback_index_add(domain, arc, pending, versions_avant,
+                           pending_th, versions_avant_th)
         if with_core and not db_ok:
             # Le cœur migre le schéma : sans dump, un retour arrière laisserait
             # d'anciens fichiers sur une base déjà migrée. On refuse.
@@ -2589,6 +2713,10 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             rcp, outp = remote_bash(srv, site, f'run plugin update {lst}', timeout=900)
             safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
             rc = rc or rcp
+        if pending_th:
+            rct2, outt2 = remote_bash(srv, site, f'run theme update {lst_th}', timeout=900)
+            safe_step("Mise à jour des thèmes", rct2 == 0, (outt2 or "")[-500:])
+            rc = rc or rct2
 
         # 6. contrôles après
         ok2, st2, size_after, msg2 = health_probe(site)
@@ -2651,10 +2779,16 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         else:
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
+THEMEDIR={sq(themedir or "$D/wp-content/themes")}
 for f in {sq(arc)}/plugin__*.tgz; do
   [ -f "$f" ] || continue
   s=$(basename "$f" .tgz); s=${{s#plugin__}}
   rm -rf "$PLUGDIR/$s" && tar xzf "$f" -C "$PLUGDIR" && echo "restauré $s" || echo "ECHEC $s"
+done
+for f in {sq(arc)}/theme__*.tgz; do
+  [ -f "$f" ] || continue
+  s=$(basename "$f" .tgz); s=${{s#theme__}}
+  rm -rf "$THEMEDIR/$s" && tar xzf "$f" -C "$THEMEDIR" && echo "restauré $s" || echo "ECHEC $s"
 done
 if [ -f {sq(arc)}/core__.tgz ]; then
   # On remet les fichiers du cœur par-dessus (wp-content n'a jamais été touché).
@@ -2680,10 +2814,11 @@ fi
             SAFE["verdict"] = "annulé (retour arrière)" if ok3 else "ÉCHEC — intervention requise"
             alert(f"safeupdate:{domain}", None,
                   f"⛔ <b>{esc_html(domain)}</b> — mise à jour annulée automatiquement "
-                  f"({n_res} extension(s) remise(s) en arrière). Verdict : {esc_html(SAFE['verdict'])}")
+                  f"({n_res} élément(s) remis en arrière). Verdict : {esc_html(SAFE['verdict'])}")
         append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "source": "maj-sure", "server": server_name, "domain": domain,
-                    "action": "safe_update", "arg": ",".join(pending),
+                    "action": "safe_update",
+                    "arg": ",".join(pending + [f"theme:{t}" for t in pending_th]),
                     "rc": 0 if sain else 2, "duration_s": 0,
                     "output_tail": f"verdict={SAFE['verdict']}"})
     except Exception as e:
@@ -2694,14 +2829,22 @@ fi
         SAFE["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def rollback_index_add(domain, arc_dir, plugins, versions):
-    """Enregistre un point de restauration dans l'index local."""
+def rollback_index_add(domain, arc_dir, plugins, versions, themes=None, theme_versions=None):
+    """Enregistre un point de restauration dans l'index local.
+
+    `themes` / `theme_versions` sont l'exact pendant de `plugins` / `versions` :
+    des clés SÉPARÉES, parce qu'un même slug peut nommer un thème et une
+    extension et que le rétablissement doit savoir dans quel dossier remettre
+    l'archive.
+    """
     def _muter(idx):
         if not isinstance(idx, dict):
             idx = {}
         entries = [e for e in (idx.get(domain) or []) if e.get("dir") != arc_dir]
         entries.insert(0, {"dir": arc_dir, "plugins": sorted(plugins),
                            "versions": versions or {},
+                           "themes": sorted(themes or []),
+                           "theme_versions": theme_versions or {},
                            "ts": datetime.datetime.now().strftime("%Y%m%d-%H%M%S")})
         idx[domain] = entries[:SAFE_KEEP_SETS]
         return idx
@@ -2721,7 +2864,8 @@ def rollback_points(server_name, domain, verify=False):
         entrees = idx.get(domain) or [] if isinstance(idx, dict) else []
         limite = (datetime.datetime.now()
                   - datetime.timedelta(days=SAFE_KEEP_DAYS)).strftime("%Y%m%d-%H%M%S")
-        return [e for e in entrees if str(e.get("ts", "")) >= limite and e.get("plugins")]
+        return [e for e in entrees
+                if str(e.get("ts", "")) >= limite and (e.get("plugins") or e.get("themes"))]
 
     srv, site = find_site(server_name, domain)
     if not srv or not site:
@@ -2731,6 +2875,7 @@ def rollback_points(server_name, domain, verify=False):
                           f'for d in $(ls -1dt {sq(SAFE_ROLLBACK_DIR)}/{prefixe}-* 2>/dev/null); do '
                           f'  echo "@@DIR@@$d"; cat "$d/manifest.json" 2>/dev/null; echo; '
                           f'  ls -1 "$d" | grep "^plugin__" | sed "s/^plugin__/@@P@@/;s/\\.tgz$//"; '
+                          f'  ls -1 "$d" | grep "^theme__" | sed "s/^theme__/@@T@@/;s/\\.tgz$//"; '
                           f'done', timeout=120)
     if rc != 0:
         return []
@@ -2738,34 +2883,52 @@ def rollback_points(server_name, domain, verify=False):
     for ligne in (out or "").splitlines():
         ligne = ligne.rstrip()
         if ligne.startswith("@@DIR@@"):
-            cur = {"dir": ligne[7:], "plugins": [], "versions": {}, "ts": ""}
+            cur = {"dir": ligne[7:], "plugins": [], "versions": {},
+                   "themes": [], "theme_versions": {}, "ts": ""}
             points.append(cur)
         elif cur is None:
             continue
         elif ligne.startswith("@@P@@"):
             cur["plugins"].append(ligne[5:])
+        elif ligne.startswith("@@T@@"):
+            cur["themes"].append(ligne[5:])
         elif ligne.startswith("{"):
             try:
                 m = json.loads(ligne)
                 cur["versions"] = m.get("plugins") or {}
+                cur["theme_versions"] = m.get("themes") or {}
                 cur["ts"] = m.get("ts") or ""
             except ValueError:
                 pass
-    return [p for p in points if p["plugins"]]
+    return [p for p in points if p["plugins"] or p["themes"]]
 
 
-def wporg_versions(slug, limit=40):
-    """Versions publiées d'une extension sur wordpress.org, de la plus récente
-    à la plus ancienne. C'est la source qu'utilise WP Rollback : le dépôt
-    conserve tous les tags, donc n'importe quelle version reste installable.
+def wporg_versions(slug, limit=40, kind="plugin"):
+    """Versions publiées d'une extension — ou d'un thème (`kind="theme"`) — sur
+    wordpress.org, de la plus récente à la plus ancienne. C'est la source
+    qu'utilise WP Rollback : le dépôt conserve tous les tags, donc n'importe
+    quelle version reste installable.
 
-    Renvoie TOUJOURS un dict {"current", "versions", "error"} : une extension
-    premium (absente du dépôt public) donne une liste vide et un motif.
+    Les deux API ne se ressemblent pas : les extensions ont une route par slug
+    (`/plugins/info/1.0/<slug>.json`), les thèmes une action paramétrée
+    (`/themes/info/1.2/?action=theme_information&request[slug]=…`) qui, en plus,
+    ne renvoie l'historique des versions que si on demande explicitement le
+    champ `versions`.
+
+    Renvoie TOUJOURS un dict {"current", "versions", "error"} : une extension ou
+    un thème premium (absent du dépôt public) donne une liste vide et un motif —
+    seule l'archive locale de la MAJ sûre sert alors au rétablissement.
     """
     vide = {"current": None, "versions": [], "error": None}
+    quoi = "thème" if kind == "theme" else "extension"
     if not SLUG_RE.match(str(slug or "")):
-        return dict(vide, error="extension invalide")
-    url = f"https://api.wordpress.org/plugins/info/1.0/{urllib.parse.quote(str(slug))}.json"
+        return dict(vide, error=f"{quoi} invalide")
+    if kind == "theme":
+        url = ("https://api.wordpress.org/themes/info/1.2/?action=theme_information"
+               "&request[slug]=" + urllib.parse.quote(str(slug))
+               + "&request[fields][versions]=1")
+    else:
+        url = f"https://api.wordpress.org/plugins/info/1.0/{urllib.parse.quote(str(slug))}.json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -2783,21 +2946,24 @@ def wporg_versions(slug, limit=40):
     return {"current": data.get("version"), "versions": brutes[:limit], "error": None}
 
 
-def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None):
-    """Rétablit une extension. → (rc, message).
+def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None, kind="plugin"):
+    """Rétablit une extension — ou un thème (`kind="theme"`). → (rc, message).
 
     Deux sources, dans cet ordre de fiabilité :
       1. une archive locale — restitution à l'identique, fonctionne aussi pour
-         les extensions premium que wordpress.org ne peut pas resservir ;
+         les extensions et thèmes premium que wordpress.org ne peut pas
+         resservir (Divi, par exemple, n'est nulle part sur le dépôt public) ;
       2. une version publiée sur wordpress.org, en repli.
     La base n'est jamais touchée : une extension qui a migré ses tables peut
     nécessiter une intervention manuelle, c'est signalé à l'appelant.
     """
+    theme = (kind == "theme")
+    quoi = "thème" if theme else "extension"
     srv, site = find_site(server_name, domain)
     if not srv or not site:
         return 92, "site inconnu"
     if not SLUG_RE.match(str(slug or "")):
-        return 91, "extension invalide"
+        return 91, f"{quoi} invalide"
 
     if arc_dir:
         # « .. » interdit : [A-Za-z0-9._-]+ l'accepterait et permettrait de
@@ -2805,16 +2971,18 @@ def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None):
         if (".." in str(arc_dir)
                 or not re.match(r"^/tmp/\.wpdash-rollback/[A-Za-z0-9._-]+$", str(arc_dir))):
             return 91, "point de restauration invalide"
+        cmd, prefixe, defaut = (("theme", "theme__", "themes") if theme
+                                else ("plugin", "plugin__", "plugins"))
         body = f'''
-PLUGDIR=$(asuser "$base wp plugin path $extra --no-color" 2>/dev/null | tail -1)
-[ -d "$PLUGDIR" ] || PLUGDIR="$D/wp-content/plugins"
-F={sq(str(arc_dir))}/plugin__{sq(str(slug))}.tgz
+DIR=$(asuser "$base wp {cmd} path $extra --no-color" 2>/dev/null | tail -1)
+[ -d "$DIR" ] || DIR="$D/wp-content/{defaut}"
+F={sq(str(arc_dir))}/{prefixe}{sq(str(slug))}.tgz
 [ -f "$F" ] || {{ echo "ARCHIVE_ABSENTE"; exit 2; }}
-rm -rf "$PLUGDIR"/{sq(str(slug))} && tar xzf "$F" -C "$PLUGDIR" && echo "RESTAURE"
+rm -rf "$DIR"/{sq(str(slug))} && tar xzf "$F" -C "$DIR" && echo "RESTAURE"
 '''
         rc, out = remote_bash(srv, site, body, timeout=600)
         if "ARCHIVE_ABSENTE" in (out or ""):
-            return 2, "aucune archive pour cette extension dans ce point de restauration"
+            return 2, f"aucune archive pour ce {quoi} dans ce point de restauration"
         if rc != 0 or "RESTAURE" not in (out or ""):
             return rc or 1, (out or "")[-300:]
         return 0, f"{slug} rétabli depuis l'archive"
@@ -2822,7 +2990,8 @@ rm -rf "$PLUGDIR"/{sq(str(slug))} && tar xzf "$F" -C "$PLUGDIR" && echo "RESTAUR
     if not version or not re.match(r"^[0-9][0-9A-Za-z._-]{0,20}$", str(version)):
         return 91, "version invalide"
     rc, out = remote_bash(srv, site,
-                          f'run plugin install {sq(str(slug))} --version={sq(str(version))} --force',
+                          f'run {"theme" if theme else "plugin"} install {sq(str(slug))} '
+                          f'--version={sq(str(version))} --force',
                           timeout=600)
     return rc, (out or "")[-400:]
 
@@ -3633,6 +3802,10 @@ def incident_fingerprint(inc):
         parts = [str(x.get("file") or ""), str(x.get("line") or ""),
                  _fp_message(x.get("message") or inc.get("detail"))]
     elif kind == "vuln_critical_fixable":
+        # Le genre (extension / thème / cœur) n'entre PAS dans l'empreinte : il
+        # est déjà dans l'identifiant de l'incident (`…:theme:astra`), qui est
+        # la clé des acquittements. L'y ajouter changerait toutes les empreintes
+        # d'extensions déjà posées, pour rien.
         parts = [str(x.get("slug") or ""), str(x.get("from") or "")]
     elif kind == "backup_late":
         parts = [str(x.get("last_backup") or "")]
@@ -3887,11 +4060,14 @@ def inc_vulns(index, rules, now):
         # Une extension cumule souvent plusieurs CVE graves ; l'incident, lui,
         # est unique par composant. On rassemble donc les identifiants ici, pour
         # que `extra` les porte tous sans dépendre de l'ordre des findings.
+        # La clé porte le GENRE : un même slug peut nommer une extension et un
+        # thème (astra, neve…), et ce sont deux composants distincts.
         cves = {}
         for v in (s.get("findings") or []):
             if (str(v.get("severity") or "").lower() in graves and v.get("cve")
                     and str(v.get("update_to") or "").strip()):
-                lot = cves.setdefault(str(v.get("component") or "?"), [])
+                lot = cves.setdefault((str(v.get("kind") or "plugin"),
+                                       str(v.get("component") or "?")), [])
                 if str(v["cve"]) not in lot:
                     lot.append(str(v["cve"]))
         for v in (s.get("findings") or []):
@@ -3901,26 +4077,37 @@ def inc_vulns(index, rules, now):
             if not vers:
                 continue                  # pas de correctif : rien à proposer
             comp = str(v.get("component") or "?")
-            if (cle, comp) in vus:
+            genre = str(v.get("kind") or "plugin")
+            if (cle, genre, comp) in vus:
                 continue
-            vus.add((cle, comp))
-            if v.get("kind") == "core":
+            vus.add((cle, genre, comp))
+            if genre == "core":
                 action = {"label": f"Mettre à jour WordPress → {vers}",
                           "act": "core_update", "arg": ""}
+            elif genre == "theme":
+                action = {"label": f"MAJ thème {comp} → {vers}",
+                          "act": "theme_update", "arg": comp}
             else:
                 action = {"label": f"MAJ {comp} → {vers}",
                           "act": "plugin_update", "arg": comp}
-            titre = f"{comp} {v.get('version') or ''} · {v.get('severity')} corrigeable"
+            titre = (f"{'thème ' if genre == 'theme' else ''}{comp} "
+                     f"{v.get('version') or ''} · {v.get('severity')} corrigeable")
             detail = str(v.get("title") or "vulnérabilité")
             if v.get("cve"):
                 detail += f" ({v['cve']})"
             out.append(make_incident(
                 "vuln_critical_fixable", "critical", cle, " ".join(titre.split()),
                 detail + f" — correctif en {vers}",
-                site=cle, server=server, arg=comp, now=now,
+                # L'identifiant d'un thème est préfixé : sans cela, le thème
+                # `astra` et l'extension `astra` d'un même site partageraient
+                # une ligne (et un acquittement). Les identifiants d'extensions,
+                # eux, ne bougent pas — les acquittements en place restent bons.
+                site=cle, server=server,
+                arg=(f"theme:{comp}" if genre == "theme" else comp), now=now,
                 action=None if rest else action,
                 link={"tab": "securite", "sub": "vulns"},
-                extra={"cve": list(cves.get(comp) or []), "slug": comp,
+                extra={"cve": list(cves.get((genre, comp)) or []), "slug": comp,
+                       "kind": genre,
                        "from": str(v.get("version") or ""), "to": vers}))
     return out
 
@@ -6182,7 +6369,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"checksums": load_json(CHECKSUMS_PATH, {})})
         elif p == "/api/actions/plugin_versions":
             # réponse inchangée pour l'interface : {"current": …, "versions": […]}
-            res = wporg_versions(urllib.parse.unquote(q.get("slug", "")))
+            # `kind=theme` interroge l'API des thèmes de wordpress.org.
+            res = wporg_versions(urllib.parse.unquote(q.get("slug", "")),
+                                 kind="theme" if q.get("kind") == "theme" else "plugin")
             self._send(200, {"current": res.get("current"), "versions": res.get("versions") or []})
         elif p == "/api/actions/rollback_points":
             server = urllib.parse.unquote(q.get("server", ""))
@@ -6193,7 +6382,8 @@ class Handler(BaseHTTPRequestHandler):
                                                        verify=q.get("verify") == "1")})
         elif p == "/api/actions/policy":
             dom = urllib.parse.unquote(q.get("domain", ""))
-            self._send(200, {"frozen": frozen_plugins(dom) if SLUG_RE.match(dom) else []})
+            gel, gel_th = _frozen_lists(dom) if SLUG_RE.match(dom) else ([], [])
+            self._send(200, {"frozen": gel, "frozen_themes": gel_th})
         elif p == "/api/actions/safe_update_status":
             self._send(200, dict(SAFE))
         elif p == "/api/actions/viz_update_status":
@@ -6784,25 +6974,35 @@ class Handler(BaseHTTPRequestHandler):
             if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
                 return self._send(400, {"error": "cible invalide"})
             t0 = time.time()
+            kind = "theme" if str(body.get("kind", "")) == "theme" else "plugin"
             rc, out = plugin_rollback(server, domain, slug,
-                                      body.get("dir") or None, body.get("version") or None)
+                                      body.get("dir") or None, body.get("version") or None,
+                                      kind=kind)
             append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "source": "retablissement", "server": server, "domain": domain,
-                        "action": "plugin_rollback", "arg": slug, "rc": rc,
+                        "action": "theme_rollback" if kind == "theme" else "plugin_rollback",
+                        "arg": slug, "rc": rc,
                         "duration_s": round(time.time() - t0, 1), "output_tail": str(out)[-2000:]})
             return self._send(200, {"ok": rc == 0, "rc": rc, "output": out})
 
         if p == "/api/actions/policy":
             domain, slug = str(body.get("domain", "")), str(body.get("slug", ""))
+            # `kind` absent = extension : les appels existants de l'interface
+            # continuent de fonctionner sans être touchés.
+            kind = "theme" if str(body.get("kind", "")) == "theme" else "plugin"
             if not SLUG_RE.match(domain) or not SLUG_RE.match(slug):
                 return self._send(400, {"error": "cible invalide"})
-            frozen = set_frozen_plugin(domain, slug, bool(body.get("frozen")))
+            set_frozen_plugin(domain, slug, bool(body.get("frozen")), kind=kind)
+            gel, gel_th = _frozen_lists(domain)
+            gele = bool(body.get("frozen"))
             append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "source": "politique", "server": str(body.get("server", "")),
-                        "domain": domain, "action": "plugin_freeze", "arg": slug, "rc": 0,
-                        "duration_s": 0,
-                        "output_tail": ("gelée" if body.get("frozen") else "dégelée") + f" : {slug}"})
-            return self._send(200, {"ok": True, "frozen": frozen})
+                        "domain": domain,
+                        "action": "theme_freeze" if kind == "theme" else "plugin_freeze",
+                        "arg": slug, "rc": 0, "duration_s": 0,
+                        "output_tail": (("gelé" if gele else "dégelé") if kind == "theme"
+                                        else ("gelée" if gele else "dégelée")) + f" : {slug}"})
+            return self._send(200, {"ok": True, "frozen": gel, "frozen_themes": gel_th})
 
         if p == "/api/actions/safe_update":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
@@ -6820,6 +7020,11 @@ class Handler(BaseHTTPRequestHandler):
             slugs = body.get("slugs") or None
             if slugs is not None:
                 slugs = [s for s in slugs if isinstance(s, str) and SLUG_RE.match(s)]
+            # Thèmes : `themes` absent = tous ceux qui ont une mise à jour en
+            # attente ; `with_themes: false` les laisse entièrement de côté.
+            themes = body.get("themes") or None
+            if themes is not None:
+                themes = [s for s in themes if isinstance(s, str) and SLUG_RE.match(s)]
             # viz_rollback absent = on suit le réglage persistant ; présent, il
             # ne vaut que pour cette exécution (case de la modale de confirmation).
             vrb = body.get("viz_rollback")
@@ -6827,7 +7032,8 @@ class Handler(BaseHTTPRequestHandler):
                              args=(server, domain, slugs, bool(body.get("backup", True)),
                                    bool(body.get("viz", True)), bool(body.get("core", False)),
                                    bool(body.get("dry_run", False)),
-                                   None if vrb is None else bool(vrb)),
+                                   None if vrb is None else bool(vrb),
+                                   themes, bool(body.get("with_themes", True))),
                              daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
 

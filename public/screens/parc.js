@@ -25,7 +25,7 @@ import { setIncidentCount } from '../components/shell.js';
 import { ouvrirFeuille, boutonFeuille } from '../components/sheet.js';
 import { openVizConnect, vizCellEl, vizInfo, vizOf, vizVal } from '../components/viz.js';
 import { estNow } from '../components/incident.js';
-import { incidentLigne, cleDeSite } from './site.js';
+import { incidentLigne, cleDeSite, estMajTheme, nomTheme } from './site.js';
 
 /* ---- colonnes -------------------------------------------------------------
    `fixe` : Site et État ne se masquent pas — sans eux la liste ne dit plus de
@@ -532,6 +532,31 @@ function celluleBackup(s) {
   }, chipEl(txt, age >= seuil ? 'warn' : 'ok'));
 }
 
+/* Thèmes : un nombre nu ne disait pas si « 0 » voulait dire « rien à faire »
+   ou « on ne sait pas ». La chip parle le même langage que les autres colonnes
+   — « ok » quand il n'y a rien à faire, « N MAJ » sinon — et l'infobulle donne
+   les noms, seule information qui permette de décider sans ouvrir le site. */
+function celluleThemes(s) {
+  const liste = Array.isArray(s.themes_list) ? s.themes_list.filter(t => t && t.name) : null;
+  const n = s.themes_updates || 0;
+  if (s.themes_updates === null || s.themes_updates === undefined) {
+    return h('td', {}, chipEl('—', 'mut', { title: 'thèmes non relevés sur ce site' }));
+  }
+  if (!n) {
+    return h('td', {}, chipEl('ok', 'ok', {
+      title: liste
+        ? liste.length + (liste.length > 1 ? ' thèmes installés' : ' thème installé') + ', aucun à mettre à jour'
+        : 'aucun thème à mettre à jour',
+    }));
+  }
+  const noms = liste ? liste.filter(estMajTheme).map(nomTheme).filter(Boolean) : [];
+  return h('td', {}, chipEl(n + ' MAJ', 'warn', {
+    title: noms.length
+      ? 'à mettre à jour : ' + noms.join(', ')
+      : 'noms indisponibles — ce site ne remonte qu’un compteur de thèmes',
+  }));
+}
+
 function celluleVuln(s) {
   const v = vulnDe(s);
   if (!v) return h('td', {}, h('span', { class: 'muted small', text: '…' }));
@@ -547,7 +572,7 @@ const CELLULE = {
   status: celluleEtat,
   core: celluleCore,
   plugins: cellulePlugins,
-  themes: s => h('td', {}, s.themes_updates ? chipEl(String(s.themes_updates), 'warn') : chipEl('—', 'mut')),
+  themes: celluleThemes,
   viz: s => h('td', { class: 'vizcell' }, vizCellEl(s)),
   php: s => h('td', {}, phpEol(s.php_version)
     ? chipEl(s.php_version || '?', 'warn', { title: 'branche PHP hors support' })

@@ -39,12 +39,15 @@ import {
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
-import { sevPill, SEVLABEL, SEVRANK, grouperParExtension } from './securite.js';
+import { sevPill, SEVLABEL, SEVRANK, grouperParExtension, kindChip } from './securite.js';
 
 /* ---- état de la page ------------------------------------------------------ */
 const ONGLETS = [
   ['apercu', 'Aperçu'],
-  ['extensions', 'Extensions'],
+  /* Le SLUG reste `extensions` : les liens déjà partagés (et ceux des
+     incidents) ne doivent pas casser parce que l'onglet parle aussi des
+     thèmes. Seul le libellé change. */
+  ['extensions', 'Extensions et thèmes'],
   ['securite', 'Sécurité'],
   ['sauvegardes', 'Sauvegardes'],
   ['historique', 'Historique'],
@@ -57,6 +60,7 @@ let ONGLET = 'apercu';
 let CLE = '';            // clé d'URL du site affiché
 let VULNS = null;        // dernier croisement pour CE site
 let FROZEN = [];         // extensions gelées
+let FROZEN_TH = [];      // thèmes gelés
 let INCIDENTS = [];      // incidents de CE site
 let FOCUS_ONGLET = false;   // rendre le focus à l'onglet après une flèche
 
@@ -73,6 +77,7 @@ export function cleDeSite(s) { return kName(s) || s.domain; }
 const ACT_LIB = {
   core_update: 'MAJ cœur', plugins_update_all: 'MAJ extensions',
   plugins_update_except: 'MAJ extensions', plugin_update: 'MAJ', themes_update_all: 'MAJ thèmes',
+  theme_update: 'MAJ thème',
   updraft_backup: 'Sauvegarde UpdraftPlus', cache_flush: 'Vidage des caches',
   autoupdate_on: 'Activation des auto-MAJ', autoupdate_off: 'Désactivation des auto-MAJ',
   verify_checksums: 'Intégrité du cœur', vizproof_install: 'Installation VizProof',
@@ -81,7 +86,8 @@ const ACT_LIB = {
 };
 const ACT_KIND = {
   core_update: 'maj', plugins_update_all: 'maj', plugins_update_except: 'maj',
-  plugin_update: 'maj', themes_update_all: 'maj', updraft_backup: 'backup', cache_flush: 'cache',
+  plugin_update: 'maj', themes_update_all: 'maj', theme_update: 'maj',
+  updraft_backup: 'backup', cache_flush: 'cache',
   verify_checksums: 'check', vizproof_install: 'install', viz_baseline: 'viz', viz_scan: 'viz',
   viz_disconnect: 'connect', rescan: 'rescan',
 };
@@ -91,9 +97,9 @@ function notifLabel(act, arg, s) { return actLib(act, arg) + ' · ' + ((s && (kN
 /* Seules les actions qui MODIFIENT le site demandent confirmation : tout
    confirmer revient à ne plus rien signaler. */
 const ACT_RISQUE = new Set(['core_update', 'plugins_update_all', 'plugin_update',
-  'themes_update_all', 'autoupdate_on', 'autoupdate_off', 'vizproof_install']);
+  'themes_update_all', 'theme_update', 'autoupdate_on', 'autoupdate_off', 'vizproof_install']);
 const MAJ_ACTS = new Set(['core_update', 'plugins_update_all', 'plugins_update_except',
-  'plugin_update', 'themes_update_all']);
+  'plugin_update', 'themes_update_all', 'theme_update']);
 
 /* ---- console -------------------------------------------------------------- */
 /* La console est recréée à chaque rendu : la cibler par son seul identifiant
@@ -137,6 +143,7 @@ export function renderSite(cle, onglet) {
     stopPoll('safe');
     VULNS = null;
     FROZEN = [];
+    FROZEN_TH = [];
     setRollbackPoints([], s.srv, s.domain);
   }
   dessiner();
@@ -299,6 +306,7 @@ function menuDuSite(s) {
   const R = raisons(s);
   const vs = vizState(s);
   const nEx = s.plugins_updates || 0;
+  const nTh = s.themes_updates || 0;
   const total = s.plugins_total || 0;
   const autoOn = (s.plugins_auto_update ?? 0) < total;
 
@@ -311,7 +319,9 @@ function menuDuSite(s) {
       onSelect: () => { const b = document.getElementById('safeup'); if (b) b.click(); },
     },
     itemAct(s, { action: 'plugins_update_all', label: 'Extensions seules (sans filet)', ic: 'arrow-up', raison: rest ? R.rest : (nEx ? '' : 'aucune extension à mettre à jour') }),
-    itemAct(s, { action: 'themes_update_all', label: 'Thèmes', ic: 'arrow-up', raison: rest ? R.rest : (s.themes_updates ? '' : 'aucun thème à mettre à jour') }),
+    /* Comme les autres entrées : le nombre est DANS le libellé quand il y a de
+       quoi faire, et l'entrée reste grisée avec sa raison quand il n'y a rien. */
+    itemAct(s, { action: 'themes_update_all', label: 'Tous les thèmes' + (nTh ? ' (' + nTh + ')' : ''), ic: 'arrow-up', raison: rest ? R.rest : (nTh ? '' : 'aucun thème à mettre à jour') }),
     itemAct(s, { action: 'core_update', label: 'Cœur seul (sans filet)', ic: 'arrow-up', raison: rest ? R.rest : (s.core_update ? '' : 'le cœur est à jour') }),
     autoOn
       ? itemAct(s, { action: 'autoupdate_on', label: 'Activer les auto-MAJ' + (total ? ' (' + total + ')' : ''), ic: 'check', raison: rest ? R.rest : (total ? '' : 'aucune extension installée') })
@@ -840,10 +850,14 @@ export async function lancerSur(s, btn, label) {
   }
 }
 
-/* ---- onglet Extensions ----------------------------------------------------- */
-function cveChip(nom) {
+/* ---- onglet Extensions et thèmes -------------------------------------------- */
+/* `kind` : une extension et un thème peuvent porter le MÊME slug (twentyseven,
+   par exemple). Sans lui, la pastille de vulnérabilité d'un thème se serait
+   affichée sur l'extension du même nom. Les relevés antérieurs ne portent pas
+   `kind` : on les rattache alors au composant demandé, comme avant. */
+function cveChip(nom, kind) {
   if (!VULNS) return null;
-  const g = (VULNS.findings || []).filter(v => v.component === nom);
+  const g = (VULNS.findings || []).filter(v => v.component === nom && (!v.kind || v.kind === kind));
   if (!g.length) return null;
   let worst = '';
   g.forEach(v => { if ((SEVRANK[v.severity] || 0) > (SEVRANK[worst] || 0)) worst = v.severity; });
@@ -859,7 +873,7 @@ function cveChip(nom) {
    lui, « 4.2.3 → 4.2.4 » se retrouverait seul sous un nom d'extension. */
 function ligneExtension(s, p, maj) {
   const tr = h('tr', { dataset: { plug: p.name } },
-    h('td', { 'data-l': 'Extension' }, h('b', { text: p.name }), cveChip(p.name)),
+    h('td', { 'data-l': 'Extension' }, h('b', { text: p.name }), cveChip(p.name, 'plugin')),
     h('td', { 'data-l': 'Version' },
       maj ? h('span', {}, p.version || '?', ' → ', h('b', { text: p.to || '?' })) : (p.version || '?'),
       p.status !== 'active' ? h('span', { class: 'pill mut', text: 'inactive' }) : null),
@@ -877,11 +891,112 @@ function ligneExtension(s, p, maj) {
     title: 'Ne plus jamais mettre à jour cette extension sur ce site', text: 'Geler',
   });
   gel.dataset.slug = p.name;
+  gel.dataset.gtype = 'plugin';
   const reb = h('button', { type: 'button', class: 'btn sm prb', title: 'Revenir à une version antérieure' }, iconEl('rotate-ccw'), 'Rétablir');
   reb.dataset.slug = p.name;
-  reb.onclick = () => askVersion(p.name, reb, { srv: s.srv, dom: s.domain }, () => loadFleet().then(refreshSite).catch(() => {}));
+  reb.onclick = () => askVersion(p.name, reb, { srv: s.srv, dom: s.domain }, () => loadFleet().then(refreshSite).catch(() => {}), 'plugin');
   cell.append(gel, reb);
   return tr;
+}
+
+/* ---- thèmes ----------------------------------------------------------------
+   Même modèle que les extensions : « à mettre à jour » d'abord, puis la liste
+   complète repliée. Deux différences propres aux thèmes : un seul est ACTIF
+   (et c'est celui dont une régression se voit tout de suite), et un thème
+   enfant dépend d'un parent qu'il ne faut pas retirer. Les deux se lisent sur
+   la ligne. */
+
+/** Un thème est-il à mettre à jour ?
+
+    Mêmes valeurs que côté collecteur (`has_update()` de collect.py) : wp-cli
+    dit `"available"`, l'agent envoie un booléen. Un relevé qui ne porte que
+    `update_version` — sans champ `update` du tout — est compris aussi. */
+export function estMajTheme(t) {
+  if (!t) return false;
+  if (t.update !== undefined && t.update !== null) {
+    return t.update === 'available' || t.update === true || t.update === 'true' || t.update === 1;
+  }
+  return !!t.update_version;
+}
+
+/** Nom lisible d'un thème, le slug servant de repli. */
+export function nomTheme(t) { return (t && (t.title || t.name)) || ''; }
+
+function ligneTheme(s, t, maj) {
+  const cible = t.update_version || t.to || '?';
+  /* `h()` ignore les enfants nuls, `Element.append()` non — il y écrirait le
+     mot « null ». D'où la construction en une seule liste d'enfants. */
+  const nom = h('td', { 'data-l': 'Thème' },
+    h('b', { text: nomTheme(t) }),
+    h('code', { class: 'small', text: t.name }),
+    t.status === 'active' ? chipEl('actif', 'ok') : null,
+    t.status === 'parent' ? chipEl('thème parent', 'mut', { title: 'utilisé par le thème enfant actif' }) : null,
+    (t.status !== 'active' && t.status !== 'parent') ? h('span', { class: 'pill mut', text: 'inactif' }) : null,
+    t.parent ? h('span', { class: 'muted small', text: 'enfant de ' + t.parent }) : null,
+    cveChip(t.name, 'theme'));
+
+  const tr = h('tr', { dataset: { thm: t.name } }, nom,
+    h('td', { 'data-l': 'Version' },
+      maj ? h('span', {}, t.version || '?', ' → ', h('b', { text: cible })) : (t.version || '?')),
+    h('td', { class: 'pcell' }));
+  const cell = tr.lastElementChild;
+  if (maj) {
+    const b = h('button', { type: 'button', class: 'btn sm', text: 'MAJ' });
+    b.dataset.act = 'theme_update';
+    b.dataset.arg = t.name;
+    b.onclick = () => confirmRun(b);
+    cell.append(b);
+  }
+  const gel = h('button', {
+    type: 'button', class: 'btn sm pfreeze',
+    title: 'Ne plus jamais mettre à jour ce thème sur ce site', text: 'Geler',
+  });
+  gel.dataset.slug = t.name;
+  gel.dataset.gtype = 'theme';
+  const reb = h('button', { type: 'button', class: 'btn sm prb', title: 'Revenir à une version antérieure' }, iconEl('rotate-ccw'), 'Rétablir');
+  reb.dataset.slug = t.name;
+  reb.onclick = () => askVersion(t.name, reb, { srv: s.srv, dom: s.domain }, () => loadFleet().then(refreshSite).catch(() => {}), 'theme');
+  cell.append(gel, reb);
+  return tr;
+}
+
+/* Un site sans SSH ne pousse qu'un COMPTEUR de thèmes : on le dit, plutôt que
+   d'afficher une liste vide qui se lirait « ce site n'a pas de thème ». */
+function sectionThemes(s) {
+  const liste = Array.isArray(s.themes_list) ? s.themes_list.filter(t => t && t.name) : null;
+  const nMaj = s.themes_updates || 0;
+  if (!liste) {
+    return h('section', { class: 'sitesec' },
+      h('h3', { text: 'Thèmes' }),
+      h('p', { class: 'hint hint-tight' },
+        nMaj
+          ? 'Ce site remonte ' + nMaj + ' thème(s) à mettre à jour, sans le détail : '
+          : 'Ce site ne remonte aucun thème à mettre à jour, mais pas le détail non plus : ',
+        "l'inventaire est poussé par l'agent, qui n'envoie qu'un compteur. ",
+        'La liste des thèmes installés est à consulter dans wp-admin.'));
+  }
+  const aMaj = liste.filter(estMajTheme);
+  const blocs = [h('section', { class: 'sitesec' },
+    h('h3', { text: 'Thèmes à mettre à jour (' + aMaj.length + ')' }),
+    aMaj.length
+      ? h('table', { class: 'ptable' }, h('tbody', {}, aMaj.map(t => ligneTheme(s, t, true))))
+      : h('p', { class: 'hint hint-tight', text: 'Tous les thèmes sont à jour.' }))];
+
+  if (liste.length) {
+    const tbl = h('table', { class: 'ptable', hidden: true }, h('tbody', {}, liste.map(t => ligneTheme(s, t, estMajTheme(t)))));
+    const bt = h('button', { type: 'button', class: 'btn sm fr', text: 'Afficher (' + liste.length + ')' });
+    bt.onclick = () => {
+      tbl.hidden = !tbl.hidden;
+      bt.textContent = tbl.hidden ? 'Afficher (' + liste.length + ')' : 'Masquer';
+      renderPolicy();
+    };
+    blocs.push(h('section', { class: 'sitesec' },
+      h('h3', {}, 'Tous les thèmes', bt),
+      h('p', { class: 'hint' }, 'Repliée par défaut. ',
+        h('span', { class: 'info', 'data-tip': "Les themes installes, actifs ou non, avec le theme actif et les liens parent/enfant. Utile pour retablir une version anterieure, ou pour verifier qu'un theme parent est toujours la.", text: '?' })),
+      tbl));
+  }
+  return blocs;
 }
 
 function ongletExtensions(s) {
@@ -916,39 +1031,100 @@ function ongletExtensions(s) {
       tbl));
   }
 
+  blocs.push(sectionThemes(s));
+
   blocs.push(h('section', { class: 'sitesec', id: 'site-frozen', hidden: true },
-    h('h3', { text: 'Extensions gelées' }),
-    h('p', { class: 'hint' }, 'Jamais mises à jour par le dashboard. ',
+    h('h3', { text: 'Extensions et thèmes gelés' }),
+    h('p', { class: 'hint' }, 'Jamais mis à jour par le dashboard. ',
       h('span', { class: 'info', 'data-tip': 'Ni par un bouton, ni par une action groupee, ni par la MAJ sure. Utile quand une version casse le site, ou quand un client doit valider avant.', text: '?' })),
     h('div', { id: 'site-frozenlist', class: 'small' })));
   return blocs;
 }
 
-/* ---- politique par extension (gel) ---------------------------------------- */
+/* ---- politique par extension et par thème (gel) ----------------------------
+   UN SEUL endroit connaît la forme du corps et de la réponse de
+   /api/actions/policy : `gelerCible()` pour l'écriture, `lireGels()` pour la
+   lecture, `gelsDeReponse()` pour la relecture. Si le backend décrit les
+   thèmes autrement, c'est ici — et nulle part ailleurs — que ça se corrige.
+
+   Le contrat, tel que le backend le sert :
+     * écriture  : {server, domain, slug, kind: 'plugin'|'theme', frozen: bool}
+     * lecture   : {frozen: [slugs d'extensions], frozen_themes: [slugs]}
+   Le mot du protocole est `kind`, comme sur `plugin_rollback`,
+   `plugin_versions` et le `kind` des vulnérabilités — d'où la traduction ici,
+   à la frontière, plutôt qu'un `kind` promené dans tout l'écran.
+   Deux autres formes de réponse restent acceptées sans rien changer d'autre :
+   `frozen` en objet {plugins, themes}, ou `themes` au lieu de `frozen_themes`.
+
+   La réponse d'une ÉCRITURE n'est utilisée que si elle est non ambiguë : le
+   backend renvoie la liste du seul type modifié, sous le nom `frozen` dans les
+   deux cas — croire cette liste sur parole afficherait les thèmes gelés parmi
+   les extensions. Sans les deux listes, on relit. */
+function gelsDeReponse(r) {
+  const tab = x => (Array.isArray(x) ? x.map(String) : []);
+  const f = r && r.frozen;
+  if (f && !Array.isArray(f) && typeof f === 'object') {
+    return { plugins: tab(f.plugins), themes: tab(f.themes) };
+  }
+  return { plugins: tab(f), themes: tab(r && (r.frozen_themes || r.themes)) };
+}
+
+function reponseComplete(r) {
+  if (!r || typeof r !== 'object') return false;
+  const f = r.frozen;
+  if (f && !Array.isArray(f) && typeof f === 'object') return true;
+  return Array.isArray(r.frozen_themes) || Array.isArray(r.themes);
+}
+
+async function gelerCible(site, type, slug, gele) {
+  const r = await api('/api/actions/policy', {
+    server: site.srv, domain: site.domain, slug, kind: type, frozen: gele,
+  });
+  return reponseComplete(r) ? gelsDeReponse(r) : lireGels(site.domain);
+}
+
+async function lireGels(dom) {
+  return gelsDeReponse(await api('/api/actions/policy?domain=' + encodeURIComponent(dom)));
+}
+
+function gelesDe(type) { return type === 'theme' ? FROZEN_TH : FROZEN; }
+
+/* Une ligne (extension ou thème) reflète le gel : bouton inversé, mise à jour
+   hors service, ligne estompée. */
+function refletGel(tr, slug, type) {
+  const gel = gelesDe(type).includes(slug);
+  const b = tr.querySelector('.pfreeze');
+  const maj = tr.querySelector(type === 'theme' ? '[data-act="theme_update"]' : '[data-act="plugin_update"]');
+  if (b) { b.textContent = gel ? 'Dégeler' : 'Geler'; b.classList.toggle('primary', gel); }
+  if (maj) maj.disabled = gel;
+  tr.classList.toggle('row-frozen', gel);
+}
+
 function renderPolicy() {
   const sec = document.getElementById('site-frozen'), list = document.getElementById('site-frozenlist');
   if (sec && list) {
-    sec.hidden = !FROZEN.length;
-    mount(list, FROZEN.map(sl => {
+    const tout = FROZEN.map(sl => ['plugin', sl]).concat(FROZEN_TH.map(sl => ['theme', sl]));
+    sec.hidden = !tout.length;
+    mount(list, tout.map(([type, sl]) => {
       const b = h('button', { type: 'button', class: 'btn sm pthaw', text: 'Dégeler' });
       b.dataset.slug = sl;
-      return h('div', { class: 'vulnrow' }, h('span', { class: 'pill warn', text: 'gelée' }), h('b', { text: sl }), b);
+      b.dataset.gtype = type;
+      return h('div', { class: 'vulnrow' },
+        h('span', { class: 'pill warn', text: type === 'theme' ? 'thème gelé' : 'extension gelée' }),
+        h('b', { text: sl }), b);
     }));
   }
-  document.querySelectorAll('#site-tab [data-plug]').forEach(tr => {
-    const sl = tr.dataset.plug, gel = FROZEN.includes(sl);
-    const b = tr.querySelector('.pfreeze'), maj = tr.querySelector('[data-act="plugin_update"]');
-    if (b) { b.textContent = gel ? 'Dégeler' : 'Geler'; b.classList.toggle('primary', gel); }
-    if (maj) maj.disabled = gel;
-    tr.classList.toggle('row-frozen', gel);
-  });
+  document.querySelectorAll('#site-tab [data-plug]').forEach(tr => refletGel(tr, tr.dataset.plug, 'plugin'));
+  document.querySelectorAll('#site-tab [data-thm]').forEach(tr => refletGel(tr, tr.dataset.thm, 'theme'));
   document.querySelectorAll('#site-tab .pfreeze,#site-tab .pthaw').forEach(b => {
     b.onclick = async () => {
-      const sl = b.dataset.slug, gel = !FROZEN.includes(sl);
+      const type = b.dataset.gtype === 'theme' ? 'theme' : 'plugin';
+      const sl = b.dataset.slug, gel = !gelesDe(type).includes(sl);
       b.disabled = true;
       try {
-        const r = await api('/api/actions/policy', { server: CUR.srv, domain: CUR.domain, slug: sl, frozen: gel });
-        FROZEN = r.frozen || [];
+        const g = await gelerCible(CUR, type, sl, gel);
+        FROZEN = g.plugins;
+        FROZEN_TH = g.themes;
       } catch (e) { /* le gel reste dans l'état affiché */ }
       b.disabled = false;
       renderPolicy();
@@ -996,7 +1172,8 @@ function renderVulnsListe() {
         : h('span', { class: 'muted small', text: (v.cve || v.title || '') + ' ' }));
     });
     return h('div', { class: 'vrow' }, sev,
-      h('b', { text: g.component }), h('span', { class: 'muted small', text: g.version || '' }),
+      h('b', { text: g.component }), kindChip(g.kind),
+      h('span', { class: 'muted small', text: g.version || '' }),
       g.update_to ? h('span', { class: 'pill ok', text: 'MAJ ' + g.update_to }) : null,
       g.unfixed ? h('span', { class: 'pill err', text: 'non corrigée' }) : null,
       h('span', { class: 'muted small', text: g.n + ' CVE' }), cves);
@@ -1250,11 +1427,12 @@ function chargerTout() {
 
 async function loadPolicy(srv, dom) {
   const seq = PAGESEQ;
-  let f = [];
-  try { const r = await api('/api/actions/policy?domain=' + encodeURIComponent(dom)); f = r.frozen || []; }
-  catch (e) { f = []; }
+  let g = { plugins: [], themes: [] };
+  try { g = await lireGels(dom); }
+  catch (e) { g = { plugins: [], themes: [] }; }
   if (seq !== PAGESEQ) return;         // la page affiche un autre site : résultat périmé
-  FROZEN = f;
+  FROZEN = g.plugins;
+  FROZEN_TH = g.themes;
   renderPolicy();
 }
 
@@ -1581,7 +1759,7 @@ async function runAction(btn) {
        rc 96 = extension gelée · 97 = site sans SSH · 99 = plugin trop ancien :
        ce sont des RÉPONSES, elles se disent en clair. */
     const anom = !j.ok && Number(j.rc) === 2 && /^viz_/.test(act);
-    const refus = { 96: 'extension gelée pour ce site', 97: 'site géré sans SSH : action impossible', 99: 'extension du site trop ancienne' }[Number(j.rc)];
+    const refus = { 96: 'extension ou thème gelé pour ce site', 97: 'site géré sans SSH : action impossible', 99: 'extension du site trop ancienne' }[Number(j.rc)];
     const verdict = j.ok ? `<b class="ok">${icon('circle-check')} OK</b>`
       : anom ? `<b class="warn">${icon('triangle-alert')} anomalies visuelles détectées</b>`
         : refus ? `<b class="warn">${icon('triangle-alert')} ${H(refus)}</b>`

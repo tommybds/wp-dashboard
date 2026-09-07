@@ -37,6 +37,37 @@ def now(offset_h=0):
     return (datetime.now() - timedelta(hours=offset_h)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def faux_themes(i):
+    """Thèmes d'un site bouchonné — les trois cas que la page site doit tenir.
+
+    * i % 3 == 0 : TROIS thèmes, dont un actif qui est un thème ENFANT, son
+      parent, et un troisième à mettre à jour (celui-là porte une
+      vulnérabilité, cf. `vulns()`). C'est le cas complet.
+    * site en REST : `themes_list` vaut None — l'agent ne pousse qu'un
+      compteur, et l'écran doit le DIRE au lieu d'afficher une liste vide.
+    * les autres : deux thèmes, aucun à mettre à jour.
+
+    Retourne (liste_ou_None, compteur_de_mises_à_jour).
+    """
+    if i % 7 == 0:                      # site REST : compteur seul, pas de liste
+        return None, 2
+    if i % 3 == 0:
+        return [
+            {"name": "divi", "title": "Divi", "status": "parent",
+             "version": "4.27.4", "update": "none", "update_version": "", "parent": ""},
+            {"name": "divi-child", "title": "Divi Enfant", "status": "active",
+             "version": "1.0.3", "update": "none", "update_version": "", "parent": "divi"},
+            {"name": "twentytwentyfour", "title": "Twenty Twenty-Four", "status": "inactive",
+             "version": "1.2", "update": "available", "update_version": "1.3", "parent": ""},
+        ], 1
+    return [
+        {"name": "astra", "title": "Astra", "status": "active",
+         "version": "4.8.2", "update": "none", "update_version": "", "parent": ""},
+        {"name": "twentytwentythree", "title": "Twenty Twenty-Three", "status": "inactive",
+         "version": "1.5", "update": "none", "update_version": "", "parent": ""},
+    ], 0
+
+
 def faux_site(i, srv, rng):
     dom = f"site-{i:02d}.exemple.fr"
     maj = rng.randint(0, 6)
@@ -53,7 +84,7 @@ def faux_site(i, srv, rng):
         "core_version": core, "core_update": "7.1" if core != "7.1" else "",
         "plugins_total": len(plugins), "plugins_active": len(plugins),
         "plugins_updates": maj, "plugins_auto_update": rng.choice([0, len(plugins)]),
-        "themes_updates": rng.choice([0, 0, 1]),
+        "themes_updates": faux_themes(i)[1],
         "php_version": rng.choice(["8.1.2", "8.2.7", "8.3.1", "7.4.33"]),
         "admins": [{"login": "admin", "email": "a@b.fr", "registered": "2024-01-01"}],
         "errors": {},
@@ -77,6 +108,10 @@ def faux_site(i, srv, rng):
         s["kuma"] = ""
     s["plugins_list"] = plugins
     s["plugins_updates_list"] = [p["name"] for p in plugins if p.get("update") == "available"]
+    themes, _ = faux_themes(i)
+    # `None` est une VALEUR ici, pas une absence : la page site doit distinguer
+    # « aucun thème » de « ce site ne remonte pas ses thèmes ».
+    s["themes_list"] = themes
     return s
 
 
@@ -141,6 +176,17 @@ def vulns():
                      "link": "", "update_to": "7.1", "unfixed": False},
                 ],
             })
+            # Le thème à mettre à jour du site « complet » porte sa propre
+            # faille : c'est ce qui fait apparaître la chip de vulnerabilité sur
+            # la ligne du thème, et une entrée « thème » dans l'écran Sécurité.
+            if any(t.get("name") == "twentytwentyfour" and t.get("update") == "available"
+                   for t in (x.get("themes_list") or [])):
+                sites[-1]["findings"].append(
+                    {"component": "twentytwentyfour", "version": "1.2", "kind": "theme",
+                     "severity": "high", "title": "Injection de modèle",
+                     "cve": "CVE-2025-0004", "link": "https://example.org/cve",
+                     "update_to": "1.3", "unfixed": False})
+                sites[-1]["count"] = len(sites[-1]["findings"])
     return {"sites": sites, "sites_scanned": 20, "sites_affected": len(sites),
             "totals": {"critical": len(sites), "high": len(sites), "medium": len(sites)},
             "php": [{"version": "7.4.33", "worst": "high", "count": 12,
@@ -541,7 +587,10 @@ def viz_update_status():
 # `{"ok":true}` et l'interface ne pouvait pas montrer l'effet d'une action
 # (geler/dégeler une extension, sortie d'une commande, tâche groupée, ajout
 # d'un serveur, réglage enregistré).
-POLICY = {"frozen": ["plugin-4"]}
+# Gel : extensions et thèmes, deux listes distinctes sous la MÊME route —
+# c'est la forme que sert actions_server.py et que lit le front
+# (public/screens/site.js, `gelsDeReponse`).
+POLICY = {"frozen": ["plugin-4"], "frozen_themes": []}
 BULK = {"tasks": [], "done": 0, "total": 0, "running": False}
 
 SETTINGS = {
@@ -847,7 +896,11 @@ STUB = """
     '/api/actions/viz_report', '/api/actions/viz_update_status', '/api/actions/viz_last',
     // la file dépend des acquittements posés depuis l'interface, et sa réponse
     // dépend de `?include=acked` : elle ne peut pas venir du paquet figé.
-    '/api/incidents', '/api/mgmt/counts'];
+    '/api/incidents', '/api/mgmt/counts',
+    // le gel évolue au fil des POST, et le croisement de vulnérabilités dépend
+    // du `?domain=` demandé par la page d'un site : figés, on ne verrait ni un
+    // thème gelé après rechargement, ni la faille du thème de CE site-là.
+    '/api/actions/policy', '/api/sec/vulns'];
   const vrai = window.fetch.bind(window);
   window.__PREVIEW__ = true;
   window.fetch = function(url, opts){
@@ -905,6 +958,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
             return self._json(200, viz_report_etat(dom))
+        if chemin == "/api/sec/vulns":
+            import urllib.parse as up
+            dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0] if "?" in self.path else ""
+            v = vulns()
+            if dom:
+                # La page d'un site ne demande QUE ce site : rendre le parc
+                # entier lui ferait afficher les failles du premier venu.
+                v = dict(v, sites=[x for x in v["sites"] if x["domain"] == dom])
+            return self._json(200, v)
+        if chemin == "/api/actions/policy":
+            return self._json(200, dict(POLICY))
         if chemin == "/api/mgmt/wp_credentials":
             import urllib.parse as up
             dom = up.parse_qs(self.path.split("?", 1)[-1]).get("domain", [""])[0]
@@ -966,14 +1030,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if gere is not None:
             return self._json(gere[0], gere[1])
         if chemin.endswith("/api/actions/policy"):
-            gel = set(POLICY["frozen"])
+            # `kind` est le mot du protocole (comme sur plugin_rollback et le
+            # `kind` des vulnérabilités) ; `type` reste toléré ici.
+            nature = str(corps.get("kind") or corps.get("type") or "")
+            cle = "frozen_themes" if nature == "theme" else "frozen"
+            gel = set(POLICY[cle])
             slug = str(corps.get("slug") or "")
             if corps.get("frozen"):
                 gel.add(slug)
             else:
                 gel.discard(slug)
-            POLICY["frozen"] = sorted(x for x in gel if x)
-            rep = {"ok": True, "frozen": POLICY["frozen"]}
+            POLICY[cle] = sorted(x for x in gel if x)
+            rep = {"ok": True, "frozen": POLICY["frozen"],
+                   "frozen_themes": POLICY["frozen_themes"]}
         elif chemin.endswith("/api/actions/run"):
             rep = {"ok": True, "rc": 0,
                    "output": f"Success: {corps.get('action', '?')} sur "

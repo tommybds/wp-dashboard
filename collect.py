@@ -139,7 +139,11 @@ emit_site() {
     emitfield siteurl option get siteurl
     emitfield blogname option get blogname
     emitfield plugins plugin list --format=json --fields=name,status,version,update_version,update
-    emitfield themes theme list --format=json --fields=name,status,version,update_version,update
+    # `parent` n'est PAS un champ de `wp theme list` (même en 2.12) : le demander
+    # fait échouer la commande entière (« Invalid field: parent »), donc plus aucun
+    # thème. La parenté se lit de toute façon dans `status`, que wp-cli met à
+    # « parent » pour le thème parent d'un enfant actif.
+    emitfield themes theme list --format=json --fields=name,title,status,version,update_version,update
     emitfield auto_update_plugins option get auto_update_plugins --format=json
     emitfield admins user list --role=administrator --fields=ID,user_login,user_email,user_registered --format=json
     emitfield updraft_interval option get updraft_interval
@@ -360,6 +364,38 @@ def apply_plugins(site, plugins):
     return site
 
 
+def apply_themes(site, themes):
+    """Remplit les champs thèmes d'un site — format identique en SSH et en REST.
+
+    `themes_updates` (compteur) est CONSERVÉ tel quel : c'est ce que lisent la
+    file d'incidents et les vieux écrans. `themes_list` s'y ajoute, sur le
+    modèle de `plugins_list`, parce que la veille de vulnérabilités a besoin des
+    slugs et des versions (l'API WPVulnerability indexe aussi `/theme/<slug>/`).
+
+    Distinction volontaire entre « aucun thème » et « on ne sait pas » :
+    `themes_list` vaut `None` quand la liste est indisponible (JSON illisible,
+    ou agent qui n'envoie qu'un compteur) et une liste sinon — exactement comme
+    `themes_updates`, qui vaut `None` dans les mêmes cas. Rien n'est fabriqué à
+    partir d'un compteur.
+    """
+    if isinstance(themes, list):
+        themes = [t for t in themes if isinstance(t, dict)]
+        site["themes_updates"] = sum(1 for t in themes if has_update(t))
+        # `parent` n'est pas exposé par toutes les versions de wp-cli : le champ
+        # revient alors à `null` (le formateur JSON ne bronche pas sur un champ
+        # inconnu). On le garde tel quel plutôt que de deviner — c'est déjà
+        # `status: "parent"` qui dit qu'un thème sert de parent à un autre.
+        site["themes_list"] = [{"name": t.get("name"), "title": t.get("title"),
+                                "status": t.get("status"), "version": t.get("version"),
+                                "update_version": t.get("update_version"),
+                                "update": t.get("update"), "parent": t.get("parent")}
+                               for t in themes]
+    else:
+        site["themes_updates"] = None
+        site["themes_list"] = None
+    return site
+
+
 def map_admins(admins):
     """Liste d'administrateurs (clés wp-cli ou clés courtes de l'agent) → format du parc."""
     if not isinstance(admins, list):
@@ -463,8 +499,7 @@ def postprocess(raw):
 
     apply_plugins(site, extract_json(f.get("plugins", "")) if ok("plugins") else None)
 
-    themes = extract_json(f.get("themes", "")) if ok("themes") else None
-    site["themes_updates"] = sum(1 for t in themes if has_update(t)) if isinstance(themes, list) else None
+    apply_themes(site, extract_json(f.get("themes", "")) if ok("themes") else None)
 
     aup = extract_json(f.get("auto_update_plugins", "")) if ok("auto_update_plugins") else None
     site["plugins_auto_update"] = len(aup) if isinstance(aup, list) else 0
@@ -583,11 +618,16 @@ def map_rest_inventory(entry, data, url=None, blog_id=None):
     site["core_update"] = str(core.get("update") or d.get("core_update") or "") or None
     apply_plugins(site, d.get("plugins"))
     # L'agent renvoie déjà des compteurs ; la collecte SSH, elle, part de listes.
+    # À ce jour (sumotori-dash-agent 1.4.x) l'inventaire REST ne porte QUE
+    # `themes_updates` : on garde donc `themes_list` à None plutôt que d'inventer
+    # une liste à partir d'un nombre. Le jour où l'agent enverra `themes`, la
+    # branche liste ci-dessous la reprendra sans autre changement.
     themes = d.get("themes")
     if isinstance(themes, list):
-        site["themes_updates"] = sum(1 for t in themes if has_update(t))
+        apply_themes(site, themes)
     else:
         site["themes_updates"] = to_int(d.get("themes_updates"))
+        site["themes_list"] = None
     aup = d.get("auto_update_plugins")
     if isinstance(aup, list):
         site["plugins_auto_update"] = len(aup)

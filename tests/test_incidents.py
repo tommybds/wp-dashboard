@@ -299,6 +299,38 @@ class TestVulns(IncidentsBase):
         self.assertEqual(len(inc), 1)
         self.assertIsNone(inc[0]["action"])
 
+    # ---- thèmes ---------------------------------------------------------- #
+    def test_theme_propose_theme_update(self):
+        self.poser(self.trouvaille(kind="theme", component="divi", update_to="4.27.4"))
+        inc = self.par_kind("vuln_critical_fixable")
+        self.assertEqual(len(inc), 1)
+        self.assertEqual(inc[0]["action"], {"label": "MAJ thème divi → 4.27.4",
+                                            "act": "theme_update", "arg": "divi"})
+        self.assertEqual(inc[0]["extra"]["kind"], "theme")
+        self.assertEqual(inc[0]["extra"]["slug"], "divi")
+        self.assertIn("thème divi", inc[0]["title"])
+        # identifiant préfixé : c'est lui qui sépare le thème de l'extension
+        self.assertEqual(inc[0]["id"], "vuln_critical_fixable:ffhbi.fr:theme:divi")
+
+    def test_extension_et_theme_de_meme_slug_font_deux_incidents(self):
+        self.poser(self.trouvaille(kind="plugin", component="astra"),
+                   self.trouvaille(kind="theme", component="astra", update_to="4.6.1"))
+        inc = sorted(self.par_kind("vuln_critical_fixable"), key=lambda i: i["id"])
+        self.assertEqual([i["id"] for i in inc],
+                         ["vuln_critical_fixable:ffhbi.fr:astra",
+                          "vuln_critical_fixable:ffhbi.fr:theme:astra"])
+        self.assertEqual([i["action"]["act"] for i in inc],
+                         ["plugin_update", "theme_update"])
+
+    def test_extension_sans_kind_reste_une_extension(self):
+        """Ancien vulns_found.json (avant le champ `kind`) : rien ne change."""
+        t = self.trouvaille()
+        t.pop("kind")
+        self.poser(t)
+        inc = self.par_kind("vuln_critical_fixable")
+        self.assertEqual(inc[0]["action"]["act"], "plugin_update")
+        self.assertEqual(inc[0]["id"], "vuln_critical_fixable:ffhbi.fr:ml-slider")
+
 
 # --------------------------------------------------------------------------- #
 #  checksums_modified                                                          #

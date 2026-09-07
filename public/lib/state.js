@@ -87,11 +87,13 @@ export function kName(d) { return ('kuma' in d) ? d.kuma : d.domain; }
 /* Chaîne de recherche pré-calculée : le filtre du tableau sérialisait
    `plugins_updates_list` en JSON pour CHAQUE site à CHAQUE frappe. Elle est
    construite une fois par collecte et couvre aussi les extensions déjà à jour
-   (`plugins_list`) et les comptes administrateurs. */
+   (`plugins_list`), les thèmes (`themes_list`) et les comptes administrateurs. */
 function siteHaystack(d) {
   const bouts = [d.domain, d.kuma, d.srv, d.blogname, d.kuma_group, d.php_version, d.core_version];
   (d.plugins_list || []).forEach(p => { bouts.push(p.name); bouts.push(p.version); });
   (d.plugins_updates_list || []).forEach(p => bouts.push(typeof p === 'string' ? p : (p && (p.name || p.slug))));
+  // Un thème se cherche par son slug de dossier comme par son nom affiché.
+  (d.themes_list || []).forEach(t => { bouts.push(t.name); bouts.push(t.title); bouts.push(t.version); });
   (d.admins || []).forEach(a => bouts.push(a && a.login));
   return bouts.filter(Boolean).join(' ').toLowerCase();
 }

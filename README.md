@@ -60,8 +60,8 @@ Et les tâches périodiques, toutes lancées par cron :
 
 | Fichier | Rôle | Cadence (`deploy/wp-dashboard.cron`) |
 |---|---|---|
-| `collect.py` | Inventaire du parc. | toutes les 30 min |
-| `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 1×/jour, à 6 h |
+| `collect.py` | Inventaire du parc. Voir [Ce que la collecte rapporte](#ce-que-la-collecte-rapporte). | toutes les 30 min |
+| `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique — extensions **et thèmes**. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 1×/jour, à 6 h |
 | `phperrors.py` | Lit les journaux d'erreur PHP des serveurs (PHP-FPM sur Plesk, nginx sur les VPS) et regroupe les occurrences par fichier et ligne. Aucun site modifié. | toutes les 2 h |
 | `digest.py` | Bilan quotidien des changements, envoyé sur Telegram s'il y en a. | 1×/jour, à 8 h |
 | `rotate.py` | Rotation des journaux à **rétention différenciée** : courte pour le tout-venant, longue pour ce qui a valeur de preuve (création d'administrateur, échec d'action…). | 1×/semaine, dimanche 4 h 30 |
@@ -512,7 +512,7 @@ Copie de `config.example.json`. Toutes les valeurs propres à votre déploiement
 | `kuma_status_url` | URL JSON de cette status page ; le slug y est ajouté automatiquement s'il finit par `/`. | `http://127.0.0.1:3001/api/status-page/` |
 | `bot_admin_login` | Login du compte admin créé lors de la liaison « en un clic ». | `dashboard_agent` |
 | `bot_admin_email` | Base d'adresse e-mail de ce compte. | `admin@example.com` |
-| `vuln_skip_slugs` | Slugs d'extensions à exclure de la veille de vulnérabilités : mu-plugins maison, extensions internes, tout ce qui n'existe pas sur wordpress.org. Les drop-ins WordPress (`object-cache.php`…) sont déjà ignorés. | `[]` |
+| `vuln_skip_slugs` | Slugs à exclure de la veille de vulnérabilités — **extensions comme thèmes** : mu-plugins maison, extensions internes, thèmes sur mesure, tout ce qui n'existe pas sur wordpress.org. Les drop-ins WordPress (`object-cache.php`…) sont déjà ignorés. | `[]` |
 
 Créez une **status page privée** dans Uptime Kuma qui regroupe les moniteurs de
 votre parc, et reportez son slug dans `kuma_slug`.
@@ -554,10 +554,14 @@ les caches, `wp core verify-checksums`, auto-mises à jour).
 
 **Via l'agent (sites sans SSH).** Depuis **Gestion → Ajouter un site**, saisissez
 l'URL : le dashboard sonde l'API REST, vous guide pour installer l'agent et
-génère un **code d'appairage** à usage unique. L'inventaire est alors identique
-au mode SSH ; seules les **actions** d'écriture sont indisponibles (l'agent est
-en lecture seule) — vous gagnez en revanche les **évènements en temps réel**
-(nouvel administrateur, activation d'extension, mise à jour terminée).
+génère un **code d'appairage** à usage unique. L'inventaire est alors quasiment
+identique au mode SSH ; seules les **actions** d'écriture sont indisponibles
+(l'agent est en lecture seule) — vous gagnez en revanche les **évènements en
+temps réel** (nouvel administrateur, activation d'extension, mise à jour
+terminée). Une nuance : l'agent ne remonte pour les thèmes qu'un **compteur**
+(`themes_updates`), pas la liste — `themes_list` reste donc `null` sur ces
+sites, et la veille de vulnérabilités ne peut pas croiser leurs thèmes. Voir
+[Ce que la collecte rapporte](#ce-que-la-collecte-rapporte).
 
 Installer l'agent sur un site **déjà** en SSH est purement additif : la collecte
 reste SSH et vous ajoutez les évènements temps réel.
@@ -702,6 +706,81 @@ profit d'une **barre d'onglets basse** — Parc, Incidents, Sécurité, et un bo
 « Plus » qui ouvre une feuille avec Changements, Gestion, Réglages, Journal,
 Thème et la déconnexion. Voir [Mobile](#mobile).
 
+### Ce que la collecte rapporte
+
+`collect.py` produit `data/fleet.json`. Deux inventaires y prennent la même
+forme, que le site soit relevé en SSH (`via: "ssh"`) ou par l'agent
+(`via: "rest"`) : `plugins_list`, et depuis peu **`themes_list`**.
+
+```jsonc
+// un site de data/fleet.json, extrait
+"themes_updates": 1,                    // compteur, inchangé
+"themes_list": [
+  {"name": "divi",        "title": "Divi", "status": "parent",
+   "version": "4.27.0", "update_version": null, "update": "none", "parent": null},
+  {"name": "divi-child",  "title": "Divi Child", "status": "active",
+   "version": "1.0",    "update_version": null, "update": "none", "parent": "Divi"},
+  {"name": "twentytwentyfour", "title": "Twenty Twenty-Four", "status": "inactive",
+   "version": "1.2",    "update_version": "1.3", "update": "available", "parent": null}
+]
+```
+
+Trois points à connaître :
+
+- `status` vaut `active`, `inactive` ou **`parent`** (le thème sert de parent à
+  un thème enfant actif) — c'est `wp theme list` qui le dit, pas nous.
+- `parent` n'est renseigné que si la version de wp-cli du serveur expose ce
+  champ ; sinon il vaut `null` (le formateur JSON de wp-cli rend `null` pour un
+  champ inconnu, il n'échoue pas). `status: "parent"` reste toujours fiable.
+- `themes_list` vaut **`null`**, et non `[]`, quand la liste est *indisponible* —
+  JSON illisible, ou agent qui n'envoie qu'un compteur (c'est le cas
+  aujourd'hui : `sumotori-dash-agent` ne remonte que `themes_updates`). On ne
+  fabrique jamais une liste à partir d'un nombre. `themes_updates` suit la même
+  règle et garde exactement le sens qu'il avait.
+
+### Veille de vulnérabilités
+
+`vulns.py` interroge [WPVulnerability](https://www.wpvulnerability.net/) — API
+ouverte, sans clé — pour quatre familles, une route chacune :
+
+| Famille | Route | Source dans l'inventaire |
+|---|---|---|
+| `plugin` | `/plugin/<slug>/` | `plugins_list` |
+| `theme` | `/theme/<slug>/` | `themes_list` |
+| `core` | `/core/<version>/` | `core_version` |
+| `php` | `/php/<version>/` | `php_version` |
+
+Chaque trouvaille de `data/vulns_found.json` porte un champ **`kind`** valant
+`plugin`, `theme`, `core` ou `php` : c'est lui qui décide de l'action proposée
+par `/api/incidents` (`plugin_update` ou `theme_update`) et de l'étiquette
+affichée. Il est présent sur les quatre familles ; une trouvaille sans `kind`
+(fichier écrit par une version antérieure) est traitée comme une extension.
+
+**Coût des thèmes.** Un slug de thème n'est demandé qu'une fois pour tout le
+parc, et sa réponse est mise en cache 24 h comme les autres, avec la même pause
+entre appels. Un parc a typiquement **2 à 4 thèmes par site**, très largement
+partagés (Divi, Astra, un thème enfant, le thème par défaut de WordPress) : sur
+un parc de ~36 sites cela représente de l'ordre de **40 à 60 slugs
+supplémentaires**, soit une dizaine de pour cent d'appels en plus par rapport
+aux ~400 slugs d'extensions. Le chiffre exact du parc est imprimé par
+`python3 vulns.py --fetch`, qui détaille désormais son bilan :
+`… (412 extensions, 47 thèmes, 6 cœurs, 5 PHP)`.
+
+**Deux garde-fous propres aux thèmes :**
+
+- *Thème enfant.* Un thème enfant (`parent` renseigné) est interrogé sous son
+  propre slug, jamais sous celui de son parent : le parent figure déjà dans la
+  liste avec `status: "parent"` et sera croisé pour lui-même. Sans cette règle,
+  `divi` + `divi-child` compteraient deux fois la même faille sur le même site.
+- *Borne du titre.* Les fiches de thèmes sont bien plus souvent que celles
+  d'extensions dépourvues d'intervalle de versions exploitable. Le comportement
+  conservateur par défaut (« pas d'intervalle → on retient ») ferait alors
+  remonter tout l'historique des CVE de Divi sur chaque site qui l'utilise. Quand
+  l'enregistrement n'a pas de borne haute, `vulns.py` lit celle **écrite dans le
+  titre** (`Divi <= 4.9.4 – Stored XSS`) et s'y tient ; faute de l'une comme de
+  l'autre, on reste conservateur. Ce contrôle ne s'applique qu'aux thèmes : les
+  extensions gardent exactement le croisement qu'elles avaient.
+
 ### Gestion
 
 La page répond à « comment le parc est-il branché ? », dans l'ordre du
@@ -724,21 +803,92 @@ contrôles (page servie, poids non effondré, WordPress fonctionnel, et scan
 visuel VizProof si la commande est disponible) → **retour arrière automatique**
 si quelque chose casse.
 
+Elle porte sur les **extensions**, les **thèmes** et, si on le demande, le
+**cœur**. Les thèmes suivent exactement le même parcours que les extensions : la
+liste réelle vient du site (`wp theme list --update=available`), chaque thème
+mis à jour est archivé en `theme__<slug>.tgz` à côté des `plugin__<slug>.tgz`,
+sa taille entre dans le contrôle d'espace disque, sa version d'origine est
+inscrite au manifeste (`manifest.json`, clé `themes`) et dans
+`data/rollback_index.json` (clés `themes` / `theme_versions`), et le retour
+arrière le remet en place dans le dossier rendu par `wp theme path`.
+
 Deux garde-fous : la base n'est **jamais** restaurée automatiquement — elle
 contient ce qui a été écrit pendant l'opération, la commande exacte est donnée
-pour en faire une décision — et une extension **gelée** n'est jamais mise à
-jour, quel que soit le chemin emprunté.
+pour en faire une décision — et une extension **ou un thème gelé** n'est jamais
+mis à jour, quel que soit le chemin emprunté.
 
 Les boutons de mise à jour **sans filet** (« Cœur seul », « Extensions seules »,
-le bouton **MAJ** de chaque extension) ne font ni archive ni retour arrière, mais
-sur un site relié à VizProof ils passent depuis peu par un **déroulé suivi** —
-baseline, mise à jour, verdict visuel, inventaire — au lieu d'une simple
-commande : voir [Contrôle visuel après une mise à jour
+« Thèmes », le bouton **MAJ** de chaque extension ou de chaque thème) ne font ni
+archive ni retour arrière, mais sur un site relié à VizProof ils passent depuis
+peu par un **déroulé suivi** — baseline, mise à jour, verdict visuel, inventaire
+— au lieu d'une simple commande : voir [Contrôle visuel après une mise à jour
 unitaire](#contrôle-visuel-après-une-mise-à-jour-unitaire).
 
 `POST /api/actions/safe_update {"dry_run": true}` simule sans rien écrire.
-Le corps accepte aussi `"viz_rollback": true|false` pour surcharger, **le temps
-d'une exécution**, le réglage décrit à la section VizProof ci-dessous.
+Le corps accepte aussi :
+
+| Clé | Défaut | Effet |
+|---|---|---|
+| `slugs` | toutes | Restreint les extensions mises à jour |
+| `themes` | tous | Restreint les thèmes mis à jour |
+| `with_themes` | `true` | `false` laisse les thèmes entièrement de côté |
+| `core` | `false` | Inclut le cœur WordPress |
+| `viz_rollback` | réglage | Surcharge, **le temps d'une exécution**, le réglage décrit à la section VizProof ci-dessous |
+
+#### Geler une extension ou un thème
+
+Un composant **gelé** reste installé mais n'est jamais mis à jour par le
+dashboard. `data/update_policy.json` tient la politique, par site :
+
+```jsonc
+{
+  "exemple.fr": {
+    "frozen":        ["revslider"],   // extensions
+    "frozen_themes": ["divi"],        // thèmes
+    "updated_at": "2026-09-07 18:12"
+  }
+}
+```
+
+Les thèmes ont leur **propre clé**, plutôt qu'un préfixe dans `frozen` : un même
+slug peut nommer une extension *et* un thème (`astra`, `neve`, `blocksy`), et
+les fichiers déjà en place restent valables sans la moindre migration. Un
+`frozen` contenant `"theme:<slug>"` — écrit par une version intermédiaire — est
+néanmoins relu comme un thème.
+
+Les mêmes routes servent les deux, `kind` faisant la différence :
+
+```jsonc
+// GET /api/actions/policy?domain=exemple.fr
+{"frozen": ["revslider"], "frozen_themes": ["divi"]}
+
+// POST /api/actions/policy
+{"domain": "exemple.fr", "slug": "divi", "frozen": true, "kind": "theme"}
+// kind absent ou "plugin" → extension (les appels existants sont inchangés)
+// → {"ok": true, "frozen": ["revslider"], "frozen_themes": ["divi"]}
+```
+
+Le gel agit par **trois chemins**, identiques pour les extensions et les thèmes :
+
+1. l'action unitaire (`plugin_update` / `theme_update`) est **refusée**, code de
+   retour **96** (`FROZEN_RC`), avec le slug dans le message ;
+2. l'action groupée est **réécrite** : `plugins_update_all` devient
+   `plugin update --all --exclude=…`, `themes_update_all` devient
+   `theme update --all --exclude=…` ;
+3. la **MAJ sûre** les écarte de sa liste et le **dit dans son journal
+   d'étapes** (« Extensions gelées, écartées » / « Thèmes gelés, écartés »).
+
+#### Rétablir une version
+
+`POST /api/actions/plugin_rollback` accepte lui aussi `"kind": "theme"`. Deux
+sources, dans cet ordre : l'**archive locale** laissée par la MAJ sûre
+(restitution à l'identique, seule voie possible pour un composant premium — Divi
+n'est nulle part sur le dépôt public), puis une version publiée sur
+wordpress.org. `GET /api/actions/plugin_versions?slug=…&kind=theme` liste ces
+versions : les deux API de wordpress.org ne se ressemblent pas, les extensions
+ont une route par slug (`/plugins/info/1.0/<slug>.json`), les thèmes une action
+paramétrée (`/themes/info/1.2/?action=theme_information&request[slug]=…`) à qui
+il faut demander explicitement le champ `versions`.
 
 ### La barre de notifications
 
@@ -783,8 +933,15 @@ Chaque incident a la même forme :
  "bucket": "now", "acked": null,
  "action": {"label": "MAJ ml-slider → 3.100.2", "act": "plugin_update", "arg": "ml-slider"},
  "link": {"tab": "securite", "sub": "vulns"},
- "extra": {"cve": ["CVE-2026-1"], "slug": "ml-slider", "from": "3.100.1", "to": "3.100.2"}}
+ "extra": {"cve": ["CVE-2026-1"], "slug": "ml-slider", "kind": "plugin",
+           "from": "3.100.1", "to": "3.100.2"}}
 ```
+
+Un **thème** donne le même incident, avec `extra.kind` à `"theme"`, l'action
+`theme_update`, et un identifiant **préfixé** (`vuln_critical_fixable:ffhbi.fr:theme:divi`)
+— sans quoi le thème `astra` et l'extension `astra` d'un même site partageraient
+une ligne, et donc un acquittement. Les identifiants d'extensions, eux, ne
+bougent pas : les acquittements en place restent valables.
 
 `id` vaut `kind:cible:arg` — la cible est la clé du site (clé Kuma ou domaine),
 ou le **nom du serveur** pour les incidents qui portent sur un serveur. Il est
@@ -799,7 +956,7 @@ disponible : l'incident reste, le bouton disparaît. `since` vaut `null` (et
 | `down` | critique | `now` | Dernier battement Kuma en `status 0`, sur un site visible. `since` = heure du battement | `rescan` |
 | `down` (moniteur en **pause**) | avertissement | `plan` | Même chose, mais la surveillance a été coupée exprès : situation connue, pas une urgence | `rescan` |
 | `php_fatal` | critique | `now` | `Fatal error` / `Parse error` dans la fenêtre courante de `data/php_errors.json` | — |
-| `vuln_critical_fixable` | critique | `now` | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, composant) | `plugin_update` / `core_update` |
+| `vuln_critical_fixable` | critique | `now` | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, genre, composant) | `plugin_update` / `theme_update` / `core_update`, selon le `kind` de la trouvaille |
 | `checksums_modified` | critique | `now` | Dernier `wp core verify-checksums` en échec (`data/checksums.json`) | — |
 | `admin_unknown` | critique | `now` | Administrateur absent de `data/admins_baseline.json`. Un site **sans référence** est ignoré | — |
 | `server_stale` | avertissement | `plan` | Serveur `stale` dans `fleet.json` (injoignable à la dernière collecte) | — |
@@ -846,7 +1003,7 @@ connaît pas une l'ignore. Il est toujours présent, éventuellement vide.
 | `kind` | Clés de `extra` |
 |---|---|
 | `php_fatal` | `trace` (liste de cadres, 12 au plus), `trace_truncated`, `sample_ts` (occurrence qui a fourni la pile), `message` (le message SEUL, sans le « ×N » du détail — c'est lui qui entre dans l'empreinte d'acquittement), `count`, `first`, `last`, `file` (chemin raccourci), `line` |
-| `vuln_critical_fixable` | `cve` (liste — une extension cumule souvent plusieurs CVE graves), `slug`, `from`, `to` |
+| `vuln_critical_fixable` | `cve` (liste — un composant cumule souvent plusieurs CVE graves), `slug`, `kind` (`plugin` / `theme` / `core`), `from`, `to` |
 | `backup_late` | `last_backup` (ISO, `""` si jamais), `age_h` (`null` si jamais), `service` |
 | `cert_expiring` | `days_left`, `expires` |
 | `down` | `msg` (message du moniteur Kuma), `since` |
@@ -910,7 +1067,7 @@ ferait revenir l'incident à chaque collecte) :
 | `kind` | Ce qui compose l'empreinte |
 |---|---|
 | `php_fatal` | `file`:`line` + le message **normalisé** (minuscules, nombres masqués). **Pas** `count` |
-| `vuln_critical_fixable` | composant + **version installée** — une nouvelle version vulnérable ressort |
+| `vuln_critical_fixable` | composant + **version installée** — une nouvelle version vulnérable ressort. Le genre (extension / thème) n'y entre pas : il est déjà dans l'identifiant, qui est la clé de l'acquittement |
 | `backup_late` | date de la dernière sauvegarde connue (vide si aucune) — sauvegarde faite puis re-retardée : ça ressort |
 | `cert_expiring` | le certificat courant (sa date de fin) — renouvelé puis à nouveau proche : ça ressort |
 | `checksums_modified` | la liste des fichiers qui ne vérifient pas |
@@ -1192,8 +1349,9 @@ Le bouton **MAJ** de la page site passe par `/api/actions/run`, qui ne faisait
 **aucun** contrôle visuel : seules la MAJ sûre et l'action groupée « vérifiée
 visuellement » en faisaient un. Avec le réglage **« Contrôle visuel VizProof
 après chaque mise à jour »** (actif par défaut), les actions `plugin_update`,
-`plugins_update_all`, `plugins_update_except`, `core_update` et
-`themes_update_all` donnent désormais un **verdict visuel** quand :
+`plugins_update_all`, `plugins_update_except`, `core_update`, `theme_update`,
+`themes_update_all` et `themes_update_except` donnent désormais un **verdict
+visuel** quand :
 
 1. le réglage est actif, **et**
 2. la mise à jour a réussi (rc 0), **et**

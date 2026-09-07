@@ -1,12 +1,17 @@
-/* Rétablir une version antérieure d'une extension.
+/* Rétablir une version antérieure d'une extension OU d'un thème.
 
    Deux sources, une seule modale (`#rbmodal`) :
      * l'archive locale laissée par une « MAJ sûre » — restitution à l'identique,
        y compris pour une extension premium ;
      * les versions publiées sur wordpress.org.
 
-   Dans les deux cas seuls les FICHIERS sont remplacés : si l'extension a migré
-   ses tables, la base reste dans son nouvel état. C'est dit dans la modale. */
+   Dans les deux cas seuls les FICHIERS sont remplacés : si le composant a migré
+   ses tables, la base reste dans son nouvel état. C'est dit dans la modale.
+
+   `type` vaut 'plugin' (défaut) ou 'theme'. Il ne change ni les routes ni le
+   déroulé — le backend les sert toutes les deux — seulement le mot employé et
+   la source d'archive consultée. Une seconde modale pour les thèmes aurait
+   dupliqué les cinq écrans de ce fichier pour un seul mot de différence. */
 
 import { api } from '../lib/api.js';
 import { esc as H, h } from '../lib/dom.js';
@@ -23,6 +28,18 @@ export function setRollbackPoints(points, srv, dom) {
   RBSITE = { srv, dom };
 }
 export function rollbackPoints() { return RBPOINTS; }
+
+/* Le mot employé dans la modale, et la clé sous laquelle un point de
+   restauration liste ce qu'il contient. Une archive de « MAJ sûre » range les
+   extensions sous `plugins` ; si elle range un jour les thèmes, ce sera sous
+   `themes` — d'ici là, `archiveDe()` n'en trouve simplement aucune pour un
+   thème, et seule la liste wordpress.org est proposée. */
+const MOT = { plugin: 'extension', theme: 'thème' };
+function mot(type) { return MOT[type] || MOT.plugin; }
+function archiveDe(slug, type) {
+  const cle = type === 'theme' ? 'themes' : 'plugins';
+  return RBPOINTS.find(p => (p[cle] || []).includes(slug)) || null;
+}
 
 function closeRb() {
   document.getElementById('rbmodal').classList.remove('open');
@@ -52,7 +69,7 @@ export function pointsListeEl(cible, apres) {
         type: 'button', class: 'btn sm',
         title: `Remettre ${sl} dans sa version d'avant cette mise à jour`,
       }, iconEl('rotate-ccw'), sl + (v ? ' → ' + v : ''));
-      b.onclick = () => doRollback(sl, { dir: pt.dir }, cible, apres);
+      b.onclick = () => doRollback(sl, { dir: pt.dir }, cible, apres, 'plugin');
       ligne.append(b);
     });
     box.append(ligne);
@@ -60,7 +77,7 @@ export function pointsListeEl(cible, apres) {
   return box;
 }
 
-async function doRollback(slug, src, cible, apres) {
+async function doRollback(slug, src, cible, apres, type) {
   // Garde-fou : si la page a changé de site entre l'affichage de la liste et le
   // clic, on refuse plutôt que de restaurer les fichiers d'un site sur un autre.
   if (src.dir && (RBSITE.srv !== cible.srv || RBSITE.dom !== cible.dom)) {
@@ -75,8 +92,8 @@ async function doRollback(slug, src, cible, apres) {
   intro.innerHTML = `Rétablir <b>${H(slug)}</b> ${H(quoi)} ?`;
   box.textContent = '';
   box.append(h('p', { class: 'hint mt2' }, iconEl('triangle-alert'),
-    ' Seuls les ', h('b', { text: 'fichiers' }), ' sont remis en place. Si l’extension a migré ses tables, '
-    + 'la base reste dans son nouvel état — vérifiez le site après l’opération.'));
+    ' Seuls les ', h('b', { text: 'fichiers' }), ' sont remis en place. Si ' + (type === 'theme' ? 'le thème' : 'l’extension')
+    + ' a migré ses tables, la base reste dans son nouvel état — vérifiez le site après l’opération.'));
   // Un seul bouton dans le pied, qui change de rôle selon l'étape : avoir
   // « Fermer » et « Annuler » côte à côte ne disait pas lequel faisait quoi.
   pied.textContent = 'Annuler'; pied.className = 'btn';
@@ -87,9 +104,11 @@ async function doRollback(slug, src, cible, apres) {
     pied.disabled = true;
     box.innerHTML = '<div class="mt2"><span class="pill mut">opération en cours…</span></div>';
     let r;
-    try { r = await api('/api/actions/plugin_rollback', Object.assign({ server: cible.srv, domain: cible.dom, slug }, src)); }
+    try { r = await api('/api/actions/plugin_rollback', Object.assign({ server: cible.srv, domain: cible.dom, slug, kind: type === 'theme' ? 'theme' : 'plugin' }, src)); }
     catch (e) { r = { ok: false, rc: '—', output: String(e) }; }
-    intro.innerHTML = r.ok ? `<b>${H(slug)}</b> rétabli.` : `Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
+    intro.innerHTML = r.ok
+      ? `<b>${H(slug)}</b> rétabli${type === 'theme' ? '' : 'e'}.`
+      : `Échec du rétablissement de <b>${H(slug)}</b> (rc ${H(r.rc)}).`;
     const sortie = stripPhpNoise(r.output || '');
     box.innerHTML = `<div class="mt2"><span class="pill ${r.ok ? 'ok' : 'err'}">${r.ok ? 'réussi' : 'échec'}</span></div>`
       + (sortie ? `<pre class="tldet mt2">${H(sortie.slice(-800))}</pre>` : '');
@@ -102,31 +121,41 @@ async function doRollback(slug, src, cible, apres) {
   document.getElementById('rbmodal').classList.add('open');
 }
 
-/** Choix d'une version : les versions se cliquent, il n'y a rien à saisir. */
-export async function askVersion(slug, btn, cible, apres) {
+/**
+ * Choix d'une version : les versions se cliquent, il n'y a rien à saisir.
+ * `type` : 'plugin' (défaut) ou 'theme'.
+ */
+export async function askVersion(slug, btn, cible, apres, type) {
+  const t = type === 'theme' ? 'theme' : 'plugin';
+  const m = mot(t);
   const lbl = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = '…';
   let r;
-  try { r = await api('/api/actions/plugin_versions?slug=' + encodeURIComponent(slug)); }
-  catch (e) { r = null; }
+  try {
+    // `kind` est le mot du protocole, ici comme sur plugin_rollback et le
+    // `kind` des vulnérabilités : la traduction se fait à la frontière.
+    r = await api('/api/actions/plugin_versions?slug=' + encodeURIComponent(slug)
+      + '&kind=' + encodeURIComponent(t));
+  } catch (e) { r = null; }
   btn.disabled = false;
   btn.innerHTML = lbl;
   const vs = (r && r.versions) || [], actuelle = (r && r.current) || '';
-  const arc = RBPOINTS.find(p => (p.plugins || []).includes(slug));
+  const arc = archiveDe(slug, t);
   const intro = document.getElementById('rb-intro'), box = document.getElementById('rb-choices');
   box.textContent = '';
   if (!vs.length && !arc) {
-    intro.innerHTML = `Aucune version antérieure disponible pour <b>${H(slug)}</b> : cette extension n'est pas publiée `
-      + `sur wordpress.org (extension premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`;
+    intro.innerHTML = `Aucune version antérieure disponible pour <b>${H(slug)}</b> : aucune version `
+      + `de ce${t === 'theme' ? ' thème' : 'tte extension'} n'est publiée sur wordpress.org `
+      + `(${H(m)} premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`;
   } else {
     intro.innerHTML = `Choisissez la version à remettre en place pour <b>${H(slug)}</b>.
       Seuls les <b>fichiers</b> sont remplacés — la base n'est pas touchée.`;
     if (arc) {
       box.append(h('div', { class: 'glbl glbl-sep', text: "Archive locale — restitution à l'identique" }));
       const b = h('button', { type: 'button', class: 'btn primary sm' }, iconEl('rotate-ccw'),
-        arc.versions[slug] || 'version précédente');
-      b.onclick = () => { closeRb(); doRollback(slug, { dir: arc.dir }, cible, apres); };
+        (arc.versions && arc.versions[slug]) || 'version précédente');
+      b.onclick = () => { closeRb(); doRollback(slug, { dir: arc.dir }, cible, apres, t); };
       box.append(h('div', { class: 'actions' }, b,
         h('span', { class: 'muted small', text: "telle qu'elle était avant la mise à jour" })));
     }
@@ -136,7 +165,7 @@ export async function askVersion(slug, btn, cible, apres) {
       vs.slice(0, 24).forEach(v => {
         const b = h('button', { type: 'button', class: 'btn sm' }, v,
           v === actuelle ? h('span', { class: 'muted', text: '(actuelle)' }) : null);
-        b.onclick = () => { closeRb(); doRollback(slug, { version: v }, cible, apres); };
+        b.onclick = () => { closeRb(); doRollback(slug, { version: v }, cible, apres, t); };
         acts.append(b);
       });
       box.append(acts);

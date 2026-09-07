@@ -49,6 +49,22 @@ function sevNiveau(s) { return (s === 'critical' || s === 'high') ? 'err' : s ==
 function sevPill(s) { return chip(SEVLABEL[s] || s || '?', sevNiveau(s)); }
 function sevChip(s) { return chipEl(SEVLABEL[s] || s || '?', sevNiveau(s)); }
 
+/* ---- nature du composant vulnérable ----------------------------------------
+   Une faille de thème ne se corrige pas avec la même action qu'une faille
+   d'extension (`theme_update` contre `plugin_update`), et « 3 extensions
+   vulnérables » était faux dès qu'un thème entrait dans le lot. Le `kind` du
+   backend est donc porté jusqu'à l'écran : un mot sur la ligne, un filtre, et
+   l'action groupée qui en découle.
+
+   Les relevés antérieurs ne portent pas `kind` : ils sont lus comme des
+   extensions, ce qu'ils étaient. */
+const KINDLBL = { plugin: 'extension', theme: 'thème', core: 'cœur', php: 'PHP' };
+function kindDe(v) { return KINDLBL[v && v.kind] ? v.kind : 'plugin'; }
+/** Chip discrète qui dit la nature du composant — sans pastille : ce n'est pas un état. */
+export function kindChip(k) {
+  return chipEl(KINDLBL[k] || KINDLBL.plugin, 'mut', { point: false });
+}
+
 /** « 1 site » / « 3 sites » — le pluriel irrégulier se donne en 3e argument. */
 const pluriel = (n, sing, plur) => n + ' ' + (n > 1 ? (plur || sing + 's') : sing);
 
@@ -174,12 +190,19 @@ function sectionVulns() {
   sev.onchange = renderVulns;
   const fix = h('input', { type: 'checkbox', id: 'vln-fix' });
   fix.onchange = renderVulns;
+  const knd = h('select', { id: 'vln-kind', 'aria-label': 'Type de composant' },
+    h('option', { value: '', text: 'Tous les types' }),
+    h('option', { value: 'plugin', text: 'Extensions' }),
+    h('option', { value: 'theme', text: 'Thèmes' }),
+    h('option', { value: 'core', text: 'Cœur' }),
+    h('option', { value: 'php', text: 'PHP' }));
+  knd.onchange = renderVulns;
   const vue = h('select', {
     id: 'vln-vue', 'aria-label': 'Vue',
-    title: 'Par site : que corriger sur ce site ? — Par extension : une extension vulnérable sur plusieurs sites se traite en une fois.',
+    title: 'Par site : que corriger sur ce site ? — Par composant : une extension ou un thème vulnérable sur plusieurs sites se traite en une fois.',
   },
     h('option', { value: 'site', text: 'Vue par site' }),
-    h('option', { value: 'ext', text: 'Vue par extension (tout le parc)' }));
+    h('option', { value: 'ext', text: 'Vue par composant (tout le parc)' }));
   vue.onchange = renderVulns;
 
   return sectionEl('sec-vulns', 'Vulnérabilités connues',
@@ -190,7 +213,7 @@ function sectionVulns() {
       ', qui agrège CVE.org, Patchstack, Wordfence et WPScan. Le croisement est local : on demande '
       + '« quelles failles pour l’extension X ? », jamais « voici mes sites ».'),
     h('div', { class: 'filters' },
-      q, sev,
+      q, sev, knd,
       h('label', { class: 'small' }, fix, ' corrigeable par une MAJ'),
       vue,
       h('span', { class: 'spacer' }),
@@ -212,10 +235,13 @@ function sectionVulns() {
 function grouperParExtension(findings) {
   const g = new Map();
   for (const v of findings) {
-    const cle = v.component + '@' + v.version;
+    // La nature entre dans la CLÉ : une extension et un thème peuvent porter le
+    // même slug, et leurs failles n'ont rien à voir.
+    const k = kindDe(v);
+    const cle = k + '|' + v.component + '@' + v.version;
     let e = g.get(cle);
     if (!e) {
-      e = { component: v.component, version: v.version, kind: v.kind, update_to: v.update_to || '', unfixed: false, worst: '', cves: [], n: 0 };
+      e = { component: v.component, version: v.version, kind: k, update_to: v.update_to || '', unfixed: false, worst: '', cves: [], n: 0 };
       g.set(cle, e);
     }
     e.n++; e.cves.push(v);
@@ -232,8 +258,9 @@ function grouperParParc(sites) {
   const g = new Map();
   for (const s of sites) {
     for (const v of s.findings) {
-      let e = g.get(v.component);
-      if (!e) { e = { component: v.component, kind: v.kind, sites: new Map(), worst: '', n: 0 }; g.set(v.component, e); }
+      const k = kindDe(v), cle = k + '|' + v.component;
+      let e = g.get(cle);
+      if (!e) { e = { cle, component: v.component, kind: k, sites: new Map(), worst: '', n: 0 }; g.set(cle, e); }
       e.n++;
       if ((SEVRANK[v.severity] || 0) > (SEVRANK[e.worst] || 0)) e.worst = v.severity;
       let d = e.sites.get(s.domain);
@@ -263,12 +290,20 @@ function entetePliable(ouvert, bascule, ...contenu) {
   return t;
 }
 
+/** Type demandé par le filtre : '' (tous), 'plugin', 'theme', 'core' ou 'php'. */
+function kindFiltre() {
+  const el = document.getElementById('vln-kind');
+  return el ? el.value : '';
+}
+
 function vulnsFiltres() {
   const q = (document.getElementById('vln-q').value || '').toLowerCase().trim();
   const minSev = SEVRANK[document.getElementById('vln-sev').value] || 0;
   const fixOnly = document.getElementById('vln-fix').checked;
+  const kind = kindFiltre();
   return (VULNS.sites || []).map(s => {
     let f = (s.findings || []).filter(v => (SEVRANK[v.severity] || 0) >= minSev);
+    if (kind) f = f.filter(v => kindDe(v) === kind);
     if (fixOnly) f = f.filter(v => v.update_to);
     if (q) f = f.filter(v => (s.domain + ' ' + v.component + ' ' + (v.cve || '') + ' ' + v.title).toLowerCase().includes(q));
     return { ...s, findings: f };
@@ -327,7 +362,8 @@ function renderVulnsParSite(filtres) {
       if (refs.length > 5) cves.append(h('span', { class: 'muted', text: '+' + (refs.length - 5) }));
       liste.append(h('div', { class: 'vrow' },
         sevChip(e.worst),
-        h('b', { text: e.component }), h('span', { class: 'muted', text: e.version || '' }),
+        h('b', { text: e.component }), kindChip(e.kind),
+        h('span', { class: 'muted', text: e.version || '' }),
         chipEl(pluriel(e.n, 'faille'), 'mut'),
         e.update_to ? chipEl('MAJ ' + e.update_to, 'ok') : chipEl('aucun correctif', 'err'),
         refs.length ? cves : null));
@@ -341,11 +377,11 @@ function renderVulnsParSite(filtres) {
     },
       lienSite(s.domain),
       sevChip(s.worst),
-      h('span', { class: 'muted small', text: pluriel(grp.length, 'extension') + ' · ' + pluriel(s.findings.length, 'faille') }),
+      h('span', { class: 'muted small', text: pluriel(grp.length, 'composant') + ' · ' + pluriel(s.findings.length, 'faille') }),
       corrigeables ? chipEl(pluriel(corrigeables, 'corrigeable'), 'ok') : chipEl('aucun correctif', 'mut'));
     noeuds.push(tete, liste);
   });
-  cnt.textContent = nGrp ? pluriel(filtres.length, 'site') + ' · ' + pluriel(nGrp, 'extension') : '';
+  cnt.textContent = nGrp ? pluriel(filtres.length, 'site') + ' · ' + pluriel(nGrp, 'composant') : '';
   mount(body, noeuds);
 }
 
@@ -358,10 +394,10 @@ function renderVulnsParExtension(filtres) {
     return;
   }
   const multi = grp.filter(e => e.sites.length > 1).length;
-  cnt.textContent = pluriel(grp.length, 'extension') + (multi ? ` · ${multi} sur plusieurs sites` : '');
+  cnt.textContent = pluriel(grp.length, 'composant') + (multi ? ` · ${multi} sur plusieurs sites` : '');
   const noeuds = [];
   grp.forEach(e => {
-    const ouvert = VEXTOPEN.has(e.component);
+    const ouvert = VEXTOPEN.has(e.cle);
     const majables = e.sites.filter(d => d.update_to && d.via !== 'rest');
     const liste = h('div', { class: 'vlist', hidden: !ouvert });
     e.sites.slice().sort((a, b) => (SEVRANK[b.worst] || 0) - (SEVRANK[a.worst] || 0)).forEach(d => {
@@ -378,7 +414,7 @@ function renderVulnsParExtension(filtres) {
     if (majables.length) {
       bouton = h('button', {
         type: 'button', class: 'btn sm primary vbulk',
-        title: `Lance « MAJ ${e.component} » sur les ${majables.length} site(s) où une mise à jour existe`,
+        title: `Lance « ${actionLib(e.kind)} ${e.component} » sur les ${majables.length} site(s) où une mise à jour existe`,
         text: 'MAJ sur ' + pluriel(majables.length, 'site'),
       });
       bouton.onclick = ev => { ev.stopPropagation(); majGroupee(e); };
@@ -387,12 +423,12 @@ function renderVulnsParExtension(filtres) {
     }
     const tete = entetePliable(ouvert, el => {
       const o = liste.hidden;
-      if (o) VEXTOPEN.add(e.component); else VEXTOPEN.delete(e.component);
+      if (o) VEXTOPEN.add(e.cle); else VEXTOPEN.delete(e.cle);
       liste.hidden = !o;
       el.classList.toggle('open', o);
       el.setAttribute('aria-expanded', o ? 'true' : 'false');
     },
-      h('b', { text: e.component }), sevChip(e.worst),
+      h('b', { text: e.component }), kindChip(e.kind), sevChip(e.worst),
       h('span', { class: 'muted small', text: pluriel(e.sites.length, 'site') + ' · ' + pluriel(e.n, 'faille') }),
       bouton);
     noeuds.push(tete, liste);
@@ -400,8 +436,20 @@ function renderVulnsParExtension(filtres) {
   mount(body, noeuds);
 }
 
-/* Mise à jour d'une extension sur tous les sites où un correctif existe.
-   Les sites gérés sans SSH sont exclus : l'action y serait refusée (rc 97). */
+/* Action qui corrige ce type de composant. Un thème ne se met pas à jour avec
+   `plugin_update`, et le cœur n'a pas d'argument du tout. */
+function actionDe(kind) {
+  if (kind === 'core') return 'core_update';
+  if (kind === 'theme') return 'theme_update';
+  return 'plugin_update';
+}
+function actionLib(kind) {
+  return kind === 'core' ? 'MAJ cœur' : kind === 'theme' ? 'MAJ thème' : 'MAJ';
+}
+
+/* Mise à jour d'un composant (extension, thème, cœur) sur tous les sites où un
+   correctif existe. Les sites gérés sans SSH sont exclus : l'action y serait
+   refusée (rc 97). */
 async function majGroupee(e) {
   const cibles = e.sites.filter(d => d.update_to && d.via !== 'rest');
   // Le rapport nomme les sites par leur clé Kuma (souvent un ALIAS) ;
@@ -417,13 +465,19 @@ async function majGroupee(e) {
   const ok = await askConfirm(
     `Sur <b>${resolus.length} site(s)</b> où une mise à jour existe :<br>`
     + resolus.map(d => `${H(d.domain)}${d.alias ? ` <span class="muted small">(vhost ${H(d.cible.domain)})</span>` : ''} <span class="muted">${H(d.version)} → ${H(d.update_to)}</span>`).join('<br>')
-    + '<br><br>Les extensions <b>gelées</b> sur un site seront ignorées automatiquement.',
-    { titre: `Mettre à jour « ${e.component} »`, ok: 'Mettre à jour' });
+    + '<br><br>Les extensions et thèmes <b>gelés</b> sur un site seront ignorés automatiquement.',
+    {
+      titre: `Mettre à jour ${e.kind === 'theme' ? 'le thème' : e.kind === 'core' ? 'le cœur' : 'l’extension'} « ${e.component} »`,
+      ok: 'Mettre à jour',
+    });
   if (!ok) return;
-  // Le cœur ne se met pas à jour avec `plugin_update` : action distincte, sans argument.
-  const tasks = resolus.map(d => e.kind === 'core'
-    ? { server: d.cible.server, domain: d.cible.domain, action: 'core_update', arg: null }
-    : { server: d.cible.server, domain: d.cible.domain, action: 'plugin_update', arg: e.component });
+  // Le cœur ne se met pas à jour avec `plugin_update`, un thème non plus :
+  // l'action découle du type, et le cœur est le seul à ne pas prendre d'argument.
+  const act = actionDe(e.kind);
+  const tasks = resolus.map(d => ({
+    server: d.cible.server, domain: d.cible.domain, action: act,
+    arg: act === 'core_update' ? null : e.component,
+  }));
   let r;
   try { r = await api('/api/actions/bulk', { tasks, mode: 'continue', backup_first: true, viz_verify: false }); }
   catch (err) { r = { error: String(err) }; }
@@ -434,6 +488,13 @@ async function majGroupee(e) {
 function renderVulnsPhp() {
   const php = document.getElementById('vln-php');
   if (!php) return;
+  // Le filtre de type commande AUSSI ce bloc : demander « thèmes » et voir
+  // quand même les versions de PHP ferait mentir le filtre.
+  const k = kindFiltre();
+  if (k && k !== 'php') {
+    mount(php, h('span', { class: 'muted', text: 'masqué par le filtre de type.' }));
+    return;
+  }
   const lignes = VULNS.php || [];
   if (!lignes.length) {
     mount(php, h('span', { class: 'muted', text: 'aucune version PHP avec faille connue.' }));
@@ -994,3 +1055,4 @@ async function loadSec(force) {
 export function majCompteurSec(force) { majCompteursServeur(force); }
 
 export { loadSec, sevPill, SEVLABEL, SEVRANK, grouperParExtension };
+
