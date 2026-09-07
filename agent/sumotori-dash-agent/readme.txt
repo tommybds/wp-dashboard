@@ -4,7 +4,7 @@ Tags: maintenance, monitoring, management, inventory, multisite
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.0
-Stable tag: 1.3.0
+Stable tag: 1.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -25,7 +25,10 @@ exchanged.
 
 * **Pairing by code**: you paste a short code displayed by your dashboard into
   the settings screen; the agent then obtains the endpoint and the shared secret
-  by itself. No secret has to be copied by hand.
+  by itself. No secret has to be copied by hand. The same pairing can be
+  triggered from WP-CLI, or by an administrator through this site's own REST API
+  — useful when the plugin was installed remotely and nobody is going to open
+  wp-admin to copy a code.
 * **Administration event reporting**: creation or promotion of an administrator
   account, administrator login, plugin activation or deactivation, completed
   update, theme switch, account deletion. Every message is signed (HMAC-SHA256)
@@ -65,15 +68,22 @@ Terms of use: https://github.com/tommybds/wp-dashboard/blob/master/TERMS.md
 Privacy policy: https://github.com/tommybds/wp-dashboard/blob/master/PRIVACY.md
 
 **No data is transmitted until the site is paired.** Before pairing the plugin
-makes no outbound request whatsoever, and its REST routes answer 403 to every
-call.
+makes no outbound request whatsoever, and its inventory REST routes answer 403 to
+every call. The one route that answers before pairing is the pairing route
+itself (`/wp-json/sumotori-dash/v1/pair`), and only to a logged-in administrator
+of this site: it is how the pairing is started, and it reports no site data — it
+returns nothing but the resulting link status.
 
 Exchanges happen in exactly three situations.
 
 = 1. Pairing (one request, manually triggered) =
 
 When: only when an administrator submits a pairing code from the settings
-screen, or runs `wp dash-agent pair`.
+screen, runs `wp dash-agent pair`, or triggers the pairing through this site's
+own REST API (`POST /wp-json/sumotori-dash/v1/pair`, reserved to the same
+capability as the settings screen — see the FAQ). Whichever of the three routes
+is used, the request below is the very first thing the plugin ever sends: **no
+data leaves the site before it**.
 Where: `POST <dashboard URL>/api/pair`.
 Data transmitted:
 
@@ -165,12 +175,20 @@ no further data is transmitted.
     wp dash-agent status
     wp dash-agent disconnect
 
+= Pairing without opening wp-admin =
+
+If you have no shell access to the site, an administrator can start the same
+pairing over this site's REST API. See "Can a dashboard pair the site without
+opening wp-admin?" in the FAQ below.
+
 == Frequently Asked Questions ==
 
 = Does the plugin send anything before pairing? =
 
 No. As long as the site is not paired, no event hook is even registered and the
-REST routes answer 403.
+inventory REST routes answer 403. The only thing that starts an exchange is an
+administrator deliberately pairing the site, from the settings screen, from
+WP-CLI, or through the `/pair` REST route.
 
 = Where is the dashboard address set? =
 
@@ -186,10 +204,56 @@ The settings screen field then displays that value instead of being editable.
 Nothing. Deleting the plugin erases the configuration option: the site option,
 the network option, and any options left on sub-sites.
 
+= Can a dashboard pair the site without opening wp-admin? =
+
+Yes, since version 1.4.0. An administrator of the site — in practice a dashboard
+authenticating with an administrator application password the site owner issued
+to it — can call this site's own REST API:
+
+    POST /wp-json/sumotori-dash/v1/pair
+    {"url": "https://your-dashboard.example", "code": "XXXX-XXXX"}
+
+The agent then performs exactly the same exchange as the settings form: it calls
+`<url>/api/pair` and stores the endpoint and secret it gets back. The second
+accepted body registers the link directly, as `wp dash-agent connect` does:
+
+    POST /wp-json/sumotori-dash/v1/pair
+    {"endpoint": "https://your-dashboard.example/api/ingest", "secret": "…"}
+
+Send one form or the other, never both. The endpoint must be an https URL and
+the secret 16 to 512 printable characters with no space.
+
+Both forms require the `manage_options` capability (`manage_network_options` on
+a multisite network) — exactly the capability the settings screen already
+requires. The route therefore grants its caller nothing they could not already do
+by hand in wp-admin; anyone else gets a 403.
+
+A site that is already paired answers 409 and keeps its current link, unless the
+body also carries `"force": true`.
+
+The answer to a successful call is:
+
+    {"paired": true, "endpoint": "…", "paired_at": "…", "site_url": "…",
+     "agent_version": "…", "message": "…"}
+
+**The shared secret is never returned**, never logged, and never quoted in an
+error message. An invalid body gives a 400, a dashboard that cannot be reached or
+whose answer cannot be read gives a 502.
+
+Finally, `DELETE /wp-json/sumotori-dash/v1/pair`, with the same capability,
+clears the link: it is the REST equivalent of the "Disconnect this site" button,
+so a dashboard can withdraw cleanly from a site it no longer manages.
+
 = Can the inventory modify my site? =
 
-No. Both REST routes are read-only: they write no option, schedule no task,
-execute no command, and include no file whose path would come from the request.
+No. Both inventory routes (`/inventory` and `/sites`) are read-only: they write
+no option, schedule no task, execute no command, and include no file whose path
+would come from the request.
+
+The only route that writes anything is `/pair`, and all it ever writes is the
+link itself — the dashboard endpoint and the shared secret, the same single
+option the settings screen saves. It is reserved to administrators of the site,
+and it touches nothing else.
 
 = Does the plugin work on multisite? =
 
@@ -198,6 +262,28 @@ administration (`manage_network_options` capability). The inventory can target
 any sub-site through the `blog_id` parameter.
 
 == Changelog ==
+
+= 1.4.0 =
+
+* The site can now be paired without anyone opening wp-admin, through a new REST
+  route `POST /wp-json/sumotori-dash/v1/pair`. The body carries either
+  `url` + `code`, which runs exactly the same exchange as the settings form, or
+  `endpoint` + `secret`, the equivalent of `wp dash-agent connect`. This closes
+  the last gap for a dashboard that installed the agent remotely and has no shell
+  access to the site: until now a human had to copy a code by hand.
+* The route requires `manage_options` (`manage_network_options` on multisite) —
+  the very capability the settings screen already requires — so it grants its
+  caller nothing they could not already do from wp-admin. Every other request
+  gets a 403.
+* An already paired site answers 409 and keeps its link unless the body carries
+  `"force": true`. An invalid body gives a 400, an unreachable or unreadable
+  dashboard a 502.
+* The shared secret is never included in the answer, in an error message, or in
+  any log.
+* New `DELETE /wp-json/sumotori-dash/v1/pair`, same capability, clearing the
+  link: the REST equivalent of the "Disconnect this site" button.
+* The shared secret is now validated on every path — settings screen, WP-CLI and
+  REST alike: 16 to 512 printable characters, no space and no control character.
 
 = 1.3.0 =
 

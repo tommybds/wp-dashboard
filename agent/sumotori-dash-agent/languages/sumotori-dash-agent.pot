@@ -2,21 +2,21 @@
 # This file is distributed under the GPLv2 or later.
 msgid ""
 msgstr ""
-"Project-Id-Version: Sumotori Dash Agent 1.3.0\n"
+"Project-Id-Version: Sumotori Dash Agent 1.4.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/sumotori-dash-agent\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-09-01T15:48:53+00:00\n"
+"POT-Creation-Date: 2026-09-07T12:42:39+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.11.0\n"
 "X-Domain: sumotori-dash-agent\n"
 
 #. Plugin Name of the plugin
 #: sumotori-dash-agent.php
-#: sumotori-dash-agent.php:564
+#: sumotori-dash-agent.php:601
 msgid "Sumotori Dash Agent"
 msgstr ""
 
@@ -40,187 +40,221 @@ msgstr ""
 msgid "https://sumotori.fr/"
 msgstr ""
 
-#: sumotori-dash-agent.php:287
+#: sumotori-dash-agent.php:311
 msgid "Please provide the dashboard URL."
 msgstr ""
 
-#: sumotori-dash-agent.php:294
+#: sumotori-dash-agent.php:318
 msgid "The dashboard URL must be a valid https URL."
 msgstr ""
 
-#: sumotori-dash-agent.php:302
+#: sumotori-dash-agent.php:326
 msgid "The dashboard URL is invalid."
 msgstr ""
 
-#: sumotori-dash-agent.php:323
+#: sumotori-dash-agent.php:347
 msgid "Please provide the receiving endpoint."
 msgstr ""
 
-#: sumotori-dash-agent.php:330
+#: sumotori-dash-agent.php:354
 msgid "The endpoint must be a valid https URL."
 msgstr ""
 
-#: sumotori-dash-agent.php:338
+#: sumotori-dash-agent.php:362
 msgid "The endpoint is invalid."
 msgstr ""
 
-#: sumotori-dash-agent.php:345
+#: sumotori-dash-agent.php:369
 msgid "Please provide the shared secret."
 msgstr ""
 
-#: sumotori-dash-agent.php:395
+#. translators: 1: minimum length, 2: maximum length.
+#: sumotori-dash-agent.php:379
+msgid "The shared secret must be %1$d to %2$d printable characters long, with no space or control character."
+msgstr ""
+
+#: sumotori-dash-agent.php:432
 msgid "Please provide the pairing code."
 msgstr ""
 
-#: sumotori-dash-agent.php:407
+#: sumotori-dash-agent.php:444
 msgid "The WordPress HTTP API is unavailable."
 msgstr ""
 
-#: sumotori-dash-agent.php:422
+#: sumotori-dash-agent.php:459
 msgid "Could not prepare the pairing request."
 msgstr ""
 
 #. translators: %s: error message returned by the HTTP API.
-#: sumotori-dash-agent.php:446
+#: sumotori-dash-agent.php:483
 msgid "Dashboard unreachable: %s"
 msgstr ""
 
 #. translators: %d: HTTP status code.
-#: sumotori-dash-agent.php:461
+#: sumotori-dash-agent.php:498
 msgid "Unreadable response from the dashboard (HTTP %d)."
 msgstr ""
 
-#: sumotori-dash-agent.php:476
+#: sumotori-dash-agent.php:513
 msgid "The dashboard did not return a usable endpoint and secret."
 msgstr ""
 
-#: sumotori-dash-agent.php:497
+#: sumotori-dash-agent.php:534
 msgid "Invalid pairing code."
 msgstr ""
 
-#: sumotori-dash-agent.php:498
-#: sumotori-dash-agent.php:499
+#: sumotori-dash-agent.php:535
+#: sumotori-dash-agent.php:536
 msgid "Pairing code expired: generate a new one from the dashboard."
 msgstr ""
 
-#: sumotori-dash-agent.php:500
-#: sumotori-dash-agent.php:501
+#: sumotori-dash-agent.php:537
+#: sumotori-dash-agent.php:538
 msgid "Pairing code already used."
 msgstr ""
 
-#: sumotori-dash-agent.php:502
+#: sumotori-dash-agent.php:539
 msgid "This code has already been used to pair a site."
 msgstr ""
 
-#: sumotori-dash-agent.php:509
+#: sumotori-dash-agent.php:546
 msgid "Pairing code rejected (invalid, expired or already used)."
 msgstr ""
 
 #. translators: %d: HTTP status code.
-#: sumotori-dash-agent.php:514
+#: sumotori-dash-agent.php:551
 msgid "Pairing rejected by the dashboard (HTTP %d)."
 msgstr ""
 
-#: sumotori-dash-agent.php:526
-#: sumotori-dash-agent.php:527
-#: sumotori-dash-agent.php:540
-#: sumotori-dash-agent.php:541
+#: sumotori-dash-agent.php:563
+#: sumotori-dash-agent.php:564
+#: sumotori-dash-agent.php:577
+#: sumotori-dash-agent.php:578
 msgid "Dash Agent"
 msgstr ""
 
-#: sumotori-dash-agent.php:554
-#: sumotori-dash-agent.php:699
+#: sumotori-dash-agent.php:591
+#: sumotori-dash-agent.php:736
 msgid "Insufficient permissions."
 msgstr ""
 
-#: sumotori-dash-agent.php:574
+#: sumotori-dash-agent.php:611
 msgid "Status"
 msgstr ""
 
-#: sumotori-dash-agent.php:577
+#: sumotori-dash-agent.php:614
 msgid "Paired"
 msgstr ""
 
 #. translators: %s: formatted date.
-#: sumotori-dash-agent.php:585
+#: sumotori-dash-agent.php:622
 msgid "Paired on %s"
 msgstr ""
 
-#: sumotori-dash-agent.php:592
+#: sumotori-dash-agent.php:629
 msgid "Not paired"
 msgstr ""
 
-#: sumotori-dash-agent.php:594
+#: sumotori-dash-agent.php:631
 msgid "No data is transmitted until the site is paired."
 msgstr ""
 
-#: sumotori-dash-agent.php:601
+#: sumotori-dash-agent.php:638
 msgid "Scope"
 msgstr ""
 
-#: sumotori-dash-agent.php:602
+#: sumotori-dash-agent.php:639
 msgid "Multisite network: a single link for the whole network."
 msgstr ""
 
-#: sumotori-dash-agent.php:611
+#: sumotori-dash-agent.php:648
 msgid "Disconnect this site"
 msgstr ""
 
-#: sumotori-dash-agent.php:614
-#: sumotori-dash-agent.php:674
+#: sumotori-dash-agent.php:651
+#: sumotori-dash-agent.php:711
 msgid "Pair this site"
 msgstr ""
 
-#: sumotori-dash-agent.php:621
+#: sumotori-dash-agent.php:658
 msgid "Dashboard URL"
 msgstr ""
 
 #. translators: %s: PHP constant name.
-#: sumotori-dash-agent.php:630
+#: sumotori-dash-agent.php:667
 msgid "Enforced by the %s constant defined in wp-config.php."
 msgstr ""
 
-#: sumotori-dash-agent.php:648
+#: sumotori-dash-agent.php:685
 msgid "The https address of the dashboard this site should connect to."
 msgstr ""
 
-#: sumotori-dash-agent.php:655
+#: sumotori-dash-agent.php:692
 msgid "Pairing code"
 msgstr ""
 
-#: sumotori-dash-agent.php:669
+#: sumotori-dash-agent.php:706
 msgid "Paste the code shown by your dashboard here. No secret has to be copied by hand: the agent retrieves it itself."
 msgstr ""
 
-#: sumotori-dash-agent.php:712
+#: sumotori-dash-agent.php:749
+#: sumotori-dash-agent.php:1612
 msgid "Site disconnected: no more data is transmitted."
 msgstr ""
 
 #. translators: %s: endpoint URL.
-#: sumotori-dash-agent.php:743
+#: sumotori-dash-agent.php:780
 msgid "Site paired with the dashboard (%s)."
 msgstr ""
 
-#: sumotori-dash-agent.php:1242
+#: sumotori-dash-agent.php:1333
+msgid "You are not allowed to manage the pairing of this site."
+msgstr ""
+
+#: sumotori-dash-agent.php:1352
 msgid "Agent not paired."
 msgstr ""
 
-#: sumotori-dash-agent.php:1256
+#: sumotori-dash-agent.php:1366
 msgid "Missing signature."
 msgstr ""
 
-#: sumotori-dash-agent.php:1263
+#: sumotori-dash-agent.php:1373
 msgid "Invalid timestamp."
 msgstr ""
 
-#: sumotori-dash-agent.php:1270
+#: sumotori-dash-agent.php:1380
 msgid "Expired timestamp."
 msgstr ""
 
-#: sumotori-dash-agent.php:1278
+#: sumotori-dash-agent.php:1388
 msgid "Invalid signature."
 msgstr ""
 
-#: sumotori-dash-agent.php:1320
+#: sumotori-dash-agent.php:1446
 msgid "Sub-site not found."
+msgstr ""
+
+#: sumotori-dash-agent.php:1563
+msgid "Send either a pairing code or an endpoint and its secret, not both."
+msgstr ""
+
+#: sumotori-dash-agent.php:1571
+msgid "Send a pairing code, or an endpoint and its shared secret."
+msgstr ""
+
+#: sumotori-dash-agent.php:1579
+msgid "This site is already paired with a dashboard. Send \"force\": true to replace the existing link."
+msgstr ""
+
+#: sumotori-dash-agent.php:1593
+msgid "Site paired with the dashboard."
+msgstr ""
+
+#: sumotori-dash-agent.php:1613
+msgid "This site was not paired: nothing to disconnect."
+msgstr ""
+
+#: sumotori-dash-agent.php:1651
+msgid "Pairing failed."
 msgstr ""

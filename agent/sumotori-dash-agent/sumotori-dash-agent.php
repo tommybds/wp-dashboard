@@ -3,7 +3,7 @@
  * Plugin Name: Sumotori Dash Agent
  * Plugin URI: https://github.com/tommybds/wp-dashboard
  * Description: Connects this site to a monitoring dashboard of your choice: reports sensitive administration events and answers signed, read-only inventory requests.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Requires at least: 5.2
  * Requires PHP: 7.0
  * Author: Tommy Bordas
@@ -50,6 +50,10 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 	 *
 	 * Trois capacités :
 	 *  1. Appairage : un code court est échangé contre {endpoint, secret}.
+	 *     Déclenché depuis l'écran de réglages, depuis WP-CLI, ou par
+	 *     POST sumotori-dash/v1/pair — cette route exige exactement la capacité
+	 *     qu'exige déjà l'écran de réglages, elle n'ouvre donc aucune porte
+	 *     supplémentaire.
 	 *  2. Événements sortants : POST signé et non bloquant à chaque événement
 	 *     d'administration sensible.
 	 *  3. Inventaire REST : GET sumotori-dash/v1/inventory et /sites, protégés
@@ -69,6 +73,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const REST_NAMESPACE   = 'sumotori-dash/v1';
 		const ROUTE_INVENTORY  = '/inventory';
 		const ROUTE_SITES      = '/sites';
+		const ROUTE_PAIR       = '/pair';
 		const MENU_SLUG        = 'sumotori-dash-agent';
 		const NONCE_ACTION     = 'sumotori_dash_agent_admin';
 		const URL_CONSTANT     = 'SUMOTORI_DASH_AGENT_URL';
@@ -77,7 +82,9 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const PAIR_TIMEOUT     = 10;
 		const MAX_EVENT_ITEMS  = 25;
 		const MAX_SITES_LISTED = 500;
-		const VERSION          = '1.3.0';
+		const VERSION          = '1.4.0';
+		const SECRET_MIN_LEN   = 16;
+		const SECRET_MAX_LEN   = 512;
 
 		/**
 		 * Instance unique.
@@ -269,6 +276,23 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		}
 
 		/**
+		 * Un secret partagé doit rester utilisable comme clé HMAC et tenir dans
+		 * un en-tête HTTP : uniquement des caractères ASCII imprimables, ni
+		 * espace, ni saut de ligne, ni caractère de contrôle, et une longueur
+		 * bornée. La validation est volontairement commune à toutes les voies
+		 * d'appairage (écran de réglages, WP-CLI, REST).
+		 *
+		 * @param string $secret Secret à valider.
+		 * @return bool
+		 */
+		private function is_secret_acceptable( $secret ) {
+			// \A et \z, et non ^ et $ : $ tolérerait un saut de ligne final.
+			$pattern = '/\A[\x21-\x7E]{' . (int) self::SECRET_MIN_LEN . ',' . (int) self::SECRET_MAX_LEN . '}\z/';
+
+			return (bool) preg_match( $pattern, (string) $secret );
+		}
+
+		/**
 		 * Détermine l'URL du tableau de bord à interroger pour l'appairage.
 		 *
 		 * @param string $provided URL saisie par l'utilisateur.
@@ -343,6 +367,19 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				return new WP_Error(
 					'sumotori_dash_missing_secret',
 					__( 'Please provide the shared secret.', 'sumotori-dash-agent' )
+				);
+			}
+
+			// Le message ne reprend jamais la valeur reçue, seulement la règle.
+			if ( ! $this->is_secret_acceptable( $secret ) ) {
+				return new WP_Error(
+					'sumotori_dash_invalid_secret',
+					sprintf(
+						/* translators: 1: minimum length, 2: maximum length. */
+						__( 'The shared secret must be %1$d to %2$d printable characters long, with no space or control character.', 'sumotori-dash-agent' ),
+						(int) self::SECRET_MIN_LEN,
+						(int) self::SECRET_MAX_LEN
+					)
 				);
 			}
 
@@ -1202,6 +1239,57 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 					),
 				)
 			);
+
+			register_rest_route(
+				self::REST_NAMESPACE,
+				self::ROUTE_PAIR,
+				array(
+					array(
+						'methods'             => 'POST',
+						'permission_callback' => array( $this, 'can_manage_pairing' ),
+						'callback'            => array( $this, 'rest_pair' ),
+						'args'                => array(
+							'url'      => array(
+								'required'          => false,
+								'type'              => 'string',
+								'default'           => '',
+								'sanitize_callback' => 'esc_url_raw',
+							),
+							'code'     => array(
+								'required'          => false,
+								'type'              => 'string',
+								'default'           => '',
+								'sanitize_callback' => 'sanitize_text_field',
+							),
+							'endpoint' => array(
+								'required'          => false,
+								'type'              => 'string',
+								'default'           => '',
+								'sanitize_callback' => 'esc_url_raw',
+							),
+							// Le secret n'est pas passé à sanitize_text_field :
+							// il est validé par liste blanche de caractères
+							// dans connect(), qui refuse tout le reste.
+							'secret'   => array(
+								'required' => false,
+								'type'     => 'string',
+								'default'  => '',
+							),
+							'force'    => array(
+								'required' => false,
+								'type'     => 'boolean',
+								'default'  => false,
+							),
+						),
+					),
+					array(
+						'methods'             => 'DELETE',
+						'permission_callback' => array( $this, 'can_manage_pairing' ),
+						'callback'            => array( $this, 'rest_unpair' ),
+						'args'                => array(),
+					),
+				)
+			);
 		}
 
 		/**
@@ -1222,6 +1310,28 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		 */
 		public function can_read_sites( $request ) {
 			return $this->verify_signature( $request, self::ROUTE_SITES );
+		}
+
+		/**
+		 * Contrôle d'accès de /pair : exactement la capacité qu'exige déjà
+		 * l'écran de réglages. Un mot de passe d'application n'ouvre donc aucune
+		 * porte de plus que ce que son détenteur peut déjà faire depuis
+		 * wp-admin : c'est la même autorisation, exercée par une autre voie.
+		 *
+		 * @param WP_REST_Request $request Requête.
+		 * @return true|WP_Error
+		 */
+		public function can_manage_pairing( $request ) {
+			unset( $request );
+
+			if ( current_user_can( $this->get_required_capability() ) ) {
+				return true;
+			}
+
+			return $this->forbidden(
+				'sumotori_dash_cannot_pair',
+				__( 'You are not allowed to manage the pairing of this site.', 'sumotori-dash-agent' )
+			);
 		}
 
 		/**
@@ -1294,6 +1404,22 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 				sanitize_key( (string) $code ),
 				sanitize_text_field( (string) $message ),
 				array( 'status' => 403 )
+			);
+		}
+
+		/**
+		 * Construit une erreur avec le statut HTTP voulu.
+		 *
+		 * @param string $code    Code d'erreur.
+		 * @param string $message Message.
+		 * @param int    $status  Statut HTTP.
+		 * @return WP_Error
+		 */
+		private function rest_error( $code, $message, $status ) {
+			return new WP_Error(
+				sanitize_key( (string) $code ),
+				sanitize_text_field( (string) $message ),
+				array( 'status' => (int) $status )
 			);
 		}
 
@@ -1395,6 +1521,149 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			}
 
 			return new WP_REST_Response( $list, 200 );
+		}
+
+		/**
+		 * Appairage par l'API REST du site, pour un tableau de bord qui a
+		 * installé l'agent à distance et n'a pas d'accès SSH : il n'y a plus
+		 * personne pour ouvrir wp-admin et recopier un code.
+		 *
+		 * Deux formes de corps, l'une ou l'autre :
+		 *  - { url, code }          → même échange que l'écran de réglages ;
+		 *  - { endpoint, secret }   → équivalent de `wp dash-agent connect`.
+		 * { force: true } autorise le remplacement d'une liaison existante.
+		 *
+		 * Le secret n'est jamais renvoyé, ni journalisé, ni repris dans un
+		 * message d'erreur.
+		 *
+		 * @param WP_REST_Request|null $request Requête.
+		 * @return WP_REST_Response|WP_Error
+		 */
+		public function rest_pair( $request = null ) {
+			$url      = '';
+			$code     = '';
+			$endpoint = '';
+			$secret   = '';
+			$force    = false;
+
+			if ( $request instanceof WP_REST_Request ) {
+				$url      = trim( (string) $request->get_param( 'url' ) );
+				$code     = trim( (string) $request->get_param( 'code' ) );
+				$endpoint = trim( (string) $request->get_param( 'endpoint' ) );
+				$secret   = trim( (string) $request->get_param( 'secret' ) );
+				$force    = (bool) $request->get_param( 'force' );
+			}
+
+			$by_code   = ( '' !== $code );
+			$by_secret = ( '' !== $endpoint || '' !== $secret );
+
+			if ( $by_code && $by_secret ) {
+				return $this->rest_error(
+					'sumotori_dash_ambiguous_body',
+					__( 'Send either a pairing code or an endpoint and its secret, not both.', 'sumotori-dash-agent' ),
+					400
+				);
+			}
+
+			if ( ! $by_code && ! $by_secret ) {
+				return $this->rest_error(
+					'sumotori_dash_empty_body',
+					__( 'Send a pairing code, or an endpoint and its shared secret.', 'sumotori-dash-agent' ),
+					400
+				);
+			}
+
+			if ( $this->is_connected() && ! $force ) {
+				return $this->rest_error(
+					'sumotori_dash_already_paired',
+					__( 'This site is already paired with a dashboard. Send "force": true to replace the existing link.', 'sumotori-dash-agent' ),
+					409
+				);
+			}
+
+			// Aucun chemin d'écriture parallèle : pair() et connect() passent
+			// tous deux par save_config().
+			$result = $by_code ? $this->pair( $url, $code ) : $this->connect( $endpoint, $secret );
+
+			if ( is_wp_error( $result ) ) {
+				return $this->describe_pair_failure( $result );
+			}
+
+			return rest_ensure_response(
+				$this->describe_pairing( __( 'Site paired with the dashboard.', 'sumotori-dash-agent' ) )
+			);
+		}
+
+		/**
+		 * Efface la liaison : équivalent REST du bouton « Disconnect this
+		 * site ». Idempotent, pour qu'un tableau de bord puisse se retirer d'un
+		 * site qu'il ne gère plus sans avoir à savoir s'il y était encore.
+		 *
+		 * @param WP_REST_Request|null $request Requête.
+		 * @return WP_REST_Response|WP_Error
+		 */
+		public function rest_unpair( $request = null ) {
+			unset( $request );
+
+			$was_connected = $this->is_connected();
+			$this->disconnect();
+
+			$message = $was_connected
+				? __( 'Site disconnected: no more data is transmitted.', 'sumotori-dash-agent' )
+				: __( 'This site was not paired: nothing to disconnect.', 'sumotori-dash-agent' );
+
+			return rest_ensure_response( $this->describe_pairing( $message ) );
+		}
+
+		/**
+		 * Décrit l'état de la liaison pour les réponses de /pair. Le secret n'y
+		 * figure jamais.
+		 *
+		 * @param string $message Message lisible.
+		 * @return array
+		 */
+		private function describe_pairing( $message ) {
+			$config    = $this->get_config();
+			$paired_at = absint( $config['paired_at'] );
+
+			return array(
+				'paired'        => (bool) $this->is_connected(),
+				'endpoint'      => esc_url_raw( (string) $config['endpoint'] ),
+				'paired_at'     => ( $paired_at > 0 ) ? gmdate( 'c', $paired_at ) : '',
+				'site_url'      => esc_url_raw( is_multisite() ? network_site_url() : home_url() ),
+				'agent_version' => self::VERSION,
+				'message'       => sanitize_text_field( (string) $message ),
+			);
+		}
+
+		/**
+		 * Traduit un échec d'appairage en erreur REST. Les messages viennent de
+		 * pair() et connect(), qui ne divulguent jamais le secret : un tableau
+		 * de bord injoignable ou illisible vaut 502, tout le reste vaut 400.
+		 *
+		 * @param WP_Error $error Erreur remontée.
+		 * @return WP_Error
+		 */
+		private function describe_pair_failure( $error ) {
+			if ( ! is_wp_error( $error ) ) {
+				return $this->rest_error(
+					'sumotori_dash_pair_failed',
+					__( 'Pairing failed.', 'sumotori-dash-agent' ),
+					400
+				);
+			}
+
+			$upstream = array(
+				'sumotori_dash_http_unavailable',
+				'sumotori_dash_pair_unreachable',
+				'sumotori_dash_pair_bad_response',
+				'sumotori_dash_pair_incomplete',
+			);
+
+			$code   = (string) $error->get_error_code();
+			$status = in_array( $code, $upstream, true ) ? 502 : 400;
+
+			return $this->rest_error( $code, $error->get_error_message(), $status );
 		}
 
 		/**
