@@ -5,9 +5,11 @@ Regroupe : actions wp-cli whitelistées, collecte manuelle, gestion de la liste
 (overrides / serveurs / docroots / moniteurs Kuma), édition en masse (file
 d'attente), volet sécurité (checksums, diff, référence admins), alertes
 Telegram, ingestion d'évènements signés HMAC et timeline par site.
-Toute action wp-cli tourne en su utilisateur du site — sauf sur les serveurs
-déclarés "no_su" (mutualisés), où l'utilisateur SSH est déjà le propriétaire.
-Aucun shell libre exposé.
+Toute action wp-cli tourne sous le compte propriétaire du site. La façon d'y
+passer est le `exec_mode` du serveur (servers.json) : « su » (défaut, exige
+root), « direct » (le compte de connexion possède déjà les fichiers) ou
+« sudo » (sudo -n -u <compte>, autorisé par une règle sudoers, aucun droit
+root). `no_su: true` reste lu et vaut « direct ». Aucun shell libre exposé.
 """
 import json, subprocess, os, re, sys, time, datetime, threading, itertools, hashlib, hmac, base64, secrets, tempfile, http.cookies
 import functools, io, urllib.error, urllib.request, urllib.parse, zipfile
@@ -29,7 +31,9 @@ from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      valid_path_pattern, public_ips, validate_public_url,
                      followed_path, load_followed, set_followed,
                      ensure_followed_migrated,
-                     kuma_conf, kuma_settings_errors, KUMA_LOCAL_HOSTS)
+                     kuma_conf, kuma_settings_errors, KUMA_LOCAL_HOSTS,
+                     EXEC_MODES, DEFAULT_EXEC_MODE, SUDO_DENIED_MARK,
+                     exec_mode, sudo_denied)
 from dashlib import (default_mode as _default_mode, save_json as _save_json,
                      update_json as _update_json)
 
@@ -216,24 +220,82 @@ BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except",
 BULK_EXTRA_ACTIONS = ("rescan", "dash_connect", "dash_disconnect")
 MAX_BODY_BYTES = 1024 * 1024   # plafond du corps d'une requête JSON
 
+# Bloc `asuser` commun aux trois gabarits distants : UNE seule écriture du
+# passage sous le compte du site, pour que les trois modes s'y comportent
+# exactement pareil (le `su` en dur recopié trois fois était la source des
+# oublis). Il s'insère dans une chaîne passée à .format() : accolades doublées.
+REMOTE_ASUSER = r'''# Refus de `sudo -n` : le message brut de sudo ne dit pas quoi faire. C'est
+# l'erreur la plus probable à l'installation d'un serveur en mode sudo.
+sudo_refus() {{
+  printf 'le compte %s n’a pas le droit d’exécuter wp en tant que %s : règle sudoers manquante\n' \
+    "$(id -un 2>/dev/null || echo '?')" "$1"
+}}
+# Exécution côté site, selon le mode d'exécution du serveur :
+#   direct  la commande tourne telle quelle (compte de connexion = compte du site) ;
+#   sudo    sudo -n -u OWN, JAMAIS interactif : sans règle sudoers on échoue
+#           tout de suite, avec un message clair plutôt qu'une attente de mot de passe ;
+#   su      su vers OWN — exige root.
+asuser() {{
+  local out rc
+  case "$MODE" in
+    direct)
+      timeout {timeout} bash -c "$1" 2>&1 ;;
+    sudo)
+      command -v sudo >/dev/null 2>&1 || {{ echo "sudo absent du serveur : mode « sudo » impossible"; return 95; }}
+      out=$(timeout {timeout} sudo -n -u "$OWN" /bin/bash -c "$1" 2>&1); rc=$?
+      if [ $rc -ne 0 ] && printf '%s' "$out" \
+         | grep -qE 'password is required|not allowed to execute|no tty present|not in the sudoers|unknown user'; then
+        sudo_refus "$OWN"; return 95
+      fi
+      printf '%s' "$out"; return $rc ;;
+    *)
+      timeout {timeout} su -s /bin/bash "$OWN" -c "$1" 2>&1 ;;
+  esac
+}}
+'''
+
 REMOTE_TEMPLATE = r'''#!/bin/bash
 D={docroot}
 DOM={domain}
 OWN={owner}
-NOSU={nosu}
+MODE={mode}
 WPBIN=$(command -v wp || true)
 [ -n "$WPBIN" ] || {{ echo "wp-cli absent"; exit 90; }}
 extra=""
-[ "$NOSU" != "1" ] && [ "$OWN" = "root" ] && extra="--allow-root"
+# --allow-root n'a de sens que si wp finit RÉELLEMENT en root : jamais en
+# « direct », où le compte de connexion est celui du site.
+case "$MODE" in su|sudo) [ "$OWN" = "root" ] && extra="--allow-root" ;; esac
 base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache-$OWN WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
-# Exécution côté site : directe quand l'utilisateur SSH possède déjà le site
-# (mutualisé, NOSU=1), sinon bascule vers le propriétaire du docroot via su.
-asuser() {{
-  if [ "$NOSU" = "1" ]; then
-    timeout {timeout} bash -c "$1" 2>&1
-  else
-    timeout {timeout} su -s /bin/bash "$OWN" -c "$1" 2>&1
-  fi
+''' + REMOTE_ASUSER + r'''# Variante BINAIRE d'asuser : stderr n'est pas fusionné dans la sortie. Un
+# avertissement PHP au milieu d'un flux tar ou d'un dump SQL corromprait
+# l'archive — c'est la seule différence.
+asuser_bin() {{
+  case "$MODE" in
+    direct) timeout {timeout} bash -c "$1" ;;
+    sudo)   timeout {timeout} sudo -n -u "$OWN" /bin/bash -c "$1" ;;
+    *)      timeout {timeout} su -s /bin/bash "$OWN" -c "$1" ;;
+  esac
+}}
+# Commande qui ÉCRIT dans les fichiers du site (suppression d'un dossier
+# d'extension avant restauration…). En « su » le script est root et en
+# « direct » il est déjà le compte du site ; en « sudo » il n'a aucun droit sur
+# ces fichiers et doit passer par le compte du site.
+onsite() {{
+  if [ "$MODE" = "sudo" ]; then asuser "$1"; else bash -c "$1"; fi
+}}
+# Archive un dossier du site VERS un fichier du compte de connexion.
+#   $1 = fichier .tgz produit, $2 = arguments passés à tar (déjà quotés).
+# En « sudo », tar tourne sous le compte du site (les fichiers y sont souvent
+# illisibles au compte de connexion) et son flux est recueilli ici : l'archive
+# reste ainsi la propriété du compte de connexion dans les trois modes.
+tar_site() {{
+  if [ "$MODE" = "sudo" ]; then asuser_bin "tar czf - $2" > "$1"
+  else bash -c "tar czf '$1' $2"; fi
+}}
+# Extraction symétrique : $1 = archive, $2 = dossier de destination du site.
+untar_site() {{
+  if [ "$MODE" = "sudo" ]; then asuser_bin "tar xzf - -C '$2'" < "$1"
+  else tar xzf "$1" -C "$2"; fi
 }}
 run() {{
   local out rc
@@ -252,11 +314,11 @@ run() {{
 '''
 
 # Dépôt du mu-plugin de liaison : le contenu voyage dans l'entrée standard de ssh
-# (document ici), puis est écrit sous l'utilisateur du site (su ou direct si no_su).
+# (document ici), puis est écrit sous le compte du site — selon `exec_mode`.
 REMOTE_DEPLOY_TEMPLATE = r'''#!/bin/bash
 D={docroot}
 OWN={owner}
-NOSU={nosu}
+MODE={mode}
 MU="$D/wp-content/mu-plugins"
 F="$MU/{fname}"
 [ -d "$D" ] || {{ echo "docroot introuvable"; exit 98; }}
@@ -266,16 +328,13 @@ cat > "$TMP" <<'{marker}'
 {content}
 {marker}
 [ -s "$TMP" ] || {{ echo "contenu de l'agent vide"; exit 97; }}
-asuser() {{
-  if [ "$NOSU" = "1" ]; then
-    timeout {timeout} bash -c "$1" 2>&1
-  else
-    timeout {timeout} su -s /bin/bash "$OWN" -c "$1" 2>&1
-  fi
-}}
-out=$(asuser "mkdir -p '$MU' && cat > '$F' && chmod 0644 '$F'" < "$TMP"); rc=$?
+''' + REMOTE_ASUSER + r'''out=$(asuser "mkdir -p '$MU' && cat > '$F' && chmod 0644 '$F'" < "$TMP"); rc=$?
 [ $rc -eq 0 ] || {{ printf '%s\n' "$out"; echo "dépôt du mu-plugin impossible"; exit $rc; }}
-if [ "$NOSU" != "1" ]; then
+# Le fichier vient d'être créé PAR le compte du site en « direct » et en
+# « sudo » : rien à rectifier, et le chown y échouerait faute d'être root. En
+# « su » seulement, c'est root qui a ouvert le fichier via su : on rétablit le
+# couple propriétaire:groupe du docroot.
+if [ "$MODE" = "su" ]; then
   GRP=$(stat -c %G "$D" 2>/dev/null || echo "$OWN")
   chown "$OWN":"$GRP" "$F" 2>/dev/null
   chmod 0755 "$MU" 2>/dev/null
@@ -286,16 +345,9 @@ echo "mu-plugin déposé: $F"
 REMOTE_REMOVE_TEMPLATE = r'''#!/bin/bash
 D={docroot}
 OWN={owner}
-NOSU={nosu}
+MODE={mode}
 F="$D/wp-content/mu-plugins/{fname}"
-asuser() {{
-  if [ "$NOSU" = "1" ]; then
-    timeout {timeout} bash -c "$1" 2>&1
-  else
-    timeout {timeout} su -s /bin/bash "$OWN" -c "$1" 2>&1
-  fi
-}}
-[ -f "$F" ] || {{ echo "mu-plugin déjà absent"; exit 0; }}
+''' + REMOTE_ASUSER + r'''[ -f "$F" ] || {{ echo "mu-plugin déjà absent"; exit 0; }}
 out=$(asuser "rm -f '$F'"); rc=$?
 [ $rc -eq 0 ] || {{ printf '%s\n' "$out"; exit $rc; }}
 echo "mu-plugin supprimé"
@@ -700,6 +752,12 @@ def validate_server(obj):
         return False, f"parallel invalide pour « {nom} » (1-16 attendu)"
     if obj.get("priority") is not None and _int_between(obj.get("priority"), -10 ** 6, 10 ** 6) is None:
         return False, f"priority invalide pour « {nom} »"
+    # Valeurs fermées : une faute de frappe (« sudo-u », « SU ») retomberait
+    # silencieusement sur « su », donc sur du root exigé là où on n'en veut plus.
+    mode = obj.get("exec_mode")
+    if mode not in (None, "") and str(mode) not in EXEC_MODES:
+        return False, (f"exec_mode invalide pour « {nom} » : « {str(mode)[:20]} » "
+                       f"({', '.join(EXEC_MODES)} attendus)")
     return True, None
 
 
@@ -724,9 +782,39 @@ def run_wp_remote(srv, site, wp_args, timeout=300):
     body = "\n".join(f"run {p} || exit $?" for p in parts)
     script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
                                     owner=sq(site["owner"] or "root"),
-                                    nosu="1" if srv.get("no_su") else "0",
+                                    mode=exec_mode(srv),
                                     timeout=timeout, body=body)
     return run_remote_script(srv, script, timeout)
+
+
+def exec_mode_probe(srv, mode=None, timeout=45):
+    """Vérifie POUR DE VRAI le mode d'exécution : `wp core version` sur un site.
+
+    Rendu : {checked, ok, output, sudo} — `checked` faux quand aucun site n'est
+    connu sur ce serveur (rien n'a encore été collecté) : on ne prétend alors ni
+    succès ni échec. `sudo` distingue le refus de sudoers d'un échec quelconque,
+    c'est l'erreur attendue à l'installation d'un serveur en mode « sudo ».
+    """
+    mode = mode if mode in EXEC_MODES else exec_mode(srv)
+    fleet = load_json(os.path.join(DATA, "fleet.json"), {"servers": []})
+    fsrv = next((s for s in fleet.get("servers", []) if s.get("name") == srv.get("name")), None)
+    site = next((s for s in (fsrv or {}).get("sites", []) if s.get("path") and s.get("domain")), None)
+    if not site:
+        return {"checked": False, "ok": False, "sudo": False,
+                "output": "aucun site connu sur ce serveur : lancez une collecte "
+                          "pour vérifier le mode d'exécution"}
+    script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
+                                    owner=sq(site.get("owner") or "root"), mode=mode,
+                                    timeout=timeout, body="run core version")
+    try:
+        rc, out = run_remote_script(srv, script, timeout)
+    except subprocess.TimeoutExpired:
+        rc, out = 93, "timeout"
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        rc, out = 94, f"erreur interne: {e}"
+    out = (out or "").strip()
+    return {"checked": True, "ok": rc == 0, "sudo": sudo_denied(out),
+            "output": (out or f"rc {rc}")[-400:], "domain": site["domain"]}
 
 
 def update_policy():
@@ -1261,7 +1349,7 @@ def remote_bash(srv, site, body, timeout=300):
     """Exécute du bash arbitraire côté site (helpers `asuser`/`run` disponibles)."""
     script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
                                     owner=sq(site["owner"] or "root"),
-                                    nosu="1" if srv.get("no_su") else "0",
+                                    mode=exec_mode(srv),
                                     timeout=timeout, body=body)
     return run_remote_script(srv, script, timeout)
 
@@ -2609,12 +2697,16 @@ if [ "$libre" -lt $((besoin * 2 + {SAFE_DISK_MARGIN_MB})) ]; then
 fi
 
 mkdir -p {sq(arc)} && chmod 700 {sq(arc)} || exit 81
-# Le script tourne en root mais `wp` tourne sous l'utilisateur du site :
-# sans ce chown, `wp db export` ne peut pas ecrire dans l'archive.
-[ "$NOSU" = "1" ] || chown "$OWN" {sq(arc)} 2>/dev/null
+# L'archive appartient TOUJOURS au compte de connexion. En « su » seulement, le
+# script est root alors que `wp` tourne sous le compte du site : sans ce chown,
+# `wp db export` ne pourrait pas y écrire. En « direct » c'est déjà le bon
+# compte, et en « sudo » on n'est pas root — le chown y échouerait, d'où les
+# flux tar/dump recueillis ici (tar_site, `wp db export -`) plutôt qu'écrits
+# directement par le compte du site.
+[ "$MODE" = "su" ] && chown "$OWN" {sq(arc)} 2>/dev/null
 for s in "${{SLUGS[@]}}"; do
   if [ -d "$PLUGDIR/$s" ]; then
-    tar czf {sq(arc)}/plugin__"$s".tgz -C "$PLUGDIR" "$s" || exit 82
+    tar_site {sq(arc)}/plugin__"$s".tgz "-C '$PLUGDIR' '$s'" || exit 82
     echo "archivé $s"
   else
     echo "absent $s"
@@ -2622,7 +2714,7 @@ for s in "${{SLUGS[@]}}"; do
 done
 for t in "${{THEMES[@]}}"; do
   if [ -d "$THEMEDIR/$t" ]; then
-    tar czf {sq(arc)}/theme__"$t".tgz -C "$THEMEDIR" "$t" || exit 82
+    tar_site {sq(arc)}/theme__"$t".tgz "-C '$THEMEDIR' '$t'" || exit 82
     echo "archivé $t"
   else
     echo "absent $t"
@@ -2631,7 +2723,7 @@ done
 if [ "{core_arch}" = "oui" ]; then
   # Le cœur = tout le docroot SAUF wp-content (extensions, thèmes, médias) :
   # on ne duplique ni les médias ni les extensions déjà archivées à part.
-  tar czf {sq(arc)}/core__.tgz -C "$D" --exclude=./wp-content . || exit 84
+  tar_site {sq(arc)}/core__.tgz "-C '$D' --exclude=./wp-content ." || exit 84
   echo "archivé (coeur)"
 fi
 # Dump de la base : symétrique de l'archive des fichiers. Indispensable pour le
@@ -2640,10 +2732,19 @@ fi
 # Yoast, ACF, Gravity Forms…). --skip-plugins : le dump doit aboutir même quand
 # une extension est en erreur fatale.
 dump_ok=0
-if asuser "$base wp db export {sq(arc)}/db__.sql --skip-plugins --skip-themes --add-drop-table $extra --no-color" >/dev/null 2>&1 \
-   && [ -s {sq(arc)}/db__.sql ]; then
+if [ "$MODE" = "sudo" ]; then
+  # L'archive appartient au compte de connexion, `wp` tourne sous le compte du
+  # site : il ne peut pas y écrire. Le dump sort donc par la sortie standard
+  # (« - »), recueillie ici. asuser_bin : stderr séparé, un avertissement PHP au
+  # milieu du SQL rendrait le dump inutilisable.
+  asuser_bin "$base wp db export - --skip-plugins --skip-themes --add-drop-table $extra --no-color" \
+    > {sq(arc)}/db__.sql 2>/dev/null
+  [ -s {sq(arc)}/db__.sql ] && dump_ok=1
+elif asuser "$base wp db export {sq(arc)}/db__.sql --skip-plugins --skip-themes --add-drop-table $extra --no-color" >/dev/null 2>&1 \
+     && [ -s {sq(arc)}/db__.sql ]; then
   dump_ok=1
-else
+fi
+if [ "$dump_ok" = "0" ]; then
   # Repli : sur un serveur ou wp-cli 2.12 cherche `mariadb-dump` alors que seul
   # `mysqldump` existe (cas de plesk-mutu), l'export echoue. On appelle donc
   # mysqldump directement, avec les identifiants lus dans wp-config.
@@ -2804,16 +2905,16 @@ THEMEDIR={sq(themedir or "$D/wp-content/themes")}
 for f in {sq(arc)}/plugin__*.tgz; do
   [ -f "$f" ] || continue
   s=$(basename "$f" .tgz); s=${{s#plugin__}}
-  rm -rf "$PLUGDIR/$s" && tar xzf "$f" -C "$PLUGDIR" && echo "restauré $s" || echo "ECHEC $s"
+  onsite "rm -rf '$PLUGDIR/$s'" && untar_site "$f" "$PLUGDIR" && echo "restauré $s" || echo "ECHEC $s"
 done
 for f in {sq(arc)}/theme__*.tgz; do
   [ -f "$f" ] || continue
   s=$(basename "$f" .tgz); s=${{s#theme__}}
-  rm -rf "$THEMEDIR/$s" && tar xzf "$f" -C "$THEMEDIR" && echo "restauré $s" || echo "ECHEC $s"
+  onsite "rm -rf '$THEMEDIR/$s'" && untar_site "$f" "$THEMEDIR" && echo "restauré $s" || echo "ECHEC $s"
 done
 if [ -f {sq(arc)}/core__.tgz ]; then
   # On remet les fichiers du cœur par-dessus (wp-content n'a jamais été touché).
-  tar xzf {sq(arc)}/core__.tgz -C "$D" && echo "restauré (coeur)" || echo "ECHEC (coeur)"
+  untar_site {sq(arc)}/core__.tgz "$D" && echo "restauré (coeur)" || echo "ECHEC (coeur)"
 fi
 '''
             rcr, outr = remote_bash(srv, site, rb, timeout=900)
@@ -2999,7 +3100,7 @@ DIR=$(asuser "$base wp {cmd} path $extra --no-color" 2>/dev/null | tail -1)
 [ -d "$DIR" ] || DIR="$D/wp-content/{defaut}"
 F={sq(str(arc_dir))}/{prefixe}{sq(str(slug))}.tgz
 [ -f "$F" ] || {{ echo "ARCHIVE_ABSENTE"; exit 2; }}
-rm -rf "$DIR"/{sq(str(slug))} && tar xzf "$F" -C "$DIR" && echo "RESTAURE"
+onsite "rm -rf '$DIR'/{sq(str(slug))}" && untar_site "$F" "$DIR" && echo "RESTAURE"
 '''
         rc, out = remote_bash(srv, site, body, timeout=600)
         if "ARCHIVE_ABSENTE" in (out or ""):
@@ -4864,7 +4965,7 @@ def deploy_agent(srv, site, content, timeout=60):
     if re.search(rf"^{marker}$", content, re.M):  # collision impossible en pratique
         return 96, "marqueur de transfert en collision avec le contenu"
     script = REMOTE_DEPLOY_TEMPLATE.format(docroot=sq(site["path"]), owner=sq(site["owner"] or "root"),
-                                           nosu="1" if srv.get("no_su") else "0",
+                                           mode=exec_mode(srv),
                                            fname=AGENT_NAME, marker=marker,
                                            content=content.rstrip("\n"), timeout=timeout)
     return run_remote_script(srv, script, timeout)
@@ -4873,7 +4974,7 @@ def deploy_agent(srv, site, content, timeout=60):
 def remove_agent(srv, site, timeout=60):
     """Supprime le mu-plugin de liaison du site."""
     script = REMOTE_REMOVE_TEMPLATE.format(docroot=sq(site["path"]), owner=sq(site["owner"] or "root"),
-                                           nosu="1" if srv.get("no_su") else "0",
+                                           mode=exec_mode(srv),
                                            fname=AGENT_NAME, timeout=timeout)
     return run_remote_script(srv, script, timeout)
 
@@ -7215,7 +7316,23 @@ class Handler(BaseHTTPRequestHandler):
                 rc, out = 91, str(e)
             except (OSError, subprocess.SubprocessError) as e:
                 rc, out = 94, f"erreur interne: {e}"
-            return self._send(200, {"ok": rc == 0, "output": out[:400]})
+            if rc != 0:
+                return self._send(200, {"ok": False, "output": out[:400]})
+            # La session SSH passe : reste à savoir si le MODE d'exécution
+            # choisi fonctionne (root pour « su », règle sudoers pour « sudo »).
+            # Le mode testé est celui du formulaire, pas forcément l'enregistré.
+            demande = str(body.get("exec_mode") or "")
+            srv_test = dict(srv)
+            if demande in EXEC_MODES:
+                srv_test["exec_mode"] = demande
+                srv_test.pop("no_su", None)
+            if key:
+                srv_test["key"] = key
+            m = exec_mode_probe(srv_test)
+            return self._send(200, {"ok": True, "output": out[:400],
+                                    "mode": exec_mode(srv_test), "mode_checked": m["checked"],
+                                    "mode_ok": m["ok"], "mode_sudo": m["sudo"],
+                                    "mode_output": m["output"]})
 
         if p == "/api/mgmt/sshkeys/assign":
             server, key = str(body.get("server", "")), str(body.get("key", ""))

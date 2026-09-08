@@ -482,7 +482,9 @@ class TestMajSureThemes(unittest.TestCase):
                          [x["label"] + "/" + x["detail"][:60] for x in st["steps"]])
         archive = next(b for b in self.bash if "BESOIN_MO" in b)
         self.assertIn("THEMES=('divi')", archive)
-        self.assertIn('tar czf', archive)
+        # `tar_site` et non `tar` en dur : le tar tourne sous le compte du
+        # site quand le mode d'exécution est « sudo » (cf. REMOTE_TEMPLATE).
+        self.assertIn('tar_site', archive)
         self.assertIn('theme__"$t".tgz', archive)
         self.assertIn("wp theme path", archive)
         self.assertIn("run theme update 'divi'", self.bash)
@@ -528,7 +530,7 @@ class TestMajSureThemes(unittest.TestCase):
         self.assertEqual(st["verdict"], "annulé (retour arrière)")
         rb = next(b for b in self.bash if "theme__*.tgz" in b)
         self.assertIn("THEMEDIR=", rb)
-        self.assertIn('tar xzf "$f" -C "$THEMEDIR"', rb)
+        self.assertIn('untar_site "$f" "$THEMEDIR"', rb)
         self.assertIn("1 élément(s)", self.etape("Retour arrière")["detail"])
 
 

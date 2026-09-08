@@ -146,8 +146,42 @@ const RE_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 const RE_CHEMIN = /^\/[A-Za-z0-9_./*@-]+$/;
 const SSH_DIR = '/root/.ssh';
 
+/* Modes d'exécution de wp-cli sur un serveur (servers.json → exec_mode).
+   L'ordre est celui du formulaire : du plus exigeant au moins exigeant.
+   `no_su: true` est l'ANCIEN nom du mode « direct » : il continue d'être lu,
+   et le formulaire l'enregistre désormais sous `exec_mode`. */
+const MODES_EXEC = [
+  {
+    v: 'su', titre: 'su (compte root)',
+    phrase: 'Le dashboard se connecte en root et bascule vers le compte du site par « su ». '
+      + 'Exige un accès root sur le serveur. C’est le comportement historique.',
+  },
+  {
+    v: 'direct', titre: 'direct (aucun changement de compte)',
+    phrase: 'La commande tourne telle quelle sous le compte de connexion, qui possède déjà '
+      + 'les fichiers du site. N’exige rien de particulier. C’est l’ancienne case '
+      + '« wp-cli sans su » des hébergements mutualisés.',
+  },
+  {
+    v: 'sudo', titre: 'sudo (compte dédié, sans droits)',
+    phrase: 'Le compte de connexion devient le compte du site par « sudo -n -u ». Exige une '
+      + 'règle sudoers sur le serveur, mais aucun droit root : une compromission du '
+      + 'dashboard donne accès aux sites, pas au système.',
+  },
+];
+const MODES_VALEURS = MODES_EXEC.map(m => m.v);
+const MODE_DEFAUT = 'su';
+
+/** Mode d'exécution d'un serveur, avec la migration en lecture de `no_su`. */
+function modeExec(o) {
+  const m = String((o && o.exec_mode) || '').trim().toLowerCase();
+  if (MODES_VALEURS.includes(m)) return m;
+  return o && o.no_su ? 'direct' : MODE_DEFAUT;
+}
+
 /** Champs du formulaire, dans l'ordre d'affichage. */
-const CHAMPS = ['name', 'host', 'port', 'user', 'key', 'patterns', 'parallel', 'priority'];
+const CHAMPS = ['name', 'host', 'port', 'user', 'key', 'patterns', 'parallel', 'priority',
+  'exec_mode'];
 
 function entier(v) {
   const s = String(v ?? '').trim();
@@ -192,6 +226,10 @@ function validerServeur(o) {
   if (o.priority !== null && o.priority !== undefined && o.priority !== '') {
     if (entier(o.priority) === null) e.priority = 'Priorité attendue : un entier (3 = production, 1 = ancien).';
   }
+  if (o.exec_mode !== null && o.exec_mode !== undefined && o.exec_mode !== ''
+      && !MODES_VALEURS.includes(String(o.exec_mode))) {
+    e.exec_mode = 'Mode d’exécution attendu : ' + MODES_VALEURS.join(', ') + '.';
+  }
   return e;
 }
 
@@ -208,6 +246,7 @@ const MAP_ERR = [
   [/^chemin invalide/i, 'patterns'],
   [/^parallel invalide/i, 'parallel'],
   [/^priority invalide/i, 'priority'],
+  [/^exec_mode invalide/i, 'exec_mode'],
 ];
 
 /** erreurBackend(message, nomEdite) → {champ, message} ou {champ:null, message}. */
@@ -248,6 +287,41 @@ function champ({ id, label, aide, type = 'text', value = '', options = null, pla
     wrap,
     ctrl,
     valeur: () => (rows ? ctrl.value : String(ctrl.value ?? '').trim()),
+    erreur(msg) {
+      wrap.classList.toggle('error', !!msg);
+      err.textContent = msg || '';
+    },
+  };
+}
+
+/* ---- champ « mode d'exécution » ---------------------------------------------
+   Trois boutons radio plutôt qu'une liste déroulante : chaque mode a une
+   contrainte d'installation distincte (root, règle sudoers, rien), et c'est
+   cette phrase-là qui décide du choix. Dans une liste déroulante, elle ne
+   serait lisible qu'une fois l'option déjà choisie. */
+function champMode(valeur) {
+  const nom = 'srvf-mode';
+  const radios = MODES_EXEC.map((m, i) => {
+    const r = h('input', { type: 'radio', name: nom, id: nom + '-' + m.v, value: m.v });
+    r.checked = (m.v === valeur) || (i === 0 && !MODES_VALEURS.includes(valeur));
+    return { m, r };
+  });
+  const err = h('div', { class: 'ferr', id: nom + '-e', role: 'alert' });
+  const wrap = h('div', { class: 'field' },
+    h('label', { for: nom + '-' + MODES_EXEC[0].v, text: 'Exécution de wp-cli' }),
+    h('div', { class: 'choix', role: 'radiogroup', 'aria-label': 'Mode d’exécution de wp-cli' },
+      radios.map(({ m, r }) => h('label', {}, r,
+        h('b', { text: m.titre }), h('span', { text: m.phrase })))),
+    h('div', { class: 'aide', id: nom + '-a' },
+      h('b', { text: 'Ce que chaque mode exige : ' }),
+      '« su » un accès root sur le serveur ; « sudo » une règle sudoers autorisant le compte '
+      + 'de connexion à exécuter wp et php en tant que compte du site ; « direct » rien du tout. '
+      + '« Tester la connexion » vérifie le mode réellement, sur un site du serveur.'),
+    err);
+  return {
+    wrap,
+    ctrl: radios[0].r,
+    valeur: () => (radios.find(x => x.r.checked) || radios[0]).m.v,
     erreur(msg) {
       wrap.classList.toggle('error', !!msg);
       err.textContent = msg || '';
@@ -322,7 +396,8 @@ function renderServeurs() {
 
     return h('tr', {},
       h('td', {}, h('b', { text: s.name || '—' }),
-        s.no_su ? h('div', { class: 'sub', text: 'sans su (mutualisé)' }) : null),
+        modeExec(s) === MODE_DEFAUT ? null
+          : h('div', { class: 'sub', text: 'wp-cli en « ' + modeExec(s) + ' »' })),
       h('td', { class: 'muted', text: s.host || '' }),
       h('td', { class: 'num', text: String(s.port ?? '') }),
       h('td', { class: 'muted', text: s.user || 'root' }),
@@ -396,9 +471,8 @@ function ouvrirFormServeur(srv) {
       aide: 'Départage un domaine trouvé sur deux serveurs. Vide = 2 ; 3 sur la production, 1 sur l’ancien.',
     }),
   };
-  const nosu = h('input', { type: 'checkbox', id: 'srvf-nosu' });
-  nosu.checked = !!o.no_su;
-  FORM = { champs, nosu, origine: srv };
+  champs.exec_mode = champMode(modeExec(o));
+  FORM = { champs, origine: srv };
 
   document.getElementById('srvm-title').textContent = neuf ? 'Ajouter un serveur' : 'Modifier « ' + o.name + ' »';
   mount('srvm-intro', neuf
@@ -410,16 +484,15 @@ function ouvrirFormServeur(srv) {
     champs.key.wrap,
     champs.patterns.wrap,
     h('div', { class: 'fieldrow' }, champs.parallel.wrap, champs.priority.wrap),
-    h('div', { class: 'field' },
-      h('label', { class: 'fld' }, nosu, ' wp-cli sans « su » (hébergement mutualisé)'),
-      h('div', { class: 'aide', text: 'À cocher quand l’utilisateur SSH est déjà le propriétaire des fichiers.' })));
+    champs.exec_mode.wrap);
   mount('srvm-err');
 
   const test = document.getElementById('srvm-test');
   test.disabled = neuf;
   test.title = neuf
     ? 'Enregistrez le serveur d’abord : le test se fait sur un serveur déclaré.'
-    : 'Ouvre une session SSH avec la clé choisie et affiche la réponse.';
+    : 'Ouvre une session SSH avec la clé choisie, puis lance « wp core version » '
+      + 'dans le mode d’exécution sélectionné.';
   document.getElementById('srvm-ok').textContent = neuf ? 'Ajouter' : 'Enregistrer';
   document.getElementById('srvmodal').classList.add('open');
   champs[neuf ? 'name' : 'host'].ctrl.focus();
@@ -447,7 +520,11 @@ function serveurDuForm() {
   if (par) o.parallel = entier(par) ?? par; else delete o.parallel;
   const pri = c.priority.valeur();
   if (pri) o.priority = entier(pri) ?? pri; else delete o.priority;
-  if (FORM.nosu.checked) o.no_su = true; else delete o.no_su;
+  // Migration à l'écriture : le formulaire n'enregistre plus que `exec_mode`.
+  // `no_su` reste LU (modeExec) pour les fichiers en place, mais dès qu'un
+  // serveur repasse par ici, les deux clés ne peuvent plus se contredire.
+  o.exec_mode = c.exec_mode.valeur();
+  delete o.no_su;
   return o;
 }
 
@@ -522,18 +599,38 @@ async function supprimerServeur(s) {
   remplirSelectDocroot();
 }
 
+/* Deux verdicts distincts, parce que ce sont deux pannes distinctes : la
+   session SSH (clé, hôte, port) et le MODE d'exécution (root absent, règle
+   sudoers manquante). Un « échec sudo » annoncé comme « injoignable » enverrait
+   chercher le problème du mauvais côté. */
 async function testerServeur() {
   if (!FORM || !FORM.origine) return;
   const b = document.getElementById('srvm-test');
   const cle = FORM.champs.key.valeur();
+  const mode = FORM.champs.exec_mode.valeur();
   mount('srvm-err', h('span', { class: 'muted small', text: 'connexion…' }));
   setBusy(b, 'test…');
   let j;
-  try { j = await api('/api/mgmt/sshkeys/test', { server: FORM.origine.name, key: cle || undefined }) || {}; }
-  catch (e) { j = { ok: false, output: String(e) }; }
+  try {
+    j = await api('/api/mgmt/sshkeys/test',
+      { server: FORM.origine.name, key: cle || undefined, exec_mode: mode }) || {};
+  } catch (e) { j = { ok: false, output: String(e) }; }
   setIdle(b, 'Tester la connexion');
-  mount('srvm-err', chipEl(j.ok ? 'joignable' : 'échec', j.ok ? 'ok' : 'err'), ' ',
-    h('span', { class: 'muted small', text: String(j.output || j.error || '').slice(-200) }));
+
+  const sortie = String(j.output || j.error || '').slice(-200);
+  if (!j.ok) {
+    mount('srvm-err', chipEl('SSH : échec', 'err'), ' ',
+      h('span', { class: 'muted small', text: sortie }));
+    return;
+  }
+  const detail = String(j.mode_output || '').slice(-200);
+  let puce;
+  if (!j.mode_checked) puce = chipEl('mode non vérifié', 'mut');
+  else if (j.mode_ok) puce = chipEl('mode « ' + (j.mode || mode) + ' » : ok', 'ok');
+  else if (j.mode_sudo) puce = chipEl('sudo refusé', 'err');
+  else puce = chipEl('mode « ' + (j.mode || mode) + ' » : échec', 'err');
+  mount('srvm-err', chipEl('SSH : joignable', 'ok'), ' ', puce, ' ',
+    h('span', { class: 'muted small', text: detail || sortie }));
 }
 
 /* ---- repli : l'éditeur JSON ------------------------------------------------- */

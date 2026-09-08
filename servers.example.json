@@ -6,6 +6,15 @@
     "patterns": ["/var/www/*/htdocs", "/var/www/html"]
   },
   {
+    "name": "vps-sans-root",
+    "host": "203.0.113.11",
+    "port": 22,
+    "user": "wpdash",
+    "exec_mode": "sudo",
+    "key": "/root/.ssh/dash_wpdash",
+    "patterns": ["/var/www/*/htdocs"]
+  },
+  {
     "name": "plesk",
     "host": "203.0.113.20",
     "port": 10022,
@@ -24,7 +33,7 @@
     "host": "ssh.mon-hebergeur.example",
     "port": 22,
     "user": "mon-login-ssh",
-    "no_su": true,
+    "exec_mode": "direct",
     "key": "/root/.ssh/id_hebergeur",
     "patterns": ["/home/clients/*/sites/*"]
   }

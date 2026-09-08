@@ -19,6 +19,12 @@ remontent. Chaque journal est plafonné à 20 000 lignes après filtrage ; le
 dépassement est remonté dans `truncated` de data/php_errors.json, pour que
 l'interface puisse indiquer une analyse partielle.
 
+Sans root (serveurs en exec_mode « sudo » ou « direct »), ces journaux sont en
+<compte>:adm 640 : ils EXISTENT mais ne s'ouvrent pas. Le cas est traité comme
+non bloquant mais explicite — les journaux illisibles sont nommés dans
+`servers_failed`, jamais escamotés en analyse vide. Le remède est d'ajouter le
+compte utilisé au groupe `adm`.
+
 Usage :
     python3 phperrors.py            # collecte + agrégation → data/php_errors.json
     python3 phperrors.py --print    # idem avec un résumé lisible
@@ -221,9 +227,22 @@ fenetre() {{ if [ "$TSOK" = "1" ]; then grep -f "$TMP/ts"; else cat; fi; }}
 # lesquels ne portent pas « PHP message ».
 pertinent() {{ grep -E 'PHP message|said into stderr: "(Stack trace:|#[0-9]+ |thrown in )'; }}
 
+# Journaux VUS et journaux réellement LISIBLES. Sans root, les journaux nginx
+# sont en www-data:adm 640 : le fichier existe (donc `[ -f ]` passe) mais `tail`
+# ne rend rien. Sans ce comptage, l'analyse revenait vide EN SILENCE, ce qui se
+# lit « aucune erreur PHP » — exactement le contraire de ce qu'on sait.
+VUS=0
+LUS=0
+
 # $1 = fichier, $2 = commande de filtrage supplémentaire, $3 = préfixe de sortie
 extraire() {{
   local f="$1" pfx="$3"
+  VUS=$((VUS+1))
+  if [ ! -r "$f" ]; then
+    printf '@@ILLISIBLE@@%s\\n' "$f"
+    return 0
+  fi
+  LUS=$((LUS+1))
   tail -n "$RAW" "$f" 2>/dev/null | pertinent | eval "$2" | fenetre > "$TMP/cur"
   local n
   n=$(wc -l < "$TMP/cur" 2>/dev/null || echo 0)
@@ -253,6 +272,7 @@ while IFS= read -r d; do
     extraire "$f" cat "@@NGINX@@$d\\t"
   done
 done < "$TMP/doms"
+echo "@@JOURNAUX@@$VUS|$LUS"
 echo "@@FIN@@"
 """
 
@@ -272,6 +292,34 @@ def _run_remote(server, script, timeout=300):
     if supporte:
         return A.run_remote_script(server, script, timeout=timeout, max_out=None)
     return A.run_remote_script(server, script, timeout=timeout)
+
+
+# Le dashboard peut désormais tourner SANS ROOT sur un serveur (exec_mode
+# « sudo » ou « direct ») : les journaux y sont en <compte>:adm 640, donc
+# illisibles au compte utilisé tant qu'il n'est pas dans le groupe `adm`.
+# L'échec doit rester NON BLOQUANT (les journaux lisibles sont analysés) mais
+# EXPLICITE : une analyse vide en silence se lit « aucune erreur PHP ».
+ILLISIBLE_MSG = ("journal non lisible par le compte utilisé "
+                 "(ajouter le compte au groupe adm)")
+MAX_ILLISIBLES_CITES = 3   # au-delà, on compte plutôt que d'aligner des chemins
+
+
+def message_illisibles(fichiers, lus=None):
+    """→ message pour `servers_failed`, ou None si tous les journaux étaient lisibles.
+
+    `lus` = nombre de journaux réellement ouverts. À zéro, l'analyse du serveur
+    est entièrement vide : on le dit, plutôt que de laisser lire « aucune
+    erreur PHP ».
+    """
+    if not fichiers:
+        return None
+    cites = ", ".join(fichiers[:MAX_ILLISIBLES_CITES])
+    reste = len(fichiers) - MAX_ILLISIBLES_CITES
+    if reste > 0:
+        cites += f" (+{reste})"
+    tete = (f"{ILLISIBLE_MSG} — AUCUN journal lisible, analyse vide"
+            if lus == 0 else f"{ILLISIBLE_MSG} — {len(fichiers)} journal(aux) ignoré(s)")
+    return f"{tete} : {cites}"
 
 
 def remote_scan(server, domains, hours):
@@ -297,6 +345,8 @@ def remote_scan(server, domains, hours):
     connus = set(domains)
     tronques = []
     lignes = []
+    illisibles = []
+    lus = None
     # Occurrence en attente de sa pile d'appels, PAR DOMAINE : sur un Plesk
     # mutualisé, un seul journal porte les lignes de tous les sites, et deux
     # exceptions simultanées s'y entrelacent.
@@ -305,6 +355,13 @@ def remote_scan(server, domains, hours):
         if brut.startswith("@@TRONQUE@@"):
             fichier, _, raison = brut[11:].partition("|")
             tronques.append({"file": fichier, "reason": raison})
+            continue
+        if brut.startswith("@@ILLISIBLE@@"):
+            illisibles.append(brut[13:])
+            continue
+        if brut.startswith("@@JOURNAUX@@"):
+            _, _, compte = brut[12:].partition("|")
+            lus = int(compte) if compte.isdigit() else None
             continue
         if brut.startswith("@@PLESK@@"):
             m = RE_PLESK.match(brut[9:])
@@ -372,7 +429,7 @@ def remote_scan(server, domains, hours):
             attente[dom] = entree
         else:
             attente.pop(dom, None)
-    return lignes, None, tronques
+    return lignes, message_illisibles(illisibles, lus), tronques
 
 
 def agrege(lignes):

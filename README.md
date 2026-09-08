@@ -630,7 +630,8 @@ Copie de `servers.example.json`. Un objet par serveur SSH :
 | `port` | oui | Port SSH. |
 | `patterns` | oui | Globs des docroots à scanner (ex. `/var/www/vhosts/*/httpdocs`). Le collecteur découvre les WordPress via `wp-load.php`. |
 | `user` | non | Utilisateur SSH (défaut `root`). |
-| `no_su` | non | `true` sur un mutualisé : wp-cli tourne directement sous l'utilisateur SSH, sans `su`. |
+| `exec_mode` | non | Comment wp-cli passe sous le compte du site : `su` (défaut), `direct` ou `sudo`. Voir **Modes d'exécution** ci-dessous. |
+| `no_su` | non | **Ancien nom du mode `direct`.** Toujours lu : `no_su: true` vaut `exec_mode: "direct"`. Le formulaire n'écrit plus que `exec_mode`. |
 | `key` | non | Clé SSH spécifique à ce serveur (sinon `config.json > ssh_key`). |
 | `parallel` | non | Sites collectés simultanément sur ce serveur (défaut 4). |
 | `priority` | non | Entier, défaut **2**. Départage les doublons : quand le même domaine est trouvé sur deux serveurs (migration en cours, ancienne copie…), le moniteur Kuma est rattaché au serveur de plus forte priorité. Mettez `3` sur le serveur de production et `1` sur l'ancien. |
@@ -642,6 +643,71 @@ transmis au shell distant.
 
 Les sites sans aucun SSH ne vont pas ici : ils s'ajoutent depuis l'interface
 (**Gestion → Ajouter un site**) et sont interrogés via l'agent.
+
+#### Modes d'exécution (`exec_mode`)
+
+wp-cli ne doit jamais tourner sous un autre compte que celui qui possède les
+fichiers du site. Trois façons d'y arriver, une par serveur :
+
+| Mode | Commande distante | Ce qu'il exige |
+|---|---|---|
+| `su` (défaut) | `su -s /bin/bash "$OWN" -c …` | **Un accès root** sur le serveur. |
+| `direct` | la commande telle quelle | **Rien** : le compte de connexion possède déjà les fichiers (mutualisé, VPS mono-site où l'on se connecte avec le compte du site). |
+| `sudo` | `sudo -n -u "$OWN" …` | **Une règle sudoers**, pas de root. |
+
+Le mode `sudo` est la voie pour **se passer de root** sur les VPS mono-site
+(WordOps), où les fichiers appartiennent à `www-data`. Ouvrir SSH à `www-data`
+serait un recul — une compromission PHP donnerait un accès SSH persistant. On
+crée donc un compte système dédié, sans droits, autorisé à devenir le compte du
+site :
+
+```bash
+# sur le serveur du site
+sudo adduser --system --shell /bin/bash --group --home /home/wpdash wpdash
+sudo mkdir -p /home/wpdash/.ssh && sudo chmod 700 /home/wpdash/.ssh
+# y déposer la clé publique dédiée du dashboard (jamais la clé root générale)
+sudo nano /home/wpdash/.ssh/authorized_keys
+sudo chmod 600 /home/wpdash/.ssh/authorized_keys
+sudo chown -R wpdash:wpdash /home/wpdash/.ssh
+
+# la règle sudoers, limitée aux binaires utiles et à UN seul compte cible
+sudo visudo -f /etc/sudoers.d/wpdash
+```
+
+```
+# /etc/sudoers.d/wpdash — validé par « visudo -c »
+Defaults:wpdash   !requiretty
+wpdash ALL=(www-data) NOPASSWD: /usr/local/bin/wp, /usr/bin/php, /bin/bash
+```
+
+`/bin/bash` figure dans la règle parce que les commandes distantes enchaînent
+`cd <docroot> && env … wp …` : c'est un shell qui les exécute. Le gain de
+sécurité tient de toute façon au **compte cible** (`(www-data)`, jamais root),
+pas à la liste des binaires — le dashboard lance par ailleurs des commandes
+`wp eval` et `wp db`, qui donnent déjà tout ce que `www-data` peut faire. Sur un
+serveur où l'on ne veut vraiment que `wp` et `php`, retirez `/bin/bash` : la
+collecte et les actions wp-cli continueront de fonctionner, mais **la mise à
+jour sûre, le retour arrière et la liaison de l'agent échoueront** (ils
+archivent, extraient et déposent des fichiers).
+
+`sudo -n` n'est **jamais interactif** : sans règle sudoers, la commande échoue
+tout de suite avec « *le compte X n'a pas le droit d'exécuter wp en tant que
+Y : règle sudoers manquante* » plutôt que d'attendre un mot de passe. C'est
+l'erreur la plus probable à l'installation, et **Gestion → Serveurs → Tester la
+connexion** la distingue explicitement d'un échec SSH.
+
+**Erreurs PHP sans root.** `phperrors.py` lit `/var/log/nginx/<domaine>.error.log`
+(WordOps) et `/var/log/plesk-php*-fpm/error.log`. Ces fichiers sont en
+`<compte>:adm` mode 640 : sans root, il faut ajouter le compte au groupe `adm`.
+
+```bash
+sudo usermod -aG adm wpdash
+```
+
+Sans cela l'analyse n'est pas silencieusement vide : les journaux illisibles
+sont **nommés** dans `servers_failed` de `data/php_errors.json`, avec le remède
+(« journal non lisible par le compte utilisé (ajouter le compte au groupe
+adm) »), et les journaux lisibles sont analysés normalement.
 
 ---
 
@@ -890,7 +956,7 @@ branchement.
 
 | Section | Ce qu'on y fait |
 |---|---|
-| **Serveurs** (`#gestion/serveurs`) | Le tableau de `servers.json` : hôte, port, utilisateur, clé, priorité, parallélisme, motifs de docroot, nombre d'installs relevées et état du dernier relevé. **Ajouter** / **Modifier** ouvrent un **formulaire**, un champ par attribut, avec son aide. La validation reproduit `validate_server()` à la saisie, et un refus du serveur (HTTP 400) s'affiche **sur le champ concerné** — le message backend nomme le serveur et l'attribut. **Tester la connexion** ouvre une session SSH avec la clé choisie (sur un serveur déjà enregistré). **éditer le JSON** reste disponible en repli, pour une clé que le formulaire ne connaît pas. |
+| **Serveurs** (`#gestion/serveurs`) | Le tableau de `servers.json` : hôte, port, utilisateur, clé, priorité, parallélisme, motifs de docroot, nombre d'installs relevées et état du dernier relevé. **Ajouter** / **Modifier** ouvrent un **formulaire**, un champ par attribut, avec son aide. La validation reproduit `validate_server()` à la saisie, et un refus du serveur (HTTP 400) s'affiche **sur le champ concerné** — le message backend nomme le serveur et l'attribut. Le **mode d'exécution de wp-cli** (`su` / `direct` / `sudo`) se choisit ici, chaque option portant sa phrase et sa contrainte d'installation. **Tester la connexion** ouvre une session SSH avec la clé choisie, **puis lance `wp core version` dans le mode sélectionné** sur un site du serveur : un refus de sudoers est annoncé comme tel (« sudo refusé »), pas comme un serveur injoignable. **éditer le JSON** reste disponible en repli, pour une clé que le formulaire ne connaît pas. |
 | **Installs découverts** (`#gestion/installs`) | Tous les WordPress trouvés en SSH, filtrables par serveur, par visibilité et par « sans moniteur ». Par ligne : moniteur Kuma (ou **créer moniteur**, avec choix du client et du type de contrôle), **visibilité** (auto / toujours afficher / masquer), **alias** de moniteur, **Dashboard** (connecter ou dissocier l'agent), **WordPress** (identifiants d'application : Autoriser / Révoquer). |
 | **Sites sans SSH** (`#gestion/mode-rest`) | L'assistant **« Ajouter un site par URL »** en trois étapes : analyse de l'URL (`discover`), choix de la méthode (SSH ou appairage), puis ZIP de l'agent + code d'appairage à usage unique avec son compte à rebours et l'adresse du dashboard à recopier. En dessous, la liste des sites pilotés par l'agent, avec leurs identifiants WordPress et le retrait (qui propose de supprimer, ou non, le compte dédié créé sur le site). |
 | **Moniteurs Kuma** (`#gestion/moniteurs`) | Pause, réactivation, suppression. Chaque modification redémarre Kuma (~15 s sans monitoring). Sans Uptime Kuma, la section annonce « Uptime Kuma n'est pas configuré » : les routes `/api/mgmt/kuma/*` répondent **200** avec `ok:false` et ce message, jamais une erreur. |

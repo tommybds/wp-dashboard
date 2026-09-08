@@ -179,7 +179,7 @@ input.inp:disabled,select:disabled,input.inp[readonly]{
   background:var(--surface-2);color:var(--muted);cursor:default}
 input.inp:disabled:hover,select:disabled:hover,input.inp[readonly]:hover{border-color:var(--line)}
 input[type=search]{width:230px;max-width:100%}
-input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+input[type=checkbox],input[type=radio]{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
 textarea.code{width:100%;min-height:150px;font-family:var(--f-mono);font-size:var(--t-12);
   padding:var(--s-8);background:var(--page)}
 label{cursor:default}
@@ -204,6 +204,18 @@ label{cursor:default}
 .field .ferr:empty{display:none}
 .field.error>input,.field.error>select,.field.error>textarea{border-color:var(--err)}
 .field.error>label{color:var(--err)}
+/* Choix exclusif DOCUMENTÉ (mode d'exécution de wp-cli) : le bouton radio à
+   gauche, le titre puis sa phrase d'explication en bloc à droite. Une liste
+   déroulante ne montrerait la phrase qu'une fois l'option déjà choisie, alors
+   que c'est justement elle qui décide du choix. */
+.choix{display:flex;flex-direction:column;gap:var(--s-8);margin:3px 0}
+.choix>label{display:grid;grid-template-columns:auto 1fr;gap:1px var(--s-8);
+  align-items:start;font-size:var(--t-13);cursor:pointer}
+.choix>label>input{grid-row:1;margin:3px 0 0}
+.choix>label>b{grid-column:2}
+.choix>label>span{grid-column:2;font-size:var(--t-12);color:var(--muted);
+  line-height:1.5;max-width:78ch}
+
 /* Deux champs par ligne tant que la place le permet, un seul ensuite. */
 .fieldrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 var(--s-16)}
 

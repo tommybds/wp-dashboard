@@ -51,6 +51,52 @@ def valid_path_pattern(value):
 
 
 # ---------------------------------------------------------------------------
+#  Mode d'exécution de wp-cli sur un serveur (servers.json → "exec_mode")
+# ---------------------------------------------------------------------------
+# Trois façons d'exécuter wp-cli sous le compte propriétaire du site :
+#
+#   « su »     su -s /bin/bash "$OWN" -c …   — EXIGE root sur le serveur.
+#              C'est l'historique, et le défaut : aucun fichier existant ne
+#              change de sens.
+#   « direct » la commande tourne telle quelle sous le compte de CONNEXION,
+#              déjà propriétaire des fichiers (mutualisé).
+#   « sudo »   sudo -n -u "$OWN" …           — le compte de connexion n'a aucun
+#              droit particulier, une règle sudoers l'autorise à devenir le
+#              compte du site. C'est la voie pour SE PASSER DE ROOT.
+#
+# `no_su: true` (l'ancien nom du mode « direct ») reste lu : migration EN
+# LECTURE, les servers.json en place fonctionnent tels quels.
+EXEC_MODES = ("su", "direct", "sudo")
+DEFAULT_EXEC_MODE = "su"
+# Fin du message que le script distant produit quand `sudo -n` est refusé. Le
+# shell l'écrit en toutes lettres (c'est l'erreur la plus probable à
+# l'installation) ; côté Python on le reconnaît à cette sous-chaîne stable.
+SUDO_DENIED_MARK = "règle sudoers manquante"
+
+
+def exec_mode(server):
+    """Mode d'exécution wp-cli d'un serveur → « su », « direct » ou « sudo ».
+
+    `exec_mode` prime ; à défaut `no_su: true` vaut « direct » ; sinon « su ».
+    Une valeur inconnue retombe sur le défaut : cette fonction ne lève jamais,
+    c'est `validate_server` qui refuse à l'écriture.
+    """
+    if not isinstance(server, dict):
+        return DEFAULT_EXEC_MODE
+    mode = str(server.get("exec_mode") or "").strip().lower()
+    if mode in EXEC_MODES:
+        return mode
+    if server.get("no_su"):
+        return "direct"
+    return DEFAULT_EXEC_MODE
+
+
+def sudo_denied(text):
+    """Vrai si une sortie distante porte le refus de `sudo -n` (règle sudoers absente)."""
+    return SUDO_DENIED_MARK in (text or "")
+
+
+# ---------------------------------------------------------------------------
 #  Lecture / écriture JSON
 # ---------------------------------------------------------------------------
 def load_json(path, default):

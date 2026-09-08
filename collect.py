@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Collecteur parc WordPress — inventaire wp-cli en SSH.
 
-Écrit data/fleet.json (+ copie public/). Sécurité : wp-cli en su utilisateur du
-site (jamais root sauf docroot root), --skip-plugins --skip-themes en lecture.
+Écrit data/fleet.json (+ copie public/). Sécurité : wp-cli sous le compte
+propriétaire du site (jamais root sauf docroot root), --skip-plugins
+--skip-themes en lecture.
 
-Serveurs sans root (mutualisés type Infomaniak) : entrée servers.json avec
-"user": "<login>" et "no_su": true — wp-cli tourne alors directement sous
-l'utilisateur SSH (pas de su, pas de --allow-root).
+Le passage sous le compte du site dépend de `exec_mode` (servers.json) :
+« su » (défaut, exige root), « direct » (la commande tourne telle quelle sous
+le compte de connexion, déjà propriétaire des fichiers — mutualisés type
+Infomaniak) ou « sudo » (sudo -n -u <compte>, autorisé par une règle sudoers :
+aucun droit root nécessaire). `no_su: true` reste lu et vaut « direct ».
 
 Sites sans aucun accès SSH : listés dans data/rest_sites.json et interrogés via
 l'agent (mu-plugin) sur /wp-json/sumotori-dash/v1/inventory, requête signée HMAC.
@@ -24,7 +27,8 @@ from urllib.parse import urlparse
 from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      PATH_PATTERN_RE as PATTERN_RE, load_json, norm_domain,
                      site_key, sq, valid_path_pattern as valid_pattern,
-                     validate_public_url, load_followed, ensure_followed_migrated)
+                     validate_public_url, load_followed, ensure_followed_migrated,
+                     exec_mode)
 from dashlib import save_json as _save_json
 from dashlib import kuma_conf
 from dashboard_config import CONFIG, kuma_disponible
@@ -48,7 +52,9 @@ REST_TIMEOUT = 20
 MAX_SUBSITES = 50  # plafond de sous-sites collectés par réseau multisite
 
 REMOTE_SCRIPT = r'''#!/bin/bash
-limit="${1:-0}"; match="${2:-}"; NOSU="${3:-0}"; PAR="${4:-4}"; shift 4 || true
+limit="${1:-0}"; match="${2:-}"; MODE="${3:-su}"; PAR="${4:-4}"; shift 4 || true
+# Compatibilité : une version antérieure passait « 1 »/« 0 » (NOSU) à cette place.
+case "$MODE" in 1) MODE=direct ;; 0|"") MODE=su ;; esac
 WPBIN=$(command -v wp || true)
 count=0
 # `wait -n` (attente d'UN job) n'existe qu'à partir de bash 4.3 ; sinon on vide le lot.
@@ -59,14 +65,36 @@ if [ -n "${BASH_VERSINFO[0]:-}" ]; then
   fi
 fi
 
-# Exécute une commande shell côté site : directement quand l'utilisateur SSH est
-# déjà le propriétaire du site (mutualisé, NOSU=1), sinon via su vers OWN.
+# Refus de `sudo -n` : le message brut de sudo (« a password is required »,
+# « not allowed to execute ») ne dit pas quoi faire. C'est l'erreur la plus
+# probable à l'installation d'un serveur en mode sudo, elle mérite sa phrase.
+sudo_refus() {
+  printf 'le compte %s n’a pas le droit d’exécuter wp en tant que %s : règle sudoers manquante\n' \
+    "$(id -un 2>/dev/null || echo '?')" "$1"
+}
+
+# Exécute une commande shell côté site, selon le mode d'exécution du serveur :
+#   direct  la commande tourne telle quelle (le compte de connexion possède
+#           déjà les fichiers) ;
+#   sudo    sudo -n -u OWN (jamais interactif : sans règle sudoers, on échoue
+#           tout de suite avec un message clair au lieu d'attendre un mot de passe) ;
+#   su      su vers OWN — exige root.
 asuser() {
-  if [ "$NOSU" = "1" ]; then
-    timeout 75 bash -c "$1" 2>&1
-  else
-    timeout 75 su -s /bin/bash "$OWN" -c "$1" 2>&1
-  fi
+  local out rc
+  case "$MODE" in
+    direct)
+      timeout 75 bash -c "$1" 2>&1 ;;
+    sudo)
+      command -v sudo >/dev/null 2>&1 || { echo "sudo absent du serveur : mode « sudo » impossible"; return 95; }
+      out=$(timeout 75 sudo -n -u "$OWN" /bin/bash -c "$1" 2>&1); rc=$?
+      if [ $rc -ne 0 ] && printf '%s' "$out" \
+         | grep -qE 'password is required|not allowed to execute|no tty present|not in the sudoers|unknown user'; then
+        sudo_refus "$OWN"; return 95
+      fi
+      printf '%s' "$out"; return $rc ;;
+    *)
+      timeout 75 su -s /bin/bash "$OWN" -c "$1" 2>&1 ;;
+  esac
 }
 
 # Répertoire de cache wp-cli du compte $1.
@@ -77,7 +105,7 @@ asuser() {
 # (nom imprévisible) pour la durée de l'exécution.
 wp_cache_dir() {
   local own="$1" home=""
-  if [ "$NOSU" = "1" ]; then
+  if [ "$MODE" = "direct" ]; then
     home="${HOME:-}"
   else
     home=$(getent passwd "$own" 2>/dev/null | cut -d: -f6)
@@ -98,7 +126,9 @@ wp_call() {
   local skips="$1"; shift
   local args="$*"
   local extra=""
-  [ "$NOSU" != "1" ] && [ "$OWN" = "root" ] && extra="--allow-root"
+  # --allow-root n'a de sens que si wp finit RÉELLEMENT en root : jamais en
+  # « direct » (le compte de connexion n'est pas root sur un mutualisé).
+  case "$MODE" in su|sudo) [ "$OWN" = "root" ] && extra="--allow-root" ;; esac
   local base="cd '$D' && env WP_CLI_CACHE_DIR='$CACHE' WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
   local out rc
   out=$(asuser "$base wp $args $extra $skips --no-color"); rc=$?
@@ -242,11 +272,11 @@ def ssh_user(server):
 
 def ssh_collect(server, extra, limit=0, match=""):
     pats = " ".join(sq(p) for p in effective_patterns(server, extra))
-    nosu = "1" if server.get("no_su") else "0"  # mutualisé : pas de su, pas de --allow-root
+    mode = exec_mode(server)  # su (défaut, root) | direct (mutualisé) | sudo (sans root)
     # Sites collectés en parallèle sur le serveur distant. Volontairement modéré :
     # ces machines hébergent de la production, on ne veut pas saturer leur CPU.
     par = to_int(server.get("parallel"), DEFAULT_PARALLEL) or DEFAULT_PARALLEL
-    remote_cmd = f"bash -s -- {sq(to_int(limit, 0) or 0)} {sq(match)} {sq(nosu)} {sq(par)} {pats}"
+    remote_cmd = f"bash -s -- {sq(to_int(limit, 0) or 0)} {sq(match)} {sq(mode)} {sq(par)} {pats}"
     key = server.get("key") or KEY  # clé dédiée au serveur si définie, sinon la clé par défaut
     cmd = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
            "-o", "ConnectTimeout=12", "-o", "StrictHostKeyChecking=accept-new",
