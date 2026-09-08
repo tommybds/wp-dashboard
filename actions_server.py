@@ -33,7 +33,8 @@ from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      ensure_followed_migrated,
                      kuma_conf, kuma_settings_errors, KUMA_LOCAL_HOSTS,
                      EXEC_MODES, DEFAULT_EXEC_MODE, SUDO_DENIED_MARK,
-                     exec_mode, sudo_denied)
+                     exec_mode, sudo_denied,
+                     scan_fingerprint, scan_baseline_from)
 from dashlib import (default_mode as _default_mode, save_json as _save_json,
                      update_json as _update_json)
 
@@ -165,6 +166,11 @@ CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 ACKS_PATH = os.path.join(DATA, "incident_acks.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 PHPERR_PATH = os.path.join(DATA, "php_errors.json")
+# Chasse aux portes dérobées (scan.py) : ce qui a été trouvé, et la référence
+# de ce qui était déjà là. Sans la seconde, la première est illisible — un site
+# sain sort ~190 signalements parfaitement légitimes.
+SCAN_PATH = os.path.join(DATA, "scan_found.json")
+SCAN_BASELINE_PATH = os.path.join(DATA, "scan_baseline.json")
 # Index local des archives de restauration : interroger le serveur en SSH à
 # chaque ouverture de tiroir coûtait 2 secondes. On tient donc la liste ici,
 # alimentée au moment où la MAJ sûre crée l'archive.
@@ -3128,6 +3134,48 @@ VULNS = {"running": False, "message": "", "finished": None}
 PHPERR = {"running": False, "message": "", "finished": None}
 
 
+# ---------- chasse aux portes dérobées (scan.py, lecture seule sur les sites) ----------
+SCAN = {"running": False, "message": "", "finished": None}
+
+
+def scan_worker(only=None):
+    """Lance scan.py hors requête HTTP : un parc complet demande des minutes,
+    pas les quelques secondes d'un aller-retour de navigateur."""
+    SCAN.update({"running": True, "message": "scan en cours…", "finished": None})
+    try:
+        cmd = [sys.executable, os.path.join(BASE, "scan.py")]
+        if only:
+            cmd += ["--only", str(only)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=2400, cwd=BASE)
+        out = (r.stdout or "").strip().splitlines()
+        SCAN["message"] = out[-1] if out else ((r.stderr or "").strip()[-200:] or "terminé")
+    except subprocess.TimeoutExpired:
+        SCAN["message"] = "délai dépassé (le scan a été interrompu)"
+    except Exception as e:
+        SCAN["message"] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        SCAN["running"] = False
+        SCAN["finished"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def scan_set_baseline(domains=None):
+    """Accepte comme référence ce que le dernier scan a trouvé.
+
+    `domains` = None accepte tout le parc ; une liste n'accepte que ces sites.
+    La référence des autres est CONSERVÉE : accepter un site ne doit pas
+    effacer le travail fait sur les cinquante-sept autres.
+    """
+    found = load_json(SCAN_PATH, {})
+    nouveaux = scan_baseline_from(found, sites=None if domains is None else set(domains))
+    ancien = load_json(SCAN_BASELINE_PATH, {})
+    fusion = dict(ancien.get("sites") or {})
+    fusion.update(nouveaux)
+    save_json(SCAN_BASELINE_PATH,
+              {"generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+               "sites": fusion}, mode=0o600)
+    return {"sites": len(nouveaux), "findings": sum(len(v) for v in nouveaux.values())}
+
+
 def phperr_worker(hours=24):
     PHPERR.update({"running": True, "message": "analyse en cours…", "finished": None})
     try:
@@ -4489,6 +4537,46 @@ def inc_checksums(index, now):
     return out
 
 
+def inc_scan(index, now):
+    """Fichier suspect APPARU depuis la référence (scan.py).
+
+    Deux garde-fous, sans lesquels cette source noierait la file :
+      * un site SANS référence enregistrée est ignoré — au premier scan tout est
+        « nouveau », y compris Wordfence et WooCommerce (même règle que
+        `inc_admins`, pour la même raison) ;
+      * seules les gravités critique et élevée entrent ; le reste se lit dans
+        l'écran Sécurité, qui est fait pour ça.
+    """
+    found = incident_json(SCAN_PATH, {})
+    out = []
+    for s in (found.get("sites") or []):
+        dom = s.get("domain")
+        if not dom or dom not in index or not s.get("has_baseline"):
+            continue
+        server, _site = index[dom]
+        graves = [f for f in (s.get("findings") or [])
+                  if f.get("new") and f.get("sev") in ("critical", "high")]
+        if not graves:
+            continue
+        regles = found.get("rules") or {}
+        pire = "critical" if any(f["sev"] == "critical" for f in graves) else "high"
+        titres = sorted({(regles.get(f["rule"]) or {}).get("label") or f["rule"]
+                         for f in graves})
+        out.append(make_incident(
+            "scan_suspect", pire, dom,
+            f"{len(graves)} fichier(s) suspects apparus sur {dom}",
+            "; ".join(titres)[:200],
+            site=dom, server=server, since=parse_ts(found.get("generated_at")), now=now,
+            link={"tab": "securite", "sub": "fichiers-suspects"},
+            # Les chemins vont dans `extra` : c'est ce qu'on veut lire pour
+            # décider, et ça ne tient pas sur une ligne de liste.
+            extra={"files": [{"path": f.get("short") or f.get("path"),
+                              "rule": f.get("rule"), "sev": f.get("sev"),
+                              "line": f.get("line"), "excerpt": f.get("excerpt"),
+                              "mtime": f.get("mtime")} for f in graves[:20]]}))
+    return out
+
+
 def inc_admins(sites, now):
     """Administrateur absent de la référence admins_baseline.json.
 
@@ -4694,6 +4782,7 @@ def incidents_snapshot(now=None):
     source("php_errors", lambda: inc_php_fatal(index, now))
     source("vulns", lambda: inc_vulns(index, rules, now))
     source("checksums", lambda: inc_checksums(index, now))
+    source("scan", lambda: inc_scan(index, now))
     source("admins", lambda: inc_admins(sites, now))
     source("fleet_servers", lambda: inc_server_stale(servers, now))
     source("updraft", lambda: inc_backup(sites, rules, now))
@@ -6761,6 +6850,13 @@ class Handler(BaseHTTPRequestHandler):
             res["running"] = PHPERR["running"]
             res["run_message"] = PHPERR["message"]
             self._send(200, res)
+        elif p == "/api/sec/scan":
+            res = load_json(SCAN_PATH, {"sites": [], "total": 0, "new_total": 0,
+                                        "counts": {}, "rules": {}})
+            res["running"] = SCAN["running"]
+            res["run_message"] = SCAN["message"]
+            res["baseline_at"] = load_json(SCAN_BASELINE_PATH, {}).get("generated_at", "")
+            self._send(200, res)
         elif p == "/api/sec/vulns":
             # Résultat du dernier croisement local (vulns.py --scan) + état d'avancement.
             res = load_json(VULNS_FOUND_PATH, {"sites": [], "totals": {},
@@ -7441,6 +7537,30 @@ class Handler(BaseHTTPRequestHandler):
                 heures = 24
             threading.Thread(target=phperr_worker, args=(heures,), daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
+
+        if p == "/api/sec/scan/run":
+            if SCAN["running"]:
+                return self._send(409, {"error": "scan déjà en cours"})
+            only = str(body.get("server", "") or "")
+            if only and not SERVER_RE.match(only):
+                return self._send(400, {"error": "serveur invalide"})
+            threading.Thread(target=scan_worker, args=(only or None,), daemon=True).start()
+            return self._send(200, {"ok": True, "running": True})
+
+        if p == "/api/sec/scan/baseline":
+            # `domain` absent = tout le parc. La référence n'est jamais posée
+            # par le scan lui-même : c'est un geste, et il est journalisé.
+            dom = body.get("domain")
+            if dom is not None and not SLUG_RE.match(str(dom)):
+                return self._send(400, {"error": "domaine invalide"})
+            res = scan_set_baseline(None if dom is None else [str(dom)])
+            append_log({"ts": _now_s(), "source": "securite", "server": "-",
+                        "domain": str(dom or "(parc)"), "action": "scan_baseline",
+                        "arg": None, "rc": 0, "duration_s": 0,
+                        "output_tail": f"référence du scan acceptée : "
+                                       f"{res['findings']} signalement(s) sur "
+                                       f"{res['sites']} site(s)"})
+            return self._send(200, dict(ok=True, **res))
 
         if p == "/api/sec/vulns/run":
             # Rafraîchit la base publique puis recroise, en tâche de fond :

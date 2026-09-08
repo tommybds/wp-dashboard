@@ -72,6 +72,7 @@ const ANCRES = {
     'php-obsolete': 'sec-php', php: 'sec-php',
     certificats: 'sec-certs', certs: 'sec-certs',
     'integrite-core': 'sec-checksums', checksums: 'sec-checksums',
+    'fichiers-suspects': 'sec-scan', scan: 'sec-scan',
     'recherche-plugin': 'sec-recherche',
   },
   changements: {

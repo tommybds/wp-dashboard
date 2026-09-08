@@ -39,6 +39,7 @@ const KINDS = {
   backup_late: 'sauvegarde en retard',
   cert_expiring: 'certificat',
   php_eol: 'PHP en fin de support',
+  scan_suspect: 'fichier suspect',
 };
 
 export const kindLabel = k => KINDS[k] || String(k || 'incident');
@@ -91,6 +92,13 @@ function queFaire(kind, d) {
       + "ligne, puis cherchez pourquoi la planification n'a pas tourné : wp-cron affamé, "
       + "destination distante pleine ou refusée, ou sémaphore UpdraftPlus resté en place "
       + "après un échec — dans ce dernier cas rien ne démarre plus, et sans message.",
+    scan_suspect: "Un ou plusieurs fichiers APPARUS depuis la référence répondent à un "
+      + "motif de porte dérobée. Ne les supprimez pas d'abord : regardez la date de "
+      + "modification et le contenu cité ci-dessus, puis comparez avec ce qui s'est passé "
+      + "ce jour-là (mise à jour d'extension, import, dépôt de fichier). Si c'est "
+      + "légitime, acceptez-le dans la référence depuis Sécurité pour que l'alerte cesse ; "
+      + "sinon, sortez le fichier du docroot avant d'effacer quoi que ce soit — c'est la "
+      + "seule copie que vous aurez pour comprendre par où c'est entré.",
     cert_expiring: "Le certificat arrive à échéance. Un renouvellement automatique "
       + "échoue presque toujours pour une raison simple : redirection qui casse la "
       + "validation, DNS changé, tâche planifiée arrêtée. Renouvelez à la main si "
@@ -144,6 +152,8 @@ const EXTRA_LIB = {
   msg: 'message du moniteur', error: 'erreur', last_attempt: 'dernière tentative',
   version: 'version', sites: 'sites', files: 'fichiers',
   login: 'compte', email: 'courriel', registered: 'inscrit le',
+  chemin_complet: 'chemin complet', modifie_le: 'modifié le', taille: 'taille',
+  proprietaire: 'propriétaire', extrait: 'extrait',
 };
 
 /* Ces valeurs-là sont des horodatages : les rendre telles quelles afficherait
@@ -156,7 +166,13 @@ function extraEl(extra) {
     const v = extra[k];
     if (v === null || v === undefined || v === '') continue;
     if (Array.isArray(v) && !v.length) continue;
-    const txt = Array.isArray(v) ? v.join(', ')
+    // `files` arrive tantôt en liste de chemins (checksums), tantôt en liste
+    // d'objets (scan structurel : chemin + règle + ligne). Sans ce cas, la
+    // seconde forme s'affichait « [object Object] ».
+    const txt = Array.isArray(v)
+      ? v.map(x => (x && typeof x === 'object'
+        ? String(x.path || '') + (x.line ? ':' + x.line : '')
+        : String(x))).join(', ')
       : (EXTRA_DATES.has(k) ? absTime(v) : String(v));
     lignes.push(h('div', { class: 'incp-x' },
       h('span', { class: 'incp-k', text: lib }), h('span', { text: txt })));
@@ -451,6 +467,41 @@ export function incidentEl(inc, {
   // mais pas le trait rouge — sinon la section entière crie comme la file.
   const ton = inc.bucket === 'plan' ? 'plan' : (inc.severity === 'critical' ? 'err' : 'warn');
   return depliable('inc ' + ton, resume, corps, inc.title || kindLabel(inc.kind));
+}
+
+/**
+ * Un fichier signalé par le scan structurel, dépliable — même panneau que les
+ * incidents et les erreurs PHP.
+ *
+ * `regle` vient du serveur (scan_found.json → `rules`) et porte le POURQUOI :
+ * sans lui, « chr_chain sur mpdf.php » ne se décide pas. La date de dernière
+ * modification est mise en avant parce que c'est souvent elle qui tranche — un
+ * fichier de plugin touché hors mise à jour n'a pas d'explication innocente.
+ */
+export function fichierSuspectEl(f, regle, chips) {
+  const r = regle || {};
+  const sev = String(f.sev || r.sev || '');
+  const quand = f.mtime ? new Date(Number(f.mtime) * 1000).toISOString().slice(0, 16).replace('T', ' ') : '';
+  const corps = panneau({
+    kind: 'scan_suspect', message: r.why || r.label || String(f.rule || ''),
+    file: String(f.short || f.path || ''), line: f.line || 0,
+    count: 0, first: '', last: '',
+    extra: {
+      chemin_complet: f.path && f.path !== f.short ? f.path : '',
+      modifie_le: quand, taille: f.size ? f.size + ' octets' : '',
+      proprietaire: f.owner || '', extrait: f.excerpt || '',
+    },
+  });
+  const resume = [
+    h('div', { class: 'inc-m' },
+      h('div', { class: 'inc-t' }, chips,
+        h('span', { class: 'inc-h', text: r.label || String(f.rule || 'signalement') })),
+      h('div', { class: 'muted small inc-d' },
+        h('code', { text: String(f.short || f.path || '') + (f.line ? ':' + f.line : '') }),
+        quand ? ' · modifié le ' + quand : '')),
+  ];
+  return depliable('inc ' + (sev === 'critical' ? 'err' : sev === 'low' ? 'plan' : 'warn'),
+                   resume, corps, r.label || 'fichier suspect');
 }
 
 /**

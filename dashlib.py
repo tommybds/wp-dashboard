@@ -19,6 +19,8 @@ main sur ses propres chemins.
 """
 import ipaddress
 import json
+import datetime
+import hashlib
 import os
 import re
 import socket
@@ -552,4 +554,47 @@ def kuma_conf(data_dir=None, config=None, base=None, overrides=None):
     if out["slug"] and url.endswith("/"):
         url += out["slug"]
     out["status_url"] = url
+    return out
+
+
+# ---------------------------------------------------------------------------
+#  Référence du scan de fichiers (scan.py et le serveur d'actions la partagent)
+#
+#  Un scan structurel sans référence est inexploitable : la première passe sur
+#  un site sain a sorti 186 signalements, tous légitimes (Wordfence pose bien un
+#  auto_prepend_file, WooCommerce filtre bien `all_plugins`, un plugin de
+#  connexion appelle bien wp_set_auth_cookie). Ce qui a du sens n'est donc pas
+#  la liste, c'est ce qui S'Y AJOUTE. Même idée que la référence des comptes
+#  administrateurs, et même conséquence : un site sans référence enregistrée
+#  n'émet aucun incident, sinon la file d'attente serait noyée dès le premier
+#  scan.
+# ---------------------------------------------------------------------------
+def scan_fingerprint(domain, rule, path):
+    """Empreinte stable d'un signalement.
+
+    Volontairement SANS le numéro de ligne : un fichier légitime qui se décale
+    d'une ligne à la mise à jour redeviendrait « nouveau » à chaque fois, et la
+    référence ne tiendrait pas une semaine.
+    """
+    brut = "|".join((str(domain or ""), str(rule or ""), str(path or "")))
+    return hashlib.sha1(brut.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def scan_baseline_from(found, when=None, sites=None):
+    """Résultat de scan → référence {domaine: {empreinte: {rule, path, first_seen}}}.
+
+    `sites` restreint la mise à jour à certains domaines : accepter la référence
+    d'un site ne doit pas accepter celle des cinquante-sept autres.
+    """
+    when = when or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    out = {}
+    for s in (found.get("sites") or []):
+        dom = s.get("domain")
+        if not dom or (sites is not None and dom not in sites):
+            continue
+        connus = {}
+        for f in (s.get("findings") or []):
+            fp = f.get("fp") or scan_fingerprint(dom, f.get("rule"), f.get("path"))
+            connus[fp] = {"rule": f.get("rule"), "path": f.get("path"), "first_seen": when}
+        out[dom] = connus
     return out

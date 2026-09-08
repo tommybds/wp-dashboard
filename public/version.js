@@ -2,4 +2,4 @@
    à la table d'imports et aux feuilles de style : nginx peut alors mettre
    en cache css/, lib/, components/, screens/ pendant un an, index.html
    restant en no-store. */
-export const V = "2026-09-08-1736";
+export const V = "2026-09-08-1943";

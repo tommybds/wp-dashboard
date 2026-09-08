@@ -11,6 +11,7 @@
      5. PHP obsolète (regroupé par version)
      6. Certificats SSL
      7. Intégrité du cœur (checksums)
+     7 bis. Fichiers suspects (scan structurel)
      8. Recherche transversale d'extension
 
    Les anciens fragments continuent de fonctionner : #securite/vulnerabilites
@@ -34,7 +35,7 @@ import { setBusy, setIdle } from '../components/button.js';
 import { demarrerJob } from '../components/job.js';
 import { majCompteursServeur } from '../components/shell.js';
 import { chip, chipEl } from '../components/chip.js';
-import { erreurPhpEl } from '../components/incident.js';
+import { erreurPhpEl, fichierSuspectEl } from '../components/incident.js';
 
 /* Extensions régulièrement exploitées en incident. */
 const RISKY = ['wp-file-manager', 'file-manager-advanced', 'filester', 'duplicator',
@@ -115,6 +116,7 @@ function monterSec() {
     sectionPhp(),
     sectionCerts(),
     sectionChecksums(),
+    sectionScan(),
     sectionRecherche());
   majSommaire();
 }
@@ -130,6 +132,7 @@ const ANCRES = [
   ['sec-php', 'php-obsolete', 'PHP obsolète'],
   ['sec-certs', 'certificats', 'Certificats'],
   ['sec-checksums', 'integrite-core', 'Checksums'],
+  ['sec-scan', 'fichiers-suspects', 'Fichiers suspects'],
   ['sec-recherche', 'recherche-plugin', 'Recherche d’extension'],
 ];
 
@@ -153,6 +156,8 @@ function compteursSommaire() {
     'sec-php': [nPhp, nPhp ? 'warn' : 'ok'],
     'sec-certs': [certs.length, certs.some(c => Number(c.days) < 7) ? 'err' : certs.length ? 'warn' : 'ok'],
     'sec-checksums': [nCk, nCk ? 'err' : nCkVus ? 'ok' : 'mut'],
+    'sec-scan': [SCAN.new_total || 0, (SCAN.counts && SCAN.counts.critical) ? 'err'
+      : SCAN.new_total ? 'warn' : SCAN.generated_at ? 'ok' : 'mut'],
   };
 }
 
@@ -801,6 +806,191 @@ async function lancerPhe(b) {
 }
 
 /* ============================================================================
+   7 bis. Fichiers suspects — scan structurel des serveurs
+   ==========================================================================
+   Ce que cette section montre n'est PAS « des fichiers dangereux » mais « ce
+   qui est apparu depuis la référence ». La nuance fait tout : sur un site sain,
+   le scan trouve ~190 motifs parfaitement légitimes (Wordfence pose bien un
+   auto_prepend_file, WooCommerce filtre bien all_plugins, un plugin de connexion
+   appelle bien wp_set_auth_cookie). Une liste brute serait donc illisible et,
+   pire, rassurante à tort le jour où une ligne s'y ajoute.
+
+   D'où deux états, et ils se disent :
+     * site SANS référence → rien n'est une alerte, tout est à examiner une fois,
+       puis à accepter ;
+     * site AVEC référence → seul le nouveau compte, et il remonte dans la file
+       « à traiter » à partir de la gravité élevée. */
+let SCAN = { sites: [], rules: {}, counts: {}, new_total: 0 };
+
+function sectionScan() {
+  const run = h('button', { type: 'button', class: 'btn sm', id: 'scan-run' },
+    iconEl('refresh-cw'), 'Relancer le scan');
+  run.onclick = () => lancerScan(run);
+  const ref = h('button', { type: 'button', class: 'btn sm', id: 'scan-ref' },
+    iconEl('check'), 'Tout accepter comme référence');
+  ref.onclick = () => accepterReference(null, ref);
+  const q = h('input', {
+    type: 'search', id: 'scan-q', class: 'w-md',
+    placeholder: 'Filtrer un site, un chemin, une règle…', 'aria-label': 'Filtrer les fichiers suspects',
+  });
+  q.oninput = debounce(renderScan, 200);
+  const quoi = h('select', { id: 'scan-quoi', 'aria-label': 'Ce qui est affiché' },
+    h('option', { value: 'new', text: 'Nouveaux depuis la référence' }),
+    h('option', { value: 'all', text: 'Tout ce qui est trouvé' }));
+  quoi.onchange = renderScan;
+  return sectionEl('sec-scan', 'Fichiers suspects',
+    [h('span', { class: 'small', id: 'scan-sum' }), h('span', { class: 'spacer' }), ref, run],
+    h('p', { class: 'hint' }, 'Recherche de ', h('b', { text: 'structures' }),
+      ' de porte dérobée sur les serveurs — pas de signatures : c\'est ce qui avait tout '
+      + 'trouvé lors du balayage du 22 août. Le scan regarde aussi à côté du docroot, '
+      + 'là où un kit peut vivre sans être visible depuis WordPress. Lecture seule.'),
+    h('div', { class: 'filters' }, q, quoi,
+      h('span', { class: 'spacer' }), h('span', { class: 'muted small', id: 'scan-count' })),
+    h('div', { class: 'small mt2 scroll-lg', id: 'scan-body' },
+      h('span', { class: 'muted', text: 'chargement…' })));
+}
+
+/* Un plafond atteint ou un dossier illisible change le sens de « rien trouvé » :
+   il faut le dire, sinon l'absence de résultat rassure à tort. */
+function scanPartielle() {
+  const tr = SCAN.truncated && typeof SCAN.truncated === 'object' ? SCAN.truncated : {};
+  const ill = SCAN.unreadable && typeof SCAN.unreadable === 'object' ? SCAN.unreadable : {};
+  const ko = SCAN.servers_failed && typeof SCAN.servers_failed === 'object' ? SCAN.servers_failed : {};
+  const ul = h('ul', {});
+  let n = 0;
+  Object.keys(ko).forEach(k => { n++; ul.append(h('li', {}, h('b', { text: k }), ' — ' + String(ko[k]))); });
+  Object.keys(tr).forEach(k => (tr[k] || []).forEach(m => {
+    n++; ul.append(h('li', {}, h('b', { text: k }), ' — ' + String(m)));
+  }));
+  Object.keys(ill).forEach(k => (ill[k] || []).forEach(m => {
+    n++; ul.append(h('li', {}, h('b', { text: k }), ' — dossier illisible : ', h('code', { text: String(m) })));
+  }));
+  if (!n) return null;
+  return h('div', { class: 'warnbox small mt2' },
+    iconEl('triangle-alert'), ' ', h('b', { text: 'Scan partiel' }),
+    ' — des fichiers n\'ont pas été examinés. Ce qui manque ici ne veut pas dire '
+    + 'qu\'il n\'y a rien.', ul);
+}
+
+function renderScan() {
+  const body = document.getElementById('scan-body'), cnt = document.getElementById('scan-count');
+  if (!body) return;
+  if (SCAN.running) {
+    mount(body, chipEl('scan en cours…', 'mut'), ' ',
+      h('span', { class: 'muted small', text: SCAN.run_message || '' }));
+    cnt.textContent = '';
+    return;
+  }
+  const partielle = scanPartielle();
+  const sites = SCAN.sites || [];
+  if (!sites.length) {
+    mount(body, SCAN.generated_at
+      ? chipEl('aucun fichier suspect sur le parc', 'ok')
+      : h('span', { class: 'muted', text: 'Scan jamais lancé — cliquez sur « Relancer le scan ».' }),
+      partielle);
+    cnt.textContent = '';
+    return;
+  }
+  const q = (document.getElementById('scan-q').value || '').toLowerCase().trim();
+  const tout = document.getElementById('scan-quoi').value === 'all';
+  let n = 0;
+  const blocs = [];
+  sites.forEach(s => {
+    let f = (s.findings || []).filter(x => tout || x.new);
+    if (q) {
+      f = f.filter(x => ((s.domain || '') + ' ' + (x.short || x.path || '') + ' ' + x.rule
+        + ' ' + ((SCAN.rules[x.rule] || {}).label || '')).toLowerCase().includes(q));
+    }
+    if (!f.length) return;
+    n += f.length;
+    const liste = h('div', { class: 'inclist' });
+    f.forEach(x => liste.append(fichierSuspectEl(x, SCAN.rules[x.rule], [
+      sevChip(x.sev),
+      x.new ? chipEl('nouveau', 'warn') : chipEl('connu', 'mut')])));
+    // Accepter site par site : c'est le geste normal, parce qu'on regarde un
+    // site à la fois. Le bouton d'en-tête accepte le parc entier, et le dit.
+    const acc = h('button', { type: 'button', class: 'btn sm' }, iconEl('check'), 'Accepter ce site');
+    acc.onclick = () => accepterReference(s.domain, acc);
+    blocs.push(h('div', { class: 'phe-group' },
+      h('div', { class: 'phe-h' }, lienSite(s.domain || '(hors site)'),
+        h('span', { class: 'muted small', text: ' ' + pluriel(Number(s.new) || 0, 'nouveau', 'nouveaux')
+          + ' sur ' + s.total }),
+        s.has_baseline ? null : chipEl('sans référence', 'mut'),
+        s.hidden ? chipEl('+' + s.hidden + ' non affichés', 'mut') : null,
+        h('span', { class: 'spacer' }), acc),
+      liste));
+  });
+  cnt.textContent = n ? pluriel(n, 'signalement') : '';
+  mount(body, partielle,
+    blocs.length ? blocs : h('span', { class: 'muted', text: 'aucun signalement ne correspond au filtre.' }));
+}
+
+async function loadScan(force) {
+  if (cacheFrais('scan', force)) return;
+  try {
+    SCAN = await api('/api/sec/scan');
+    const sum = document.getElementById('scan-sum');
+    const c = SCAN.counts || {};
+    if (SCAN.new_total) {
+      mount(sum, chipEl(`${SCAN.new_total} nouveau(x)`
+        + (c.critical ? ` · ${c.critical} critique(s)` : ''), c.critical ? 'err' : 'warn'));
+    } else mount(sum, SCAN.generated_at ? chipEl('rien de nouveau', 'ok') : null);
+    renderScan();
+    majSommaire();
+  } catch (e) {
+    cacheVider('scan');
+    const body = document.getElementById('scan-body');
+    if (body) mount(body, h('span', { class: 'muted', text: 'erreur de chargement : ' + e }));
+  }
+}
+
+async function lancerScan(b) {
+  setBusy(b, 'scan…');
+  mount('scan-body', chipEl('parcours des serveurs…', 'mut'));
+  const fini = () => setIdle(b, null);
+  let lancement;
+  try { lancement = await api('/api/sec/scan/run', {}); }
+  catch (err) { lancement = { error: String(err) }; }
+  if (lancement && lancement.error && !lancement.running) {
+    askInfo('Scan impossible', H(lancement.error));
+    fini();
+    loadScan(true);
+    return;
+  }
+  poll('scan', async () => {
+    const r = await api('/api/sec/scan');
+    if (r && !r.running) { loadScan(true); majCompteurSec(true); return { fini: true }; }
+    return { fini: false };
+  }, { every: 5000, maxErrors: 5, until: r => !!(r && r.fini), onStop: fini });
+}
+
+/* Accepter la référence, c'est déclarer « ceci était déjà là et je l'assume ».
+   D'où la confirmation, et d'où le rappel de ce qu'on accepte : le faire en
+   bloc sans avoir regardé blanchirait une porte dérobée déjà installée. */
+async function accepterReference(domain, b) {
+  const s = domain ? (SCAN.sites || []).find(x => x.domain === domain) : null;
+  const combien = domain ? (s ? s.total : 0)
+    : (SCAN.sites || []).reduce((a, x) => a + (x.total || 0), 0);
+  const ok = await askConfirm({
+    title: domain ? `Accepter la référence de ${domain} ?` : 'Accepter la référence du parc entier ?',
+    body: `${combien} signalement(s) deviendront « connus » et ne remonteront plus. `
+      + 'Ce qui apparaîtra ensuite sera signalé. Ne le faites qu\'après avoir regardé '
+      + 'la liste : accepter sans lire revient à valider une porte dérobée déjà en place.',
+    confirm: 'Accepter',
+  });
+  if (!ok) return;
+  setBusy(b, 'enregistrement…');
+  try {
+    await api('/api/sec/scan/baseline', domain ? { domain } : {});
+    await api('/api/sec/scan/run', {});   // le résultat se relit avec la nouvelle référence
+  } catch (e) {
+    askInfo('Enregistrement impossible', H(String(e)));
+  }
+  setIdle(b, null);
+  loadScan(true);
+}
+
+/* ============================================================================
    4. Extensions à risque
    ========================================================================== */
 function sectionRisky() {
@@ -1072,6 +1262,7 @@ async function loadSec(force) {
   occupe('page-sec', true);
   loadVulns(force);        // indépendants : l'un ne bloque pas les autres
   loadPhe(force);
+  loadScan(force);
 
   // La référence des admins n'est qu'une des huit sections : son échec ne doit
   // pas emporter les certificats, les extensions à risque et les checksums.

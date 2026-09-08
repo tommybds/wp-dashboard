@@ -4,6 +4,9 @@
 17 */2 * * * root cd /opt/wp-dashboard && /usr/bin/python3 phperrors.py >> /var/log/wp-dashboard.log 2>&1
 # Veille de vulnérabilités : rafraîchit la base publique puis recroise (1×/jour, à 6 h)
 0 6 * * * root cd /opt/wp-dashboard && /usr/bin/python3 vulns.py --fetch --scan >> /var/log/wp-dashboard.log 2>&1
+# Chasse aux portes dérobées : scan structurel des fichiers (1×/nuit, à 3 h 20 —
+# c'est la tâche la plus lourde du lot, 300 000 fichiers sur huit serveurs)
+20 3 * * * root cd /opt/wp-dashboard && /usr/bin/python3 scan.py >> /var/log/wp-dashboard.log 2>&1
 # Bilan journalier des changements → Telegram (1×/jour, à 8 h, s'il y a du changement)
 0 8 * * * root cd /opt/wp-dashboard && /usr/bin/python3 digest.py >> /var/log/wp-dashboard.log 2>&1
 # Rotation des journaux, à rétention différenciée (1×/semaine, dimanche 4 h 30)

@@ -65,6 +65,7 @@ Et les tâches périodiques, toutes lancées par cron :
 | `collect.py` | Inventaire du parc. Voir [Ce que la collecte rapporte](#ce-que-la-collecte-rapporte). | toutes les 30 min |
 | `vulns.py` | Croise l'inventaire avec la base de vulnérabilités publique — extensions **et thèmes**. Le croisement est **local** : on demande « quelles failles pour l'extension X ? », jamais « voici mes sites ». | 1×/jour, à 6 h |
 | `phperrors.py` | Lit les journaux d'erreur PHP des serveurs (PHP-FPM sur Plesk, nginx sur les VPS) et regroupe les occurrences par fichier et ligne. Aucun site modifié. | toutes les 2 h |
+| `scan.py` | Chasse aux portes dérobées : cherche des **structures** de webshell dans les fichiers des serveurs, y compris **à côté** du docroot. Lecture seule. Voir [Fichiers suspects](#fichiers-suspects). | 1×/nuit, à 3 h 20 |
 | `digest.py` | Bilan quotidien des changements, envoyé sur Telegram s'il y en a. | 1×/jour, à 8 h |
 | `rotate.py` | Rotation des journaux à **rétention différenciée** : courte pour le tout-venant, longue pour ce qui a valeur de preuve (création d'administrateur, échec d'action…). | 1×/semaine, dimanche 4 h 30 |
 
@@ -830,9 +831,57 @@ HTTP.
   `public/fleet.json`, est en 0644. Les écritures sont **atomiques** (fichier
   temporaire puis `os.replace`) : l'API et le navigateur ne lisent jamais un
   JSON à moitié écrit.
+- **Chasse aux portes dérobées** : `scan.py` cherche des structures, jamais des
+  signatures — voir ci-dessous.
 - **Ne committez jamais** `config.json`, `servers.json`, `data/`,
   `public/fleet.json` ni vos clés — tout est déjà dans `.gitignore`. Vérifiez
   avec `git status` avant le premier `push`.
+
+### Fichiers suspects
+
+`scan.py` cherche dans les fichiers des serveurs des **structures** de porte
+dérobée : `eval()` sur une chaîne décodée, `include 'compress.zlib://'`, clé de
+déchiffrement dérivée du domaine, extension qui se retire de `all_plugins`,
+`.php` dans le dossier des médias, `auto_prepend_file` dans un `.user.ini`…
+
+Pourquoi des structures et pas des signatures : lors du balayage du 22 août,
+rechercher les indicateurs exacts d'un incident connu (nom de fichier, clé) n'a
+**rien** trouvé ailleurs sur le parc, alors que la recherche de formes a sorti
+trois familles distinctes de portes dérobées.
+
+Le scan regarde aussi **à côté** du docroot, sans quoi il manquerait le kit le
+plus abouti rencontré : un faux `wp-content/` et un faux `wp-includes/` posés en
+voisins de `htdocs/`, invisibles depuis WordPress. Le discriminant est la
+présence de `wp-load.php` : un `dev.site.fr` ou un `staging` est une
+installation, un dossier qui n'a que les noms du cœur est un atelier.
+
+**La référence fait tout.** Sans elle, un site sain produit environ 190
+signalements parfaitement légitimes — Wordfence pose bien un `auto_prepend_file`,
+WooCommerce filtre bien `all_plugins`, un plugin de connexion appelle bien
+`wp_set_auth_cookie`. Ce qui a du sens n'est donc pas la liste, c'est ce qui s'y
+**ajoute** :
+
+```bash
+python3 scan.py                  # tout le parc → data/scan_found.json
+python3 scan.py --only vps-usf   # un seul serveur
+python3 scan.py --baseline       # accepte le résultat courant comme référence
+```
+
+La référence (`data/scan_baseline.json`) ne se pose jamais toute seule, ni
+depuis le cron : accepter en bloc ce qu'on n'a pas regardé reviendrait à
+blanchir une porte dérobée déjà installée. Elle s'accepte site par site depuis
+Sécurité → Fichiers suspects. Ensuite, seul le nouveau compte, et il entre dans
+la file « à traiter » à partir de la gravité élevée.
+
+Ce que ce scan ne voit pas, par construction : ce qui n'est pas un fichier. Une
+charge stockée en base (option géante réécrivant `functions.php`), du spam
+injecté dans un contenu, un événement `wp-cron` sans fichier ne laissent aucune
+trace ici.
+
+Deux plafonds, et ils se disent dans l'interface plutôt que de se taire :
+`MAX_FILES` (400 000 fichiers par serveur) et `MAX_HITS` (4 000 correspondances).
+Un dossier illisible au compte utilisé est signalé de la même façon — « rien
+trouvé » ne doit jamais pouvoir vouloir dire « pas regardé ».
 
 ---
 
