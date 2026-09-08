@@ -4,8 +4,22 @@
    distingue un appel de l'application d'une navigation, côté serveur ; il n'est
    posé que sur les écritures, comme avant. */
 
-/** Slug de la status page Uptime Kuma proxifiée par nginx. */
-export const SLUG = 'parc-x7k2m9';
+/* Slug de la status page Uptime Kuma proxifiée par nginx.
+
+   Ce n'est PLUS une constante exportée : le slug se règle dans les Réglages et
+   arrive avec /api/mgmt/state (bloc `kuma`). Figé à la construction, il faisait
+   interroger l'ancienne status page dès que la valeur changeait côté serveur.
+   Celle qui suit n'est qu'un repli, le temps que /api/mgmt/state réponde. */
+let SLUG_COURANT = 'parc-x7k2m9';
+
+/** Slug de la status page à interroger (repli tant que l'état n'est pas lu). */
+export function slugKuma() { return SLUG_COURANT; }
+
+/** Enregistre le slug renvoyé par le serveur. Une valeur vide ne l'écrase pas. */
+export function setSlugKuma(v) {
+  const s = String(v || '').trim();
+  if (s) SLUG_COURANT = s;
+}
 
 /**
  * api(url)        → GET

@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import actions_server as A
+import dashboard_config
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,6 +88,12 @@ class BaseTmp(unittest.TestCase):
         A.WPSTATE_PATH = os.path.join(self.data, "wp_states.json")
         A.UPDATE_POLICY_PATH = os.path.join(self.data, "update_policy.json")
         A.LOG = os.path.join(self.data, "actions.log")
+        # La détection de Kuma lit elle aussi data/settings.json (surcharges de
+        # branchement) : sans cette redirection, un test qui écrit un conteneur
+        # dans le répertoire jetable serait jugé sur le VRAI data/ du dépôt.
+        self._sauv_cfg_data = dashboard_config.DATA_DIR
+        dashboard_config.DATA_DIR = self.data
+        dashboard_config.reset_kuma_cache()
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         A.INGEST_SEEN.clear()
@@ -95,6 +102,8 @@ class BaseTmp(unittest.TestCase):
     def _restaurer(self):
         for k, v in self._sauv.items():
             setattr(A, k, v)
+        dashboard_config.DATA_DIR = self._sauv_cfg_data
+        dashboard_config.reset_kuma_cache()
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         A.INGEST_SEEN.clear()
@@ -2420,7 +2429,13 @@ class TestRoutesSansKuma(KumaRoutesBase):
     def test_etat_annonce_kuma_absent(self):
         st, j = self.get("/api/mgmt/state")
         self.assertEqual(st, 200)
-        self.assertEqual(j["kuma"], {"enabled": False, "reason": "conteneur absent"})
+        self.assertEqual(j["kuma"]["enabled"], False)
+        self.assertEqual(j["kuma"]["reason"], "conteneur absent")
+        # Le bloc porte AUSSI le branchement : la section Réglages doit pouvoir
+        # remplir ses champs même quand Kuma n'est pas joignable — c'est
+        # justement là qu'on vient corriger un conteneur ou un slug faux.
+        for cle in ("slug", "container", "db", "status_url"):
+            self.assertIn(cle, j["kuma"])
         self.assertEqual((j["kuma_groups"], j["kuma_monitors"]), ([], []))
         self.assertEqual(j["followed"], [])
 

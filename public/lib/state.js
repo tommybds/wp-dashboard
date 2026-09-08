@@ -15,13 +15,14 @@
    la ré-invente, sinon deux écrans finissent par dire deux choses du même
    site. */
 
-import { api, SLUG } from './api.js';
+import { api, slugKuma, setSlugKuma } from './api.js';
 import { relTime } from './format.js';
 
 export const store = {
   fleet: null,          // contenu de fleet.json
   status: {},           // {nom de moniteur Kuma: 0|1|2}
-  kuma: null,           // {enabled, reason} — null tant que /api/mgmt/state n'a pas répondu
+  kuma: null,           // {enabled, reason, slug, container, db, status_url} — null tant
+                        // que /api/mgmt/state n'a pas répondu
   mgmt: null,           // /api/mgmt/state
   baseline: {},         // référence des administrateurs
   settings: {           // réglages serveur, lus paresseusement (voir screens/reglages.js)
@@ -262,8 +263,10 @@ export function kumaRaison() { return (store.kuma && store.kuma.reason) || ''; }
    donc l'ancien affichage. */
 let KUMAP = null;
 
-export function loadKuma() {
-  if (KUMAP) return KUMAP;
+/** `force` refait l'appel : après un enregistrement du branchement, l'état
+    « connecté / non configuré » doit changer sans rechargement de page. */
+export function loadKuma(force) {
+  if (KUMAP && !force) return KUMAP;
   KUMAP = api('/api/mgmt/state').then(j => {
     setKuma(j && j.kuma);
     return store.kuma;
@@ -271,12 +274,23 @@ export function loadKuma() {
   return KUMAP;
 }
 
-/** Enregistre le drapeau Kuma (appelé aussi par Gestion, qui lit le même état). */
+/** Enregistre l'état Kuma (appelé aussi par Gestion, qui lit le même état).
+
+    Le bloc porte la présence (`enabled`, `reason`) ET le branchement (slug,
+    conteneur, base, url) : Réglages remplit ses champs avec, et le slug fait
+    autorité pour les appels à la status page — d'où `setSlugKuma`. */
 export function setKuma(k) {
   const avant = store.kuma && store.kuma.enabled;
-  store.kuma = (k && typeof k === 'object')
-    ? { enabled: k.enabled !== false, reason: String(k.reason || '') }
-    : { enabled: true, reason: '' };
+  const src = (k && typeof k === 'object') ? k : {};
+  store.kuma = {
+    enabled: src.enabled !== false,
+    reason: String(src.reason || ''),
+    slug: String(src.slug || ''),
+    container: String(src.container || ''),
+    db: String(src.db || ''),
+    status_url: String(src.status_url || ''),
+  };
+  setSlugKuma(store.kuma.slug);
   if (store.kuma.enabled !== avant) emit();
 }
 
@@ -320,8 +334,9 @@ export async function loadStatus() {
   // quand même remplirait la console d'erreurs réseau à chaque minute.
   if (!kumaActif()) { store.status = {}; return; }
   try {
-    const cfg = await api('/api/status-page/' + SLUG);
-    const hb = await api('/api/status-page/heartbeat/' + SLUG);
+    const slug = slugKuma();
+    const cfg = await api('/api/status-page/' + slug);
+    const hb = await api('/api/status-page/heartbeat/' + slug);
     const byId = {};
     (cfg.publicGroupList || []).forEach(g => (g.monitorList || []).forEach(m => { byId[m.id] = m.name; }));
     const next = {};

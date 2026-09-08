@@ -13,7 +13,8 @@ import json, subprocess, os, re, sys, time, datetime, threading, itertools, hash
 import functools, io, urllib.error, urllib.request, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from dashboard_config import CONFIG, KUMA_ABSENT_MSG, kuma_disponible, kuma_statut
+from dashboard_config import (CONFIG, KUMA_ABSENT_MSG, kuma_disponible, kuma_statut,
+                              reset_kuma_cache)
 from vulns import version_compare
 # Briques communes à tous les scripts du dépôt (cf. dashlib.py) : une seule copie
 # de la lecture/écriture JSON, du quotage shell, de l'identité d'un site et des
@@ -27,15 +28,20 @@ from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      load_json, norm_domain, site_key, site_visible, sq,
                      valid_path_pattern, public_ips, validate_public_url,
                      followed_path, load_followed, set_followed,
-                     ensure_followed_migrated)
+                     ensure_followed_migrated,
+                     kuma_conf, kuma_settings_errors, KUMA_LOCAL_HOSTS)
 from dashlib import (default_mode as _default_mode, save_json as _save_json,
                      update_json as _update_json)
 
 KEY = CONFIG["ssh_key"]              # clé SSH par défaut (surchargée par serveur dans servers.json)
 LOG = os.path.join(DATA, "actions.log")
-KUMA_DB = CONFIG["kuma_db"]          # chemin de la base Kuma DANS le conteneur
-KUMA_CONTAINER = CONFIG["kuma_container"]
-SLUG = CONFIG["kuma_slug"]           # slug de la status page Kuma du parc
+# Le branchement Uptime Kuma (slug de la status page, conteneur Docker, base
+# SQLite, URL de la status page) N'EST PAS figé dans des constantes de module :
+# il se relit à chaque usage via `kuma_conf(DATA, CONFIG)`, qui fusionne les
+# défauts, config.json et les surcharges de data/settings.json écrites depuis
+# Réglages ⚙. Les anciennes constantes KUMA_DB / KUMA_CONTAINER / SLUG ont été
+# supprimées : elles rendaient une valeur changée dans l'interface sans effet
+# jusqu'au redémarrage du service.
 # SLUG_RE (le « / » reste autorisé : un WordPress peut vivre en sous-répertoire
 # comme jupiter.com/zavus-calculator ; « .. » est interdit partout) et SERVER_RE
 # viennent de dashlib — collect.py valide les mêmes entrées.
@@ -985,7 +991,20 @@ SETTINGS_DEFAULTS = {
     # les clés inconnues y sont ignorées comme au premier niveau, et chaque
     # valeur est ramenée au type de sa valeur par défaut.
     "incident_rules": dict(INCIDENT_RULES_DEFAULTS),
+    # ---- branchement Uptime Kuma : SURCHARGES de config.json ----------------
+    # config.json reste le fichier d'installation ; ces quatre valeurs, elles,
+    # s'éditent depuis Réglages ⚙ et prennent effet immédiatement (aucun
+    # redémarrage : tout point de lecture passe par `dashlib.kuma_conf`).
+    # Le défaut est la chaîne VIDE, qui veut dire « pas de surcharge » : effacer
+    # le champ dans l'interface redonne la main à config.json.
+    "kuma_slug": "",
+    "kuma_container": "",
+    "kuma_db": "",
+    "kuma_status_url": "",
 }
+# Réglages qui surchargent config.json : ils passent par `kuma_settings_errors`
+# avant d'être écrits, et périment le cache de détection de Kuma.
+KUMA_SETTINGS_KEYS = ("kuma_slug", "kuma_container", "kuma_db", "kuma_status_url")
 # Réglages qui sont des secrets : exclus de toute réponse HTTP et de tout journal.
 SETTINGS_SECRETS = ("vizproof_token",)
 
@@ -3206,9 +3225,10 @@ def kuma_sql(sql):
     """
     if not kuma_disponible():
         return KUMA_UNAVAILABLE_RC, KUMA_ABSENT_MSG
+    conf = kuma_conf(DATA, CONFIG)
     try:
-        r = subprocess.run(["docker", "exec", KUMA_CONTAINER, "sqlite3", "-cmd", ".timeout 8000",
-                            KUMA_DB, sql],
+        r = subprocess.run(["docker", "exec", conf["container"], "sqlite3",
+                            "-cmd", ".timeout 8000", conf["db"], sql],
                            capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
         return KUMA_UNAVAILABLE_RC, "docker indisponible : délai dépassé"
@@ -3221,9 +3241,120 @@ def kuma_restart():
     if not kuma_disponible():
         return              # rien à redémarrer, et surtout aucun docker à lancer
     try:
-        subprocess.run(["docker", "restart", KUMA_CONTAINER], capture_output=True, text=True, timeout=90)
+        subprocess.run(["docker", "restart", kuma_conf(DATA, CONFIG)["container"]],
+                       capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.SubprocessError):
         pass  # sans docker il n'y a rien à redémarrer ; l'appelant a déjà l'erreur SQL
+
+
+def kuma_bloc(force=False):
+    """Bloc `kuma` des réponses d'API : présence ET valeurs de branchement.
+
+    Le front en a besoin des deux : l'état (« connecté » / « non configuré »)
+    pour savoir quoi afficher, et les trois valeurs (slug, conteneur, base) pour
+    remplir le formulaire de Réglages ⚙ — sans quoi il retomberait sur une
+    constante figée dans le JavaScript, qui est justement ce qu'on corrige.
+    Aucun secret ici : ce sont des noms d'objets locaux.
+    """
+    conf = kuma_conf(DATA, CONFIG)
+    return {**kuma_statut(force), "slug": conf["slug"], "container": conf["container"],
+            "db": conf["db"], "status_url": conf["status_url"]}
+
+
+# ---------- Kuma : essai de branchement (« Tester la connexion ») ----------
+# Le test travaille sur les valeurs SOUMISES, sans rien enregistrer : c'est ce
+# qui permet de corriger un conteneur ou un slug sans casser l'existant. Chaque
+# sonde est bornée, et les deux réunies ne peuvent pas dépasser 15 s.
+KUMA_TEST_TIMEOUT = 5        # secondes par sonde (base, puis status page)
+
+
+def kuma_test_db(container, db):
+    """Sonde la base d'un conteneur → {ok, message, moniteurs, field}.
+
+    `SELECT count(*) FROM monitor` : une lecture, jamais une écriture. La
+    commande part en argv (aucun shell), sur des valeurs déjà validées.
+    """
+    res = {"ok": False, "message": "", "moniteurs": None, "field": "kuma_container"}
+    if not container or not db:
+        res["message"] = "conteneur ou chemin de base non renseigné"
+        return res
+    try:
+        r = subprocess.run(["docker", "exec", container, "sqlite3", "-cmd", ".timeout 3000",
+                            db, "SELECT count(*) FROM monitor;"],
+                           capture_output=True, text=True, timeout=KUMA_TEST_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        res["message"] = f"conteneur « {container} » : délai dépassé"
+        return res
+    except (OSError, subprocess.SubprocessError) as e:
+        res["message"] = f"docker indisponible ({type(e).__name__})"
+        return res
+    sortie = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0:
+        # Deux causes très différentes à distinguer pour l'utilisateur : le
+        # conteneur n'existe pas (c'est le champ « conteneur » qui est faux),
+        # ou il existe mais la base ne s'y lit pas (c'est le champ « base »).
+        if re.search(r"no such container|is not running|not found", sortie, re.I):
+            res["message"] = f"conteneur introuvable : « {container} »"
+        else:
+            res["field"] = "kuma_db"
+            res["message"] = (f"base illisible : {sortie[:160]}" if sortie
+                              else f"base illisible (rc={r.returncode})")
+        return res
+    premiere = (sortie.splitlines() or [""])[0].strip()
+    if not premiere.isdigit():
+        res["field"] = "kuma_db"
+        res["message"] = f"base illisible : {sortie[:160] or 'réponse vide'}"
+        return res
+    res.update({"ok": True, "moniteurs": int(premiere),
+                "message": f"base lue : {int(premiere)} moniteur(s)"})
+    return res
+
+
+def kuma_test_status_page(url):
+    """Sonde la status page → {ok, message, moniteurs, field}.
+
+    Même politique que la surcharge enregistrée : http seulement vers
+    127.0.0.1 / localhost, https ailleurs et seulement après la garde SSRF.
+    """
+    res = {"ok": False, "message": "", "moniteurs": None, "field": "kuma_slug"}
+    if not url:
+        res["message"] = "aucune status page à interroger (slug vide)"
+        return res
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        res["message"] = "url invalide"
+        return res
+    if (u.hostname or "").lower().strip("[]") not in KUMA_LOCAL_HOSTS:
+        _, err = validate_public_url(url)
+        if err:
+            res["field"] = "kuma_status_url"
+            res["message"] = f"url refusée : {err}"
+            return res
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SumotoriDashboard/1.0"})
+        with urllib.request.urlopen(req, timeout=KUMA_TEST_TIMEOUT) as rep:
+            brut = rep.read(2_000_000)
+        payload = json.loads(brut or b"{}")
+    except urllib.error.HTTPError as e:
+        res["message"] = (f"status page : HTTP {e.code}"
+                          + (" (slug inconnu ?)" if e.code == 404 else ""))
+        return res
+    except Exception as e:                      # réseau, JSON, TLS : même issue
+        res["field"] = "kuma_status_url"
+        res["message"] = f"status page injoignable ({type(e).__name__})"
+        return res
+    if not isinstance(payload, dict) or "publicGroupList" not in payload:
+        res["message"] = "réponse inattendue : ce n'est pas une status page Kuma"
+        return res
+    noms = set()
+    for g in (payload.get("publicGroupList") or []):
+        for m in ((g or {}).get("monitorList") or []):
+            if isinstance(m, dict) and m.get("name"):
+                noms.add(m["name"])
+    res.update({"ok": True, "moniteurs": len(noms),
+                "message": f"status page : {len(noms)} moniteur(s)"})
+    return res
 
 
 def kuma_text_ok(value, maxlen=200):
@@ -3330,11 +3461,13 @@ def kuma_create(domain, monitor_name, group_id, url, mtype, keyword):
     if rc != 0:
         return rc, out
     # rattacher à la status page pour le statut live
-    # SLUG vient de config.json : échappé comme toute autre valeur du SQL.
+    # Le slug est relu à CHAQUE création (config.json + surcharge des Réglages)
+    # et échappé comme toute autre valeur du SQL.
+    slug = kuma_conf(DATA, CONFIG)["slug"]
     kuma_sql('INSERT INTO monitor_group (monitor_id, group_id, weight) '
              'SELECT (SELECT MAX(id) FROM monitor), '
              '(SELECT id FROM `group` WHERE status_page_id='
-             f'(SELECT id FROM status_page WHERE slug="{esc(SLUG)}")), '
+             f'(SELECT id FROM status_page WHERE slug="{esc(slug)}")), '
              '(SELECT MAX(id) FROM monitor);')
     kuma_restart()
     return 0, "moniteur créé"
@@ -6380,7 +6513,10 @@ class Handler(BaseHTTPRequestHandler):
                              "overrides": load_json(os.path.join(DATA, "overrides.json"), {}),
                              "extra_docroots": load_json(os.path.join(DATA, "extra_docroots.json"), []),
                              "followed": sorted(load_followed(DATA)),
-                             "kuma": kuma_statut(),
+                             # `kuma_bloc` ajoute les trois valeurs de branchement
+                             # à l'état : la section Réglages ⚙ remplit ses champs
+                             # avec elles, et le front n'a plus de slug en dur.
+                             "kuma": kuma_bloc(),
                              "kuma_groups": groups, "kuma_monitors": monitors})
         elif p == "/api/mgmt/sshkeys":
             self._send(200, {"keys": ssh_keys_list(), "assignments": ssh_key_assignments()})
@@ -6389,7 +6525,7 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/mgmt/candidates":
             # Sans Kuma il n'y a pas de « supervisé ailleurs » à proposer :
             # liste vide et raison lisible, plutôt qu'une erreur.
-            self._send(200, {"candidates": kuma_candidates(), "kuma": kuma_statut()})
+            self._send(200, {"candidates": kuma_candidates(), "kuma": kuma_bloc()})
         elif p == "/api/mgmt/agent.zip":
             # téléchargement direct (lien) : session vérifiée en tête de do_GET
             blob, err = agent_zip_bytes()
@@ -6978,14 +7114,38 @@ class Handler(BaseHTTPRequestHandler):
                     cleanup = f"nettoyage impossible : {e}"
             return self._send(200, {"ok": remove_rest_site(domain), "cleanup": cleanup})
 
-        if p.startswith("/api/mgmt/kuma/") and not kuma_disponible():
+        if (p.startswith("/api/mgmt/kuma/") and p != "/api/mgmt/kuma/test"
+                and not kuma_disponible()):
             # Uptime Kuma est facultatif : ces routes répondent proprement
             # plutôt qu'en 500. `code` est un refus attendu (cf. AGENT_REFUS),
             # donc `agent_http_code` rend 200 et le front affiche le message
             # sans déclencher son bandeau d'erreur.
             res = {"ok": False, "code": "unknown", "message": KUMA_ABSENT_MSG,
-                   "output": KUMA_ABSENT_MSG, "kuma": kuma_statut()}
+                   "output": KUMA_ABSENT_MSG, "kuma": kuma_bloc()}
             return self._send(agent_http_code(res), res)
+
+        if p == "/api/mgmt/kuma/test":
+            # Essai de branchement AVEC LES VALEURS SOUMISES, sans rien
+            # enregistrer : c'est ce qui permet de corriger un conteneur ou un
+            # slug faux sans casser l'existant. La route est volontairement hors
+            # de la garde « Kuma absent » juste au-dessus — c'est justement
+            # quand Kuma n'est pas détecté qu'on a besoin de tester.
+            errs = kuma_settings_errors({k: body[k] for k in KUMA_SETTINGS_KEYS
+                                         if k in body})
+            if errs:
+                return self._send(400, {"error": next(iter(errs.values())),
+                                        "errors": errs})
+            # Une valeur soumise vide = « on efface la surcharge » : le test
+            # porte alors sur ce que rendrait config.json.
+            conf = kuma_conf(DATA, CONFIG,
+                             overrides={k: body.get(k) for k in KUMA_SETTINGS_KEYS})
+            base = kuma_test_db(conf["container"], conf["db"])
+            page = kuma_test_status_page(conf["status_url"] if conf["slug"] else "")
+            return self._send(200, {"ok": bool(base["ok"] and page["ok"]),
+                                    "base": base, "status_page": page,
+                                    "container": conf["container"], "db": conf["db"],
+                                    "slug": conf["slug"],
+                                    "status_url": conf["status_url"]})
 
         if p == "/api/mgmt/kuma/create":
             domain = str(body.get("domain", ""))
@@ -7222,7 +7382,22 @@ class Handler(BaseHTTPRequestHandler):
                 if u.scheme != "https":
                     return self._send(400, {"error": "base API : https exigé"})
                 patch["vizproof_api_base"] = base.rstrip("/")
-            return self._send(200, {"ok": True, "settings": settings_public(settings_write(patch))})
+            # Branchement Uptime Kuma : ces quatre valeurs SURCHARGENT config.json
+            # et partent en argv d'un `docker exec` ou dans une requête HTTP —
+            # elles sont donc validées champ par champ, avec un message par champ.
+            errs = kuma_settings_errors(patch)
+            if errs:
+                return self._send(400, {"error": next(iter(errs.values())),
+                                        "errors": errs})
+            touche_kuma = any(k in patch for k in KUMA_SETTINGS_KEYS)
+            cfg = settings_write(patch)
+            if touche_kuma:
+                # Sans cela l'interface mentirait pendant une minute : la
+                # détection de Kuma est mise en cache 60 s, et elle vient
+                # justement d'être faite sur l'ANCIEN conteneur.
+                reset_kuma_cache()
+            return self._send(200, {"ok": True, "settings": settings_public(cfg),
+                                    **({"kuma": kuma_bloc()} if touche_kuma else {})})
 
         if p == "/api/mgmt/vizproof/test":
             # Vérifie le jeton ENREGISTRÉ : rien n'est accepté depuis le corps,

@@ -26,13 +26,15 @@ from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      site_key, sq, valid_path_pattern as valid_pattern,
                      validate_public_url, load_followed, ensure_followed_migrated)
 from dashlib import save_json as _save_json
+from dashlib import kuma_conf
 from dashboard_config import CONFIG, kuma_disponible
 KEY = CONFIG["ssh_key"]                # clé SSH par défaut (surchargée par serveur dans servers.json)
-KUMA_STATUS = CONFIG["kuma_status_url"]  # JSON de la status page Kuma du parc
-KUMA_CONTAINER = CONFIG["kuma_container"]
+# Le branchement Kuma (slug, conteneur, base, URL de la status page) N'EST PAS
+# figé dans des constantes de module : il se lit à chaque usage via
+# `kuma_conf(DATA, CONFIG)`, sinon une valeur changée depuis Réglages ⚙
+# n'aurait d'effet qu'au redémarrage du collecteur.
 DEFAULT_PARALLEL = 4   # sites collectés simultanément sur un même serveur
 MAX_SERVERS_PARALLEL = 8  # serveurs interrogés simultanément
-KUMA_DB = CONFIG["kuma_db"]  # chemin de la base Kuma DANS le conteneur
 # ---- sondes maison (disponibilité + certificat TLS) ----
 PROBE_TIMEOUT = 8        # secondes, budget TOTAL par site et par sonde
 PROBE_REDIRECTS = 2      # sauts suivis au plus, chacun repassant la garde SSRF
@@ -1013,9 +1015,10 @@ def kuma_folder_map():
     """
     if not kuma_disponible():
         return {}
+    conf = kuma_conf(DATA, CONFIG)
     try:
         r = subprocess.run(
-            ["docker", "exec", KUMA_CONTAINER, "sqlite3", KUMA_DB,
+            ["docker", "exec", conf["container"], "sqlite3", conf["db"],
              "SELECT m.name||char(9)||COALESCE(g.name,'') FROM monitor m "
              "LEFT JOIN monitor g ON g.id=m.parent WHERE m.type!='group';"],
             capture_output=True, text=True, timeout=15)
@@ -1042,7 +1045,8 @@ def kuma_monitor_names():
     if not kuma_disponible():
         return set(), ""
     try:
-        cfg = json.load(urllib.request.urlopen(KUMA_STATUS, timeout=10))
+        cfg = json.load(urllib.request.urlopen(kuma_conf(DATA, CONFIG)["status_url"],
+                                               timeout=10))
     except Exception as e:
         return set(), f"{type(e).__name__}: {e}"[:200]
     noms = set()

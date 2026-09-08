@@ -115,7 +115,7 @@ ni modale de réglages.
 | **Sécurité** | `#securite[/<ancre>]` | Une page, huit sections repérées par un sommaire d'ancres. |
 | **Changements** | `#changements[/<ancre>]` | Chronologie unifiée, puis la tendance du parc. |
 | **Gestion** | `#gestion[/<ancre>]` | Serveurs, installs, sites sans SSH, moniteurs, docroots, non gérés. |
-| **Réglages** | `#reglages[/<ancre>]` | Huit sections, chacune avec son bouton d'enregistrement. |
+| **Réglages** | `#reglages[/<ancre>]` | Neuf sections, chacune avec son bouton d'enregistrement. |
 | **Page site** | `#site/<clé>[/<onglet>]` | Tout sur un site, en cinq onglets, et les actions dessus. |
 
 Une **destination** est une page entière ; un **onglet** n'existe que sur la
@@ -511,11 +511,11 @@ Copie de `config.example.json`. Toutes les valeurs propres à votre déploiement
 |---|---|---|
 | `dashboard_url` | URL publique du dashboard (sert d'endpoint d'ingestion des agents et de retour d'autorisation WordPress). | `https://dashboard.example.com` |
 | `ssh_key` | Clé SSH par défaut pour joindre les serveurs (surchargeable par serveur). | `/root/.ssh/id_dashboard` |
-| `kuma_enabled` | Uptime Kuma présent ou non. `"auto"` sonde le conteneur (résultat en cache 60 s) ; `true` / `false` forcent. À `false`, **aucun** `docker exec` n'est lancé. | `"auto"` |
-| `kuma_container` | Nom du conteneur Docker Uptime Kuma. | `uptime-kuma` |
-| `kuma_db` | Chemin de la base SQLite **dans** le conteneur. | `/app/data/kuma.db` |
-| `kuma_slug` | Slug de la status page Kuma listant vos moniteurs (**à renseigner**). | `""` |
-| `kuma_status_url` | URL JSON de cette status page ; le slug y est ajouté automatiquement s'il finit par `/`. | `http://127.0.0.1:3001/api/status-page/` |
+| `kuma_enabled` | Uptime Kuma présent ou non. `"auto"` sonde le conteneur (résultat en cache 60 s) ; `true` / `false` forcent. À `false`, **aucun** `docker exec` n'est lancé. **Reste ici**, il ne s'édite pas depuis l'interface. | `"auto"` |
+| `kuma_container` | Nom du conteneur Docker Uptime Kuma. *Surchargeable depuis Réglages.* | `uptime-kuma` |
+| `kuma_db` | Chemin de la base SQLite **dans** le conteneur. *Surchargeable depuis Réglages.* | `/app/data/kuma.db` |
+| `kuma_slug` | Slug de la status page Kuma listant vos moniteurs (**à renseigner**). *Surchargeable depuis Réglages.* | `""` |
+| `kuma_status_url` | URL JSON de cette status page ; le slug y est ajouté automatiquement s'il finit par `/`. *Surchargeable depuis Réglages.* | `http://127.0.0.1:3001/api/status-page/` |
 | `bot_admin_login` | Login du compte admin créé lors de la liaison « en un clic ». | `dashboard_agent` |
 | `bot_admin_email` | Base d'adresse e-mail de ce compte. | `admin@example.com` |
 | `vuln_skip_slugs` | Slugs à exclure de la veille de vulnérabilités — **extensions comme thèmes** : mu-plugins maison, extensions internes, thèmes sur mesure, tout ce qui n'existe pas sur wordpress.org. Les drop-ins WordPress (`object-cache.php`…) sont déjà ignorés. | `[]` |
@@ -524,6 +524,50 @@ Les quatre clés `kuma_*` ne servent que si vous avez Uptime Kuma. Dans ce cas,
 créez une **status page privée** qui regroupe les moniteurs de votre parc et
 reportez son slug dans `kuma_slug`. Sinon, laissez-les telles quelles (ou posez
 `"kuma_enabled": false` pour couper la détection).
+
+#### Brancher Kuma depuis l'interface (surcharge de `config.json`)
+
+`config.json` reste le **fichier d'installation** : c'est lui qui pose les
+valeurs de départ, et il n'est jamais réécrit par le dashboard. Mais les trois
+valeurs qu'on retouche vraiment — **slug de la status page**, **conteneur
+Docker**, **chemin de la base SQLite** (plus l'URL de la status page) —
+s'éditent aussi dans **Réglages → Uptime Kuma**, où elles sont enregistrées
+comme **surcharges** dans `data/settings.json`.
+
+- Ce fichier est **relu à chaque appel** : une valeur changée prend effet
+  **immédiatement**, sans redémarrer le service. Tous les points de lecture
+  (API et collecteur) passent par la fonction unique `dashlib.kuma_conf()`, qui
+  fusionne dans l'ordre **valeurs par défaut → `config.json` →
+  `data/settings.json`** et rend `{slug, container, db, status_url, enabled}`.
+- Un champ **laissé vide** efface la surcharge et **redonne la main à
+  `config.json`** — ce n'est pas « couper Kuma ».
+- Restent dans `config.json` seul : `kuma_enabled`, `dashboard_url`, `ssh_key`,
+  les clés `bot_admin_*` et `vuln_skip_slugs`.
+- Le slug ne vit plus non plus dans le JavaScript : le front prend celui que
+  `/api/mgmt/state` renvoie.
+
+**Validation** (mêmes règles côté API, côté page bouchonnée et côté tests ; un
+refus est un **400** avec un message par champ) :
+
+| Champ | Règle |
+|---|---|
+| `kuma_slug` | `^[A-Za-z0-9_-]{0,64}$` |
+| `kuma_container` | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` |
+| `kuma_db` | chemin **absolu dans le conteneur**, `^/[A-Za-z0-9_./-]{1,200}$`, sans `..` |
+| `kuma_status_url` | `https://…`, ou `http://` vers `127.0.0.1` / `localhost` uniquement ; hors local, l'URL passe la garde anti-SSRF commune |
+
+**Tester la connexion.** Le bouton de la section appelle
+`POST /api/mgmt/kuma/test` avec les valeurs **saisies** et **sans les
+enregistrer** : la route tente un `SELECT count(*) FROM monitor` dans le
+conteneur puis la lecture de la status page, chaque sonde bornée à 5 s, et rend
+`{ok, base: {ok, message, moniteurs}, status_page: {ok, message, moniteurs}}`.
+Chaque verdict porte le champ qu'il met en cause (« conteneur introuvable »,
+« base illisible », « status page : 4 moniteurs »), affiché sous ce champ. Cette
+route répond **même quand Kuma n'est pas détecté** — c'est justement là qu'on
+vient corriger la valeur fautive.
+
+Enregistrer **périme le cache de détection** de 60 s : l'état « connecté / non
+configuré » est recalculé aussitôt, sans rechargement de page.
 
 ### Uptime Kuma, optionnel
 
@@ -753,7 +797,7 @@ des incidents (`vulns`, `phperrors`, `admins`, `php`, `certs`, `checksums`).
 | **Sécurité** | **Une seule page à ancres**, ouverte par un sommaire chiffré : vulnérabilités (vue par site ou par extension, action groupée), comptes administrateurs et référence, erreurs PHP, extensions à risque, PHP obsolète regroupé par version, certificats, intégrité du cœur, recherche transversale d'extension. |
 | **Changements** | Une **chronologie** groupée par jour qui fusionne les changements d'état détectés par la collecte (`/api/mgmt/changes`) et les actions lancées depuis le dashboard (`/api/actions/log`), filtrable par site, type, gravité et texte — puis la **tendance du parc** (quatre courbes) en bas de page. |
 | **Gestion** | **Une seule page à ancres** : serveurs (en formulaires), installs découverts, sites sans SSH et assistant d'ajout par URL, moniteurs Kuma, docroots supplémentaires, sites supervisés non gérés. |
-| **Réglages** | **Une seule page à ancres** : cadence de collecte, alertes Telegram, VizProof, contrôle visuel, règles d'incidents, clés SSH, apparence, session. |
+| **Réglages** | **Une seule page à ancres** : cadence de collecte, branchement Uptime Kuma, alertes Telegram, VizProof, contrôle visuel, règles d'incidents, clés SSH, apparence, session. |
 
 En bas de la barre : **Réglages** (`#reglages`), **Journal** des actions (une
 modale, volontairement : on la consulte en passant depuis n'importe quel écran),
@@ -1170,13 +1214,14 @@ marqueur `last_seen` est rafraîchi au plus une fois par heure par
 
 ### Réglages
 
-**Réglages** est une **page** (`#reglages`), plus une modale, découpée en huit
+**Réglages** est une **page** (`#reglages`), plus une modale, découpée en neuf
 sections qui ont chacune leur bouton d'enregistrement et leur message de
 résultat :
 
 | Section | Contenu |
 |---|---|
 | **Collecte** (`#reglages/collecte`) | Cadence du cron (`/api/mgmt/schedule`), cron actuel affiché, et un raccourci vers la collecte manuelle. |
+| **Uptime Kuma** (`#reglages/kuma`) | État « connecté / non configuré » et sa raison, puis les trois valeurs de branchement — **slug**, **conteneur**, **base** — éditables, avec **Tester la connexion** (essai des valeurs saisies, sans enregistrement) et **Enregistrer**. Ces valeurs **surchargent `config.json`** dans `data/settings.json` et prennent effet **immédiatement** ; un champ vidé redonne la main à `config.json`. Voir [Brancher Kuma depuis l'interface](#brancher-kuma-depuis-linterface-surcharge-de-configjson). |
 | **Alertes Telegram** (`#reglages/alertes`) | Interrupteur général, jeton du bot, `chat_id`, quatre déclencheurs booléens et trois seuils, plus **Envoyer un test** (qui utilise la configuration **enregistrée**). |
 | **VizProof** (`#reglages/vizproof`) | Jeton de compte, base de l'API, **Tester**, **Effacer**. |
 | **Contrôle visuel** (`#reglages/controle-visuel`) | Les quatre cases décrites ci-dessous, enregistrées à la volée. |
@@ -1191,7 +1236,8 @@ caractères, un champ laissé vide veut dire « inchangé », et effacer est un 
 explicite.
 
 Les réglages de comportement sont stockés dans `data/settings.json` (fichier
-**0600**) :
+**0600**) — c'est aussi là que vivent les **surcharges** de branchement Kuma
+(`kuma_slug`, `kuma_container`, `kuma_db`, `kuma_status_url`, vides par défaut) :
 
 | Réglage | Défaut | Effet |
 |---|---|---|

@@ -359,3 +359,151 @@ def validate_public_url(url):
     if err:
         return None, err
     return u, None
+
+
+# ---------------------------------------------------------------------------
+#  Uptime Kuma : le branchement EFFECTIF, en un seul endroit
+# ---------------------------------------------------------------------------
+# Trois valeurs relient le dashboard à Uptime Kuma : le slug de la status page,
+# le nom du conteneur Docker et le chemin de la base SQLite dans ce conteneur
+# (plus l'URL de la status page, rarement touchée). Elles vivaient uniquement
+# dans config.json — lu UNE fois au démarrage puis figé dans des constantes de
+# module (actions_server.KUMA_DB, collect.KUMA_STATUS…) : les changer voulait
+# dire éditer un fichier sur le serveur ET redémarrer le service.
+#
+# Elles se surchargent maintenant depuis l'interface, dans data/settings.json,
+# qui est relu à chaque appel. `kuma_conf()` est la SEULE lecture autorisée :
+# tout point du code qui garderait une copie figée rendrait de nouveau un
+# changement d'interface sans effet jusqu'au redémarrage — c'est exactement le
+# défaut corrigé ici, et un test le vérifie en relisant les sources.
+#
+# Ordre de fusion, du plus faible au plus fort :
+#     valeurs par défaut  →  config.json  →  data/settings.json
+# Une surcharge VIDE dans settings.json ne compte pas : effacer le champ dans
+# l'interface redonne donc la main à config.json.
+KUMA_DEFAULTS = {
+    "enabled": "auto",
+    "slug": "",
+    "container": "uptime-kuma",
+    "db": "/app/data/kuma.db",
+    "status_url": "http://127.0.0.1:3001/api/status-page/",
+}
+# Clé rendue par kuma_conf() ↔ clé telle qu'elle s'écrit dans config.json et
+# dans data/settings.json. `kuma_enabled` n'en fait pas partie : il reste un
+# choix d'installation, il ne s'écrit pas depuis l'interface.
+KUMA_KEYS = (("slug", "kuma_slug"), ("container", "kuma_container"),
+             ("db", "kuma_db"), ("status_url", "kuma_status_url"))
+
+# Règles de validation des surcharges (mêmes règles côté API et côté tests).
+KUMA_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{0,64}$")
+KUMA_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+# Chemin absolu DANS le conteneur : jeu de caractères restreint, « .. » interdit
+# (la valeur part en argv d'un `docker exec … sqlite3 <chemin>`).
+KUMA_DB_RE = re.compile(r"^/[A-Za-z0-9_./-]{1,200}$")
+# Hôtes considérés « locaux » : la status page est jointe sur la machine même,
+# elle n'a aucune raison de sortir.
+KUMA_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def kuma_status_url_error(url):
+    """Message de refus d'une URL de status page, ou « » si elle est acceptable.
+
+    http n'est toléré que vers 127.0.0.1 / localhost : cette URL sert à joindre
+    Kuma en local, pas à sortir. Toute autre destination doit être en https ET
+    passer la garde anti-SSRF commune (`validate_public_url`).
+    """
+    s = str(url or "").strip()
+    if not s:
+        return ""                     # vide = pas de surcharge, rien à valider
+    try:
+        u = urllib.parse.urlsplit(s)
+    except ValueError:
+        return "url invalide"
+    if u.scheme not in ("http", "https"):
+        return "url : http://127.0.0.1 ou https attendu"
+    if not u.hostname:
+        return "url : hôte manquant"
+    if "@" in (u.netloc or ""):
+        return "url : identifiants interdits"
+    if (u.hostname or "").lower().strip("[]") in KUMA_LOCAL_HOSTS:
+        return ""                     # Kuma en local : pas de résolution DNS à faire
+    if u.scheme != "https":
+        return "url : hors 127.0.0.1 et localhost, https est exigé"
+    _, err = validate_public_url(s)
+    return f"url refusée : {err}" if err else ""
+
+
+def kuma_settings_errors(patch):
+    """{clé: message} pour chaque surcharge Kuma refusée d'un lot de réglages.
+
+    Une valeur vide est TOUJOURS acceptée : c'est le geste « effacer la
+    surcharge », qui redonne la main à config.json.
+    """
+    errs = {}
+    if not isinstance(patch, dict):
+        return errs
+    if "kuma_slug" in patch:
+        v = str(patch.get("kuma_slug") or "").strip()
+        if not KUMA_SLUG_RE.match(v):
+            errs["kuma_slug"] = ("slug invalide : lettres, chiffres, « _ » et « - » "
+                                 "seulement, 64 caractères au plus")
+    if "kuma_container" in patch:
+        v = str(patch.get("kuma_container") or "").strip()
+        if v and not KUMA_CONTAINER_RE.match(v):
+            errs["kuma_container"] = ("nom de conteneur invalide : il commence par une "
+                                      "lettre ou un chiffre, puis lettres, chiffres, "
+                                      "« _ », « . » et « - », 64 caractères au plus")
+    if "kuma_db" in patch:
+        v = str(patch.get("kuma_db") or "").strip()
+        if v and (".." in v or not KUMA_DB_RE.match(v)):
+            errs["kuma_db"] = ("chemin invalide : chemin absolu DANS le conteneur, "
+                               "sans « .. », 200 caractères au plus")
+    if "kuma_status_url" in patch:
+        err = kuma_status_url_error(patch.get("kuma_status_url"))
+        if err:
+            errs["kuma_status_url"] = err
+    return errs
+
+
+def kuma_conf(data_dir=None, config=None, base=None, overrides=None):
+    """Branchement Uptime Kuma effectif → {slug, container, db, status_url, enabled}.
+
+    Fusionne, dans cet ordre : `KUMA_DEFAULTS`, puis `config.json` (passé par
+    l'appelant via `config`, sinon lu dans `base`), puis les surcharges
+    persistantes de `<data_dir>/settings.json`.
+
+    `overrides` ajoute une DERNIÈRE couche, non persistée : c'est ce dont a
+    besoin le bouton « Tester la connexion », qui doit essayer les valeurs
+    saisies sans les enregistrer — et obtenir exactement l'assemblage (slug
+    ajouté à l'URL) que produirait un enregistrement.
+
+    Appelée à CHAQUE usage, jamais mise en cache par l'appelant : c'est ce qui
+    fait qu'une valeur changée dans l'interface prend effet tout de suite.
+
+    Le slug est ajouté à l'URL de la status page quand celle-ci se termine par
+    « / » — l'assemblage se fait ici et nulle part ailleurs, sans quoi une URL
+    déjà complétée avec l'ANCIEN slug survivrait à un changement de slug.
+    """
+    out = dict(KUMA_DEFAULTS)
+    brut = config if isinstance(config, dict) else load_json(
+        os.path.join(base if base is not None else BASE, "config.json"), {})
+    if isinstance(brut, dict):
+        if brut.get("kuma_enabled") is not None:
+            out["enabled"] = brut["kuma_enabled"]
+        for cle, source in KUMA_KEYS:
+            if brut.get(source) is not None:
+                out[cle] = str(brut[source]).strip()
+    reglages = load_json(os.path.join(
+        data_dir if data_dir is not None else DATA_DIR, "settings.json"), {})
+    for couche in (reglages, overrides):
+        if not isinstance(couche, dict):
+            continue
+        for cle, source in KUMA_KEYS:
+            valeur = str(couche.get(source) or "").strip()
+            if valeur:
+                out[cle] = valeur
+    url = str(out["status_url"] or "").strip()
+    if out["slug"] and url.endswith("/"):
+        url += out["slug"]
+    out["status_url"] = url
+    return out

@@ -666,6 +666,8 @@ SETTINGS = {
                        "cert_critical_days": 7, "vuln_high_is_incident": False,
                        "php_eol_versions": ["7.0", "7.1", "7.2", "7.3", "7.4", "8.0"],
                        "plan_kinds": ["php_eol", "server_stale"]},
+    # Surcharges du branchement Uptime Kuma : vides = « config.json fait foi ».
+    "kuma_slug": "", "kuma_container": "", "kuma_db": "", "kuma_status_url": "",
 }
 ALERTES = {"enabled": True, "token_set": True, "token_tail": "aa42", "chat_id": "-100123",
            "rules": {"new_admin": True, "checksum_fail": True, "viz_anomaly": False,
@@ -809,13 +811,63 @@ MONITEURS = [
 CLES = ["/root/.ssh/id_dashboard", "/root/.ssh/dash_sumotori"]
 
 
+# Branchement Uptime Kuma bouchonné : c'est ce que POST /api/mgmt/settings
+# modifie et ce que POST /api/mgmt/kuma/test éprouve. Il est MUTABLE, comme la
+# surcharge de data/settings.json en production : enregistrer doit changer ce
+# que l'écran réaffiche, sans rechargement.
+KUMA_DEFAUT = {"slug": "parc-x7k2m9", "container": "uptime-kuma", "db": "/app/data/kuma.db",
+               "status_url": "http://127.0.0.1:3001/api/status-page/"}
+KUMA_BRANCHEMENT = dict(KUMA_DEFAUT,
+                        status_url=KUMA_DEFAUT["status_url"] + KUMA_DEFAUT["slug"])
+KUMA_CLES = ("kuma_slug", "kuma_container", "kuma_db", "kuma_status_url")
+# MÊMES règles que dashlib.kuma_settings_errors : la page bouchonnée ne doit
+# jamais accepter ce que la production refuse (ni l'inverse).
+KUMA_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{0,64}$")
+KUMA_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+KUMA_DB_RE = re.compile(r"^/[A-Za-z0-9_./-]{1,200}$")
+
+
+def erreurs_kuma(corps):
+    """{clé: message} des surcharges Kuma refusées. Une valeur vide est acceptée."""
+    errs = {}
+    corps = corps if isinstance(corps, dict) else {}
+    if "kuma_slug" in corps and not KUMA_SLUG_RE.match(str(corps.get("kuma_slug") or "").strip()):
+        errs["kuma_slug"] = ("slug invalide : lettres, chiffres, « _ » et « - » seulement, "
+                             "64 caractères au plus")
+    cont = str(corps.get("kuma_container") or "").strip()
+    if "kuma_container" in corps and cont and not KUMA_CONTAINER_RE.match(cont):
+        errs["kuma_container"] = ("nom de conteneur invalide : il commence par une lettre ou un "
+                                  "chiffre, puis lettres, chiffres, « _ », « . » et « - », "
+                                  "64 caractères au plus")
+    base = str(corps.get("kuma_db") or "").strip()
+    if "kuma_db" in corps and base and (".." in base or not KUMA_DB_RE.match(base)):
+        errs["kuma_db"] = ("chemin invalide : chemin absolu DANS le conteneur, sans « .. », "
+                           "200 caractères au plus")
+    url = str(corps.get("kuma_status_url") or "").strip()
+    if url and not (url.startswith("https://") or url.startswith("http://127.0.0.1")
+                    or url.startswith("http://localhost")):
+        errs["kuma_status_url"] = "url : http://127.0.0.1 ou https attendu"
+    return errs
+
+
+def kuma_valeurs(corps):
+    """(slug, conteneur, base) soumis — une valeur vide retombe sur config.json."""
+    corps = corps if isinstance(corps, dict) else {}
+    return (str(corps.get("kuma_slug") or "").strip() or KUMA_BRANCHEMENT["slug"],
+            str(corps.get("kuma_container") or "").strip() or KUMA_BRANCHEMENT["container"],
+            str(corps.get("kuma_db") or "").strip() or KUMA_BRANCHEMENT["db"])
+
+
 def mgmt_state():
     """État de gestion. `kuma` est le drapeau que TOUT le front consulte : sans
     lui, chaque écran croirait Kuma présent et afficherait des sections vides."""
     if sans_kuma():
         return {
+            # Même SANS Kuma le bloc porte le branchement : c'est justement là
+            # qu'on vient corriger un conteneur ou un slug faux dans Réglages ⚙.
             "kuma": {"enabled": False,
-                     "reason": "aucun conteneur « uptime-kuma » joignable (docker : introuvable)"},
+                     "reason": "aucun conteneur « uptime-kuma » joignable (docker : introuvable)",
+                     **KUMA_BRANCHEMENT},
             "kuma_monitors": [], "kuma_groups": [],
             "overrides": dict(OVERRIDES),
             "followed": sorted(SUIVIS),
@@ -823,13 +875,11 @@ def mgmt_state():
             "extra_docroots": [dict(d) for d in DOCROOTS],
         }
     return {
-        # `slug`, `container` et `db` sont facultatifs dans le contrat : le
-        # backend actuel ne les expose pas encore. Le scénario normal les donne
-        # (la section Réglages montre alors les valeurs), le scénario sans-kuma
-        # les omet — les deux rendus se voient ainsi tous les deux.
+        # `slug`, `container`, `db` et `status_url` : le branchement EFFECTIF,
+        # tel que le rend `dashlib.kuma_conf` (défauts → config.json →
+        # data/settings.json). La section Réglages remplit ses champs avec.
         "kuma": {"enabled": True, "reason": "conteneur uptime-kuma joignable",
-                 "slug": "parc-x7k2m9", "container": "uptime-kuma",
-                 "db": "/app/data/kuma.db"},
+                 **KUMA_BRANCHEMENT},
         "kuma_monitors": list(MONITEURS),
         "kuma_groups": [{"id": 9, "name": "Sumotori"}, {"id": 11, "name": "Client A"}],
         "overrides": dict(OVERRIDES),
@@ -930,8 +980,12 @@ def certs():
 
 ROUTES = {
     "fleet.json": fleet,
-    "/api/status-page/parc-x7k2m9": status_cfg,
-    "/api/status-page/heartbeat/parc-x7k2m9": status_hb,
+    # Le slug se règle depuis Réglages : la status page se bouchonne donc par
+    # PRÉFIXE, quel que soit le slug demandé — nginx, lui, proxifie de la même
+    # façon tout /api/status-page/* vers Kuma. Le heartbeat vient EN PREMIER :
+    # l'aiguillage du front retient la première clé qui préfixe l'URL.
+    "/api/status-page/heartbeat/": status_hb,
+    "/api/status-page/": status_cfg,
     "/api/mgmt/schedule": lambda: dict(SCHEDULE),
     "/api/actions/collect_status": collect_status,
     "/api/actions/collect_history": historique,
@@ -1307,7 +1361,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return 200, {"ok": True, "domain": dom, "followed": corps["followed"],
                          "list": sorted(SUIVIS)}
 
-        # Sans Kuma, TOUTES les routes /api/mgmt/kuma/* répondent 200 avec un
+        if chemin == "/api/mgmt/kuma/test":
+            # Essai SANS enregistrement, y compris quand Kuma n'est pas détecté
+            # (c'est justement là qu'on vient corriger une valeur). Les mêmes
+            # refus 400 qu'en production, puis un verdict par sonde.
+            errs = erreurs_kuma(corps)
+            if errs:
+                return 400, {"error": next(iter(errs.values())), "errors": errs}
+            slug, conteneur, base = kuma_valeurs(corps)
+            if sans_kuma() or conteneur != "uptime-kuma":
+                sonde_base = {"ok": False, "field": "kuma_container", "moniteurs": None,
+                              "message": f"conteneur introuvable : « {conteneur} »"}
+            elif not base.startswith("/app/"):
+                sonde_base = {"ok": False, "field": "kuma_db", "moniteurs": None,
+                              "message": "base illisible : unable to open database file"}
+            else:
+                sonde_base = {"ok": True, "field": "kuma_container",
+                              "moniteurs": len(MONITEURS),
+                              "message": f"base lue : {len(MONITEURS)} moniteur(s)"}
+            if sans_kuma() or not slug:
+                sonde_page = {"ok": False, "field": "kuma_slug", "moniteurs": None,
+                              "message": "status page : HTTP 404 (slug inconnu ?)"}
+            else:
+                mons = [m for m in MONITEURS if m.get("parent")]
+                sonde_page = {"ok": True, "field": "kuma_slug", "moniteurs": len(mons),
+                              "message": f"status page : {len(mons)} moniteur(s)"}
+            return 200, {"ok": bool(sonde_base["ok"] and sonde_page["ok"]),
+                         "base": sonde_base, "status_page": sonde_page,
+                         "slug": slug, "container": conteneur, "db": base}
+
+        # Sans Kuma, les AUTRES routes /api/mgmt/kuma/* répondent 200 avec un
         # refus lisible : le front doit pouvoir le dire, pas tomber sur un 500.
         if chemin.startswith("/api/mgmt/kuma/") and sans_kuma():
             return 200, {"ok": False, "message": "Uptime Kuma n'est pas configuré",
@@ -1458,6 +1541,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not base.startswith("https://"):
                     return 400, {"error": "base API : https exigé"}
                 patch["vizproof_api_base"] = base.rstrip("/")
+            errs = erreurs_kuma({k: patch[k] for k in KUMA_CLES if k in patch})
+            if errs:
+                return 400, {"error": next(iter(errs.values())), "errors": errs}
+            touche_kuma = any(k in patch for k in KUMA_CLES)
             for k, v in patch.items():
                 if k == "incident_rules" and isinstance(v, dict):
                     # Comme le backend : le sous-dictionnaire est RECOMPOSÉ à
@@ -1470,7 +1557,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     SETTINGS["incident_rules"] = base
                 elif k in SETTINGS:
                     SETTINGS[k] = v
-            return 200, {"ok": True, "settings": json.loads(json.dumps(SETTINGS))}
+            if touche_kuma:
+                # Une valeur vide efface la surcharge : on retombe alors sur le
+                # « config.json » bouchonné (KUMA_DEFAUT), comme en production.
+                for cle, dest in (("kuma_slug", "slug"), ("kuma_container", "container"),
+                                  ("kuma_db", "db")):
+                    if cle in patch:
+                        KUMA_BRANCHEMENT[dest] = str(patch[cle] or "").strip() or KUMA_DEFAUT[dest]
+                url = KUMA_DEFAUT["status_url"]
+                KUMA_BRANCHEMENT["status_url"] = (url + KUMA_BRANCHEMENT["slug"]
+                                                  if KUMA_BRANCHEMENT["slug"] else url)
+            return 200, {"ok": True, "settings": json.loads(json.dumps(SETTINGS)),
+                         **({"kuma": mgmt_state()["kuma"]} if touche_kuma else {})}
 
         if chemin == "/api/mgmt/vizproof/test":
             if not SETTINGS["vizproof_token_set"]:

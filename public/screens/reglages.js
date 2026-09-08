@@ -1,7 +1,7 @@
 /* Écran Réglages — « comment le dashboard se comporte ».
 
    Phase 4 : ce n'était qu'une modale, c'est maintenant UNE page à ancres, sur
-   le modèle de Sécurité et de Gestion. Huit sections, chacune avec son bouton
+   le modèle de Sécurité et de Gestion. Neuf sections, chacune avec son bouton
    d'enregistrement et son message de résultat : rien ne s'enregistre à l'insu
    de l'utilisateur, et un échec ne se confond jamais avec un autre.
 
@@ -17,12 +17,14 @@
 
    Uptime Kuma est FACULTATIF : la section 2 le dit en clair plutôt que de
    laisser deviner pourquoi le Parc n'affiche pas d'historique de disponibilité.
+   C'est là aussi que se règle son BRANCHEMENT (slug, conteneur, base) : ces
+   valeurs surchargent config.json et prennent effet sans redémarrage.
 
    Les SECRETS (jeton Telegram, jeton VizProof) ne sont jamais réinjectés dans
    un champ : l'API n'en renvoie qu'un témoin et les derniers caractères. Un
    champ laissé vide veut dire « inchangé » ; effacer est un geste explicite. */
 
-import { api, logout, SLUG } from '../lib/api.js';
+import { api, logout } from '../lib/api.js';
 import { esc as H, h, mount, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
@@ -169,10 +171,16 @@ async function loadSchedule() {
    la question « pourquoi n'ai-je pas d'historique de disponibilité ? » trouve
    sa réponse ici, et pas dans une console.
 
-   Les trois valeurs de branchement (slug, conteneur, base) vivent dans
-   `config.json` sur le serveur et ne sont exposées par AUCUNE route d'écriture :
-   elles sont donc montrées, jamais saisies. Les afficher désactivées est plus
-   honnête qu'un formulaire qui n'enregistrerait rien. */
+   Les trois valeurs de branchement (slug, conteneur, base) s'ÉDITENT ici. Elles
+   ne remplacent pas `config.json`, qui reste le fichier d'installation : elles
+   le SURCHARGENT dans data/settings.json, relu à chaque appel côté serveur — le
+   changement vaut donc tout de suite, sans redémarrage. Un champ vidé efface la
+   surcharge et redonne la main à `config.json`.
+
+   Le bouton « Tester » essaie les valeurs saisies SANS les enregistrer : c'est
+   ce qui permet de corriger un conteneur ou un slug faux sans casser
+   l'existant. Son verdict s'affiche champ par champ quand la cause est
+   identifiable (conteneur introuvable, base illisible, slug inconnu). */
 function sectionKuma() {
   return sectionEl('set-kuma', 'Uptime Kuma',
     [h('span', { class: 'small', id: 'kuma-sum' })],
@@ -182,15 +190,98 @@ function sectionKuma() {
     h('div', { id: 'kuma-body' }, h('span', { class: 'muted small', text: 'chargement…' })));
 }
 
-/** Une valeur de configuration : montrée, jamais saisie ici. */
-function champConfigKuma(id, libelle, valeur, aide, actif) {
-  const inp = h('input', { class: 'inp w100', id, readonly: true, 'aria-label': libelle });
-  inp.value = valeur || '';
-  inp.disabled = !actif;
-  if (!valeur) inp.placeholder = 'défini dans config.json (non exposé par l’API)';
-  return h('div', { class: 'field' },
-    h('label', { for: id, text: libelle }), inp,
-    h('div', { class: 'aide', text: aide }));
+/* Champs construits UNE fois : un rendu de l'état ne doit pas effacer ce qui
+   est en train d'être saisi. `KUMA_TOUCHE` retient qu'une valeur a été modifiée
+   et n'est plus celle du serveur. */
+let KUMA_CHAMPS = null;
+let KUMA_TOUCHE = false;
+
+/** Un champ éditable de branchement → {wrap, ctrl, valeur(), erreur(msg)}. */
+function champKuma(id, libelle, aide, gabarit) {
+  const ctrl = h('input', { id, class: 'inp w100', type: 'text', spellcheck: 'false',
+    autocapitalize: 'off', autocomplete: 'off', placeholder: gabarit,
+    'aria-describedby': id + '-a' });
+  ctrl.oninput = () => { KUMA_TOUCHE = true; };
+  const err = h('div', { class: 'ferr', id: id + '-e', role: 'alert' });
+  const wrap = h('div', { class: 'field' },
+    h('label', { for: id, text: libelle }), ctrl,
+    h('div', { class: 'aide', id: id + '-a', text: aide }), err);
+  return {
+    wrap, ctrl,
+    valeur: () => String(ctrl.value ?? '').trim(),
+    poser(v) { if (!KUMA_TOUCHE) ctrl.value = v || ''; },
+    erreur(msg, niveau) {
+      wrap.classList.toggle('error', niveau === 'err' && !!msg);
+      err.className = 'ferr' + (niveau === 'err' ? '' : ' muted');
+      err.textContent = msg || '';
+    },
+  };
+}
+
+/** Efface les verdicts champ par champ (avant un nouveau test, un nouvel envoi). */
+function kumaEffacerErreurs() {
+  if (!KUMA_CHAMPS) return;
+  Object.values(KUMA_CHAMPS).forEach(c => c.erreur('', 'err'));
+}
+
+/** Pose le verdict d'une sonde sur le champ qu'elle met en cause. */
+function kumaVerdict(res) {
+  if (!KUMA_CHAMPS || !res || typeof res !== 'object') return;
+  const cible = KUMA_CHAMPS[String(res.field || '').replace(/^kuma_/, '')];
+  if (cible) cible.erreur(String(res.message || ''), res.ok ? 'ok' : 'err');
+}
+
+/** Valeurs à soumettre — les trois champs, tels qu'ils sont saisis. */
+function kumaSaisie() {
+  return {
+    kuma_slug: KUMA_CHAMPS ? KUMA_CHAMPS.slug.valeur() : '',
+    kuma_container: KUMA_CHAMPS ? KUMA_CHAMPS.container.valeur() : '',
+    kuma_db: KUMA_CHAMPS ? KUMA_CHAMPS.db.valeur() : '',
+  };
+}
+
+async function testerKuma(bouton) {
+  kumaEffacerErreurs();
+  attendre('kuma-msg');
+  setBusy(bouton);
+  try {
+    const r = await api('/api/mgmt/kuma/test', kumaSaisie()) || {};
+    if (r.errors && typeof r.errors === 'object') {
+      Object.entries(r.errors).forEach(([k, m]) => kumaVerdict({ field: k, message: m, ok: false }));
+      dire('kuma-msg', 'err', 'valeurs refusées', r.error || '');
+    } else {
+      kumaVerdict(r.base);
+      kumaVerdict(r.status_page);
+      const detail = [(r.base || {}).message, (r.status_page || {}).message].filter(Boolean).join(' — ');
+      dire('kuma-msg', r.ok ? 'ok' : 'err', r.ok ? 'connexion établie' : 'connexion incomplète', detail);
+    }
+  } catch (e) { dire('kuma-msg', 'err', 'échec', String(e)); }
+  setIdle(bouton, null);
+}
+
+async function enregistrerKuma(bouton) {
+  kumaEffacerErreurs();
+  attendre('kuma-msg');
+  setBusy(bouton);
+  try {
+    const r = await api('/api/mgmt/settings', { settings: kumaSaisie() }) || {};
+    if (r.ok) {
+      KUMA_TOUCHE = false;
+      // L'état « connecté / non configuré » est recalculé côté serveur (le
+      // cache de détection a été vidé à l'écriture) : on le relit sans
+      // recharger la page, sinon l'interface montrerait l'ancien verdict.
+      await loadKuma(true);
+      renderKuma();
+      dire('kuma-msg', 'ok', 'enregistré', kumaActif() ? 'Uptime Kuma : connecté'
+        : (kumaRaison() || 'Uptime Kuma : non configuré'));
+    } else {
+      if (r.errors && typeof r.errors === 'object') {
+        Object.entries(r.errors).forEach(([k, m]) => kumaVerdict({ field: k, message: m, ok: false }));
+      }
+      dire('kuma-msg', 'err', 'échec', r.error || 'inconnu');
+    }
+  } catch (e) { dire('kuma-msg', 'err', 'échec', String(e)); }
+  setIdle(bouton, null);
 }
 
 function renderKuma() {
@@ -202,27 +293,51 @@ function renderKuma() {
 
   mount('kuma-sum', chipEl(actif ? 'connecté' : 'non configuré', actif ? 'ok' : 'mut'));
 
-  mount(bd,
+  if (!KUMA_CHAMPS) {
+    KUMA_CHAMPS = {
+      slug: champKuma('kuma-slug', 'Slug de la status page',
+        'Status page privée qui liste les moniteurs du parc : c’est elle qui relie chaque site au sien.',
+        'ex. parc-prive'),
+      container: champKuma('kuma-container', 'Conteneur Docker',
+        'Nom du conteneur Uptime Kuma, interrogé pour les moniteurs et les certificats.',
+        'ex. uptime-kuma'),
+      db: champKuma('kuma-db', 'Base SQLite',
+        'Chemin de la base DANS le conteneur (chemin absolu).',
+        'ex. /app/data/kuma.db'),
+    };
+    const tester = h('button', { type: 'button', class: 'btn sm', id: 'kuma-test' },
+      iconEl('refresh-cw'), ' Tester la connexion');
+    tester.onclick = () => testerKuma(tester);
+    const save = h('button', { type: 'button', class: 'btn primary sm', id: 'kuma-save',
+      text: 'Enregistrer' });
+    save.onclick = () => enregistrerKuma(save);
+    mount(bd,
+      h('div', { id: 'kuma-etat' }),
+      h('div', { class: 'fieldrow mt2' },
+        KUMA_CHAMPS.slug.wrap, KUMA_CHAMPS.container.wrap, KUMA_CHAMPS.db.wrap),
+      h('p', { class: 'hint hint-loose' },
+        'Ces trois valeurs ', h('b', { text: 'surchargent ' }), h('code', { text: 'config.json' }),
+        ' et prennent effet immédiatement — aucun redémarrage du service. Un champ laissé ',
+        h('b', { text: 'vide' }), ' efface la surcharge et redonne la main à ',
+        h('code', { text: 'config.json' }), ', où restent l’URL publique du dashboard, la clé SSH '
+        + 'et le commutateur ', h('code', { text: 'kuma_enabled' }), '. ',
+        h('a', { href: DOC_KUMA, target: '_blank', rel: 'noopener noreferrer',
+          text: 'Voir la documentation (README)' })),
+      piedSection('kuma-msg', tester, save));
+  }
+
+  mount('kuma-etat',
     h('div', { class: 'box small' },
       chipEl(actif ? 'Uptime Kuma : connecté' : 'Uptime Kuma : non configuré', actif ? 'ok' : 'mut'),
       raison ? h('div', { class: 'muted mt1', text: raison }) : null,
       actif ? null : h('div', { class: 'muted mt1', text:
         'La colonne État du Parc, le bloc de statut de la page site et les certificats viennent alors '
         + 'des sondes du dashboard. Les sections « Moniteurs » et « Non gérés » de Gestion restent vides, '
-        + 'et c’est normal.' })),
-    h('div', { class: 'fieldrow mt2' },
-      champConfigKuma('kuma-slug', 'Slug de la status page', k.slug || SLUG,
-        'Status page privée qui liste les moniteurs du parc : c’est elle qui relie chaque site au sien.',
-        actif),
-      champConfigKuma('kuma-container', 'Conteneur Docker', k.container || '',
-        'Nom du conteneur Uptime Kuma, interrogé pour les moniteurs et les certificats.', actif),
-      champConfigKuma('kuma-db', 'Base SQLite', k.db || '',
-        'Chemin de la base DANS le conteneur.', actif)),
-    h('p', { class: 'hint hint-loose' },
-      'Ces trois valeurs se modifient dans ', h('code', { text: 'config.json' }),
-      ' sur le serveur, puis au redémarrage du service — aucune route ne les écrit depuis l’interface. ',
-      h('a', { href: DOC_KUMA, target: '_blank', rel: 'noopener noreferrer',
-        text: 'Voir la documentation (README)' })));
+        + 'et c’est normal.' })));
+
+  KUMA_CHAMPS.slug.poser(k.slug);
+  KUMA_CHAMPS.container.poser(k.container);
+  KUMA_CHAMPS.db.poser(k.db);
 }
 
 /* ============================================================================
