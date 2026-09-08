@@ -266,6 +266,39 @@ class TestSiteKey(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 class TestSiteVisible(unittest.TestCase):
 
+    # ---- les quatre combinaisons de la nouvelle règle --------------------- #
+    #
+    # `followed` est POSÉ PAR LE COLLECTEUR : il vaut déjà « a un moniteur Kuma
+    # (quand Kuma est là) ou figure dans followed.json ». `site_visible` n'a
+    # donc qu'à croiser l'override et ce booléen — ce que ces quatre cas
+    # décrivent, Kuma présent (le site porte un `kuma`) comme absent.
+
+    def test_auto_et_suivi_avec_kuma(self):
+        self.assertTrue(dashlib.site_visible(
+            {"domain": "a.fr", "kuma": "a.fr", "followed": True}))
+
+    def test_auto_et_non_suivi_avec_kuma(self):
+        """Kuma est là mais ne supervise pas ce site, et personne ne l'a suivi."""
+        self.assertFalse(dashlib.site_visible(
+            {"domain": "a.fr", "kuma": None, "followed": False}))
+
+    def test_auto_et_suivi_sans_kuma(self):
+        """Sans Kuma : followed.json suffit à rendre le site visible."""
+        self.assertTrue(dashlib.site_visible({"domain": "a.fr", "followed": True}))
+
+    def test_auto_et_non_suivi_sans_kuma(self):
+        """Un install découvert reste masqué tant qu'il n'est pas suivi."""
+        self.assertFalse(dashlib.site_visible({"domain": "a.fr", "followed": False}))
+
+    def test_override_masquer_gagne_sur_le_suivi(self):
+        self.assertFalse(dashlib.site_visible(
+            {"domain": "a.fr", "followed": True, "visible": False}))
+
+    def test_override_afficher_gagne_sur_l_absence_de_suivi(self):
+        self.assertTrue(dashlib.site_visible(
+            {"domain": "a.fr", "followed": False, "visible": True}))
+
+    # ---- compatibilité : fiche produite AVANT la bascule ------------------ #
     def test_moniteur_kuma_present_visible(self):
         self.assertTrue(dashlib.site_visible({"domain": "a.fr", "kuma": "a.fr"}))
 
@@ -292,11 +325,159 @@ class TestSiteVisible(unittest.TestCase):
         self.assertTrue(dashlib.site_visible({"domain": "a.fr"}))
 
     def test_meme_regle_que_les_appelants(self):
-        """actions_server, vulns et phperrors doivent partager LA fonction."""
+        """actions_server, vulns et phperrors doivent partager LA fonction.
+
+        C'est ce qui rend Kuma facultatif pour eux aussi : ils ne connaissent ni
+        moniteur ni followed.json, seulement `site_visible`.
+        """
         import actions_server
+        import phperrors
         import vulns
         self.assertIs(actions_server.site_visible, dashlib.site_visible)
         self.assertIs(vulns.site_visible, dashlib.site_visible)
+        self.assertIs(phperrors.A.site_visible, dashlib.site_visible)
+
+
+# --------------------------------------------------------------------------- #
+#  Sites suivis (data/followed.json) et migration de la bascule                #
+# --------------------------------------------------------------------------- #
+class TestFollowed(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = self.tmp.name
+        dashlib._JSON_LOCKS.clear()
+
+    def chemin(self):
+        return os.path.join(self.data, "followed.json")
+
+    def ecrire_fleet(self, fleet):
+        with open(os.path.join(self.data, "fleet.json"), "w") as fh:
+            json.dump(fleet, fh)
+
+    # ---- lecture / écriture ---------------------------------------------- #
+    def test_fichier_absent_rend_un_ensemble_vide(self):
+        self.assertEqual(dashlib.load_followed(self.data), set())
+
+    def test_suivre_puis_ne_plus_suivre(self):
+        dashlib.set_followed("a.fr", True, self.data)
+        dashlib.set_followed("b.fr/boutique", True, self.data)
+        self.assertEqual(dashlib.load_followed(self.data), {"a.fr", "b.fr/boutique"})
+        dashlib.set_followed("a.fr", False, self.data)
+        self.assertEqual(dashlib.load_followed(self.data), {"b.fr/boutique"})
+
+    def test_liste_ecrite_triee_et_sans_doublon(self):
+        for _ in range(3):
+            dashlib.set_followed("b.fr", True, self.data)
+        dashlib.set_followed("a.fr", True, self.data)
+        self.assertEqual(lire_json(self.chemin()), ["a.fr", "b.fr"])
+
+    def test_fichier_en_0600(self):
+        dashlib.set_followed("a.fr", True, self.data)
+        self.assertEqual(mode_of(self.chemin()), 0o600)
+
+    def test_forme_dictionnaire_toleree(self):
+        with open(self.chemin(), "w") as fh:
+            json.dump({"a.fr": True, "b.fr": False}, fh)
+        self.assertEqual(dashlib.load_followed(self.data), {"a.fr"})
+
+    # ---- migration -------------------------------------------------------- #
+    def test_migration_reprend_exactement_les_sites_visibles(self):
+        """20 sites visibles sur 58 installs, avant comme après la bascule.
+
+        Fixture représentative du parc : quelques sites supervisés par Kuma, un
+        site sans SSH, un masqué à la main, un forcé à l'affichage sans moniteur,
+        et une longue traîne d'installs découverts que personne ne regarde.
+        """
+        sites = []
+        for i in range(15):                       # supervisés par Kuma → visibles
+            sites.append({"domain": f"kuma{i}.fr", "kuma": f"kuma{i}.fr"})
+        for i in range(3):                        # sites sans SSH → visibles d'office
+            sites.append({"domain": f"rest{i}.fr", "kuma": None, "via": "rest"})
+        for i in range(2):                        # forcés à l'affichage sans moniteur
+            sites.append({"domain": f"force{i}.fr", "kuma": None, "visible": True})
+        sites.append({"domain": "masque.fr", "kuma": "masque.fr", "visible": False})
+        for i in range(37):                       # installs découverts, non supervisés
+            sites.append({"domain": f"install{i}.fr", "kuma": None})
+        fleet = {"servers": [{"name": "s1", "sites": sites[:30]},
+                             {"name": "s2", "sites": sites[30:]}]}
+        self.assertEqual(len(sites), 58)
+        avant = [s["domain"] for s in sites if dashlib.legacy_site_visible(s)]
+        self.assertEqual(len(avant), 20)
+
+        self.ecrire_fleet(fleet)
+        suivis = dashlib.ensure_followed_migrated(self.data)
+        self.assertEqual(suivis, sorted(avant))
+
+        # Après la bascule, le collecteur pose `followed` d'après cette liste et
+        # `site_visible` doit rendre EXACTEMENT la même sélection.
+        suivis = dashlib.load_followed(self.data)
+        apres = [s["domain"] for s in sites
+                 if dashlib.site_visible(dict(s, followed=s["domain"] in suivis
+                                              or s.get("via") == "rest"))]
+        self.assertEqual(sorted(apres), sorted(avant))
+        self.assertEqual(len(apres), 20)
+
+    def test_migration_idempotente(self):
+        self.ecrire_fleet({"servers": [{"name": "s1", "sites": [
+            {"domain": "a.fr", "kuma": "a.fr"}]}]})
+        self.assertEqual(dashlib.ensure_followed_migrated(self.data), ["a.fr"])
+        # Deuxième appel : rien à faire, et surtout rien à réécrire.
+        self.assertIsNone(dashlib.ensure_followed_migrated(self.data))
+        # Même après un décochage complet, la migration ne se rejoue pas :
+        # sinon Tommy verrait revenir tout ce qu'il vient d'écarter.
+        dashlib.set_followed("a.fr", False, self.data)
+        self.assertIsNone(dashlib.ensure_followed_migrated(self.data))
+        self.assertEqual(dashlib.load_followed(self.data), set())
+
+    def test_migration_sans_fleet_ecrit_une_liste_vide(self):
+        """Installation neuve : rien à reprendre, mais le marqueur est posé."""
+        self.assertEqual(dashlib.ensure_followed_migrated(self.data), [])
+        self.assertTrue(os.path.exists(self.chemin()))
+        self.assertIsNone(dashlib.ensure_followed_migrated(self.data))
+
+    def test_migration_concurrente_ne_produit_qu_une_liste(self):
+        self.ecrire_fleet({"servers": [{"name": "s1", "sites": [
+            {"domain": f"k{i}.fr", "kuma": f"k{i}.fr"} for i in range(5)]}]})
+        resultats, barriere = [], threading.Barrier(6)
+
+        def courir():
+            barriere.wait()
+            resultats.append(dashlib.ensure_followed_migrated(self.data))
+
+        fils = [threading.Thread(target=courir) for _ in range(6)]
+        for f in fils:
+            f.start()
+        for f in fils:
+            f.join(timeout=20)
+        self.assertEqual(sum(1 for r in resultats if r is not None), 1)
+        self.assertEqual(len(dashlib.load_followed(self.data)), 5)
+
+
+# --------------------------------------------------------------------------- #
+#  Garde anti-SSRF partagée par l'API et les sondes du collecteur              #
+# --------------------------------------------------------------------------- #
+class TestGardeSSRF(unittest.TestCase):
+
+    def test_schema_refuse(self):
+        for url in ("file:///etc/passwd", "javascript:alert(1)", "ftp://x.fr/"):
+            self.assertIsNone(dashlib.validate_public_url(url)[0], url)
+
+    def test_identifiants_dans_l_url_refuses(self):
+        self.assertIsNone(dashlib.validate_public_url("https://a:b@exemple.fr/")[0])
+
+    def test_loopback_refuse(self):
+        u, err = dashlib.validate_public_url("http://127.0.0.1:8090/api/mgmt/state")
+        self.assertIsNone(u)
+        self.assertIn("adresse non autorisée", err)
+
+    def test_une_seule_copie_de_la_garde(self):
+        """Deux copies d'un contrôle de sécurité, c'est une copie qui diverge."""
+        import actions_server
+        import collect
+        self.assertIs(actions_server.validate_public_url, dashlib.validate_public_url)
+        self.assertIs(collect.validate_public_url, dashlib.validate_public_url)
 
 
 # --------------------------------------------------------------------------- #
@@ -331,3 +512,31 @@ class TestValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDomaineEnDouble(unittest.TestCase):
+    """Un domaine présent sur deux serveurs ne doit s'afficher qu'une fois.
+
+    Le cas est réel dans ce parc : une migration laisse la copie d'origine en
+    place. Tant que la visibilité venait d'Uptime Kuma, un seul install portait
+    le moniteur et l'autre disparaissait tout seul. Depuis que « suivi » se
+    décide par domaine, les deux copies passeraient — la production a bien
+    affiché 23 lignes pour 20 sites avant ce correctif.
+    """
+
+    def test_seule_la_copie_principale_est_visible(self):
+        gagnant = {"domain": "exemple.fr", "followed": True, "primary": True}
+        perdant = {"domain": "exemple.fr", "followed": True, "primary": False}
+        self.assertTrue(dashlib.site_visible(gagnant))
+        self.assertFalse(dashlib.site_visible(perdant))
+
+    def test_affichage_force_prime_sur_la_copie(self):
+        """`show` reste un ordre : il passe même sur une copie secondaire."""
+        force = {"domain": "exemple.fr", "followed": False,
+                 "primary": False, "visible": True}
+        self.assertTrue(dashlib.site_visible(force))
+
+    def test_sans_marqueur_le_site_reste_visible(self):
+        """Une fiche d'avant le correctif n'a pas `primary` : elle ne disparaît pas."""
+        self.assertTrue(dashlib.site_visible({"domain": "exemple.fr", "followed": True}))
+

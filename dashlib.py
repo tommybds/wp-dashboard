@@ -17,9 +17,11 @@ paramètre (`data_dir`). C'est ce qui permet à un module appelant — et aux te
 qui redirigent `actions_server.DATA` vers un répertoire jetable — de garder la
 main sur ses propres chemins.
 """
+import ipaddress
 import json
 import os
 import re
+import socket
 import tempfile
 import threading
 import urllib.parse
@@ -182,16 +184,48 @@ def site_key(value):
 
 
 def site_visible(site):
-    """Règle d'affichage du dashboard : masqué si override False, ou sans moniteur Kuma
-    quand l'affichage n'est pas forcé. Un site ajouté en REST est visible d'office :
-    il a été déclaré explicitement, même s'il n'est pas encore supervisé par Kuma.
+    """Règle d'affichage du dashboard.
 
-    Les choix de data/overrides.json ne sont PAS relus ici : collect.py les a déjà
-    reportés sur la fiche du site (clé `visible`) au moment de la collecte.
+        override « masquer »  → masqué ;
+        override « afficher » → visible ;
+        « auto »              → visible SI le site est suivi.
+
+    « Suivi » veut dire : il a un moniteur Uptime Kuma (quand Kuma est installé)
+    OU il figure dans data/followed.json. Cette seconde source rend Kuma
+    facultatif : une installation sans Kuma décide seule de ce qu'elle affiche.
+
+    Les fichiers data/overrides.json et data/followed.json ne sont PAS relus ici :
+    collect.py les a déjà reportés sur la fiche du site (clés `visible` et
+    `followed`) au moment de la collecte. `site_visible` reste donc une fonction
+    pure, appelée en boucle par tous les agrégats.
+
+    Repli : une fiche produite AVANT la bascule n'a pas de clé `followed` ; on lui
+    applique alors l'ancienne règle (`legacy_site_visible`), pour que l'écran ne
+    change pas entre la bascule et la collecte suivante.
 
     C'est la règle officielle de l'interface : la veille de vulnérabilités et le
     relevé d'erreurs PHP s'y conforment, sinon ils signaleraient des problèmes sur
     des installations que personne ne voit.
+    """
+    if site.get("visible") is False:
+        return False
+    if site.get("visible") is True:
+        return True
+    if site.get("followed") is not None:
+        # `primary` est faux sur la copie perdante d'un domaine présent sur deux
+        # serveurs : la suivre afficherait deux fois le même site. Un affichage
+        # forcé (`show`) reste prioritaire, il a été traité au-dessus.
+        return bool(site.get("followed")) and site.get("primary", True) is not False
+    return legacy_site_visible(site)
+
+
+def legacy_site_visible(site):
+    """Règle d'affichage EN VIGUEUR AVANT que Uptime Kuma devienne facultatif.
+
+    Conservée pour deux usages, et deux seulement :
+      * la migration `ensure_followed_migrated()`, qui doit reprendre EXACTEMENT
+        la sélection affichée le jour de la bascule ;
+      * le repli de `site_visible()` sur une fiche sans clé `followed`.
     """
     if site.get("visible") is False:
         return False
@@ -200,3 +234,128 @@ def site_visible(site):
     if site.get("visible") is not True and "kuma" in site and not site.get("kuma"):
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+#  Sites suivis — data/followed.json
+# ---------------------------------------------------------------------------
+# Liste JSON de clés de site (« exemple.fr », « exemple.fr/boutique »). C'est la
+# source de vérité PROPRE AU DASHBOARD de ce qui est supervisé : un install
+# découvert par la collecte reste masqué tant qu'il n'y figure pas — sauf s'il a
+# un moniteur Kuma, qui vaut suivi lui aussi.
+FOLLOWED_FILE = "followed.json"
+
+
+def followed_path(data_dir=None):
+    return os.path.join(data_dir if data_dir is not None else DATA_DIR, FOLLOWED_FILE)
+
+
+def load_followed(data_dir=None):
+    """Ensemble des clés de site suivies (vide si le fichier est absent)."""
+    raw = load_json(followed_path(data_dir), None)
+    if isinstance(raw, list):
+        return {str(x) for x in raw if isinstance(x, str) and x}
+    if isinstance(raw, dict):        # tolérance : {"exemple.fr": true}
+        return {str(k) for k, v in raw.items() if v}
+    return set()
+
+
+def set_followed(domain, followed, data_dir=None):
+    """Ajoute ou retire un site de la liste → liste triée, écrite sur disque."""
+    dom = str(domain or "")
+
+    def _muter(courant):
+        vus = set()
+        if isinstance(courant, list):
+            vus = {str(x) for x in courant if isinstance(x, str) and x}
+        elif isinstance(courant, dict):
+            vus = {str(k) for k, v in courant.items() if v}
+        if followed:
+            vus.add(dom)
+        else:
+            vus.discard(dom)
+        return sorted(vus)
+
+    return update_json(followed_path(data_dir), _muter, [], data_dir=data_dir)
+
+
+def ensure_followed_migrated(data_dir=None, fleet=None):
+    """Première bascule : inscrit dans followed.json tout site VISIBLE aujourd'hui.
+
+    Sans elle, activer la nouvelle règle viderait l'écran — plus aucun site ne
+    serait « suivi » le premier jour. La sélection est donc calculée sur
+    `fleet.json` TEL QU'IL EST SUR LE DISQUE (produit par l'ancienne règle, il
+    porte encore la clé `kuma` de chaque site) avec `legacy_site_visible` : le
+    nombre de sites affichés est identique avant et après.
+
+    Idempotente : le marqueur est l'EXISTENCE du fichier, testée puis écrite sous
+    le verrou du chemin. Un second appel ne recalcule rien — y compris si tout a
+    été décoché entre-temps (le fichier existe, fût-il vide) ou si deux processus
+    démarrent en même temps. → liste écrite, ou None si la migration a déjà eu lieu.
+    """
+    chemin = followed_path(data_dir)
+    with json_lock(chemin):
+        if os.path.exists(chemin):
+            return None
+        if fleet is None:
+            fleet = load_json(os.path.join(data_dir if data_dir is not None else DATA_DIR,
+                                           "fleet.json"), None)
+        doms = set()
+        for srv in ((fleet or {}).get("servers") or []):
+            if not isinstance(srv, dict):
+                continue
+            for s in (srv.get("sites") or []):
+                if isinstance(s, dict) and s.get("domain") and legacy_site_visible(s):
+                    doms.add(str(s["domain"]))
+        suivis = sorted(doms)
+        save_json(chemin, suivis, data_dir=data_dir)
+        return suivis
+
+
+# ---------------------------------------------------------------------------
+#  Garde anti-SSRF (partagée par l'API et par les sondes du collecteur)
+# ---------------------------------------------------------------------------
+# Elle vivait dans actions_server.py ; les sondes de collect.py en ont besoin
+# aussi, et deux copies d'un contrôle de sécurité, c'est une copie qui finit par
+# diverger. Elle est ici pour n'exister qu'une fois.
+def public_ips(host, port):
+    """IP publiques de l'hôte → (liste, erreur). Refuse loopback, privé, lien-local, réservé."""
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError, ValueError) as e:
+        return None, f"hôte injoignable ({e})"
+    ips = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return None, f"adresse non autorisée ({ip})"
+        ips.append(str(ip))
+    if not ips:
+        return None, "aucune adresse exploitable"
+    return ips, None
+
+
+def validate_public_url(url):
+    """Contrôle schéma + résolution DNS publique d'une URL (appliqué à chaque redirection)."""
+    try:
+        u = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return None, "url invalide"
+    if u.scheme not in ("http", "https"):
+        return None, f"schéma non autorisé ({u.scheme or '?'})"
+    if not u.hostname:
+        return None, "hôte manquant"
+    if "@" in (u.netloc or ""):
+        return None, "identifiants interdits dans l'url"
+    try:
+        port = u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:
+        return None, "port invalide"
+    ips, err = public_ips(u.hostname, port)
+    if err:
+        return None, err
+    return u, None

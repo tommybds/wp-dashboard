@@ -5,13 +5,23 @@
    SEL, FILT, CUR…) que n'importe quel bout de code pouvait écrire. Elles vivent
    maintenant dans `store`, et un écran qui veut se redessiner s'abonne plutôt
    que d'être appelé de l'extérieur. Le comportement est identique : `emit()`
-   est déclenché exactement là où l'ancien code appelait `render()`. */
+   est déclenché exactement là où l'ancien code appelait `render()`.
+
+   Uptime Kuma est FACULTATIF. Le dashboard sonde lui-même chaque site
+   (`site.probe`) et lit lui-même les certificats (`site.cert`) : il reste
+   complet sans Kuma. Quand Kuma est là, son verdict prime — c'est un vrai
+   moniteur, avec un historique et des alertes, là où la sonde n'est qu'un
+   relevé de collecte. Toute la règle tient dans `etatSite()` : aucun écran ne
+   la ré-invente, sinon deux écrans finissent par dire deux choses du même
+   site. */
 
 import { api, SLUG } from './api.js';
+import { relTime } from './format.js';
 
 export const store = {
   fleet: null,          // contenu de fleet.json
   status: {},           // {nom de moniteur Kuma: 0|1|2}
+  kuma: null,           // {enabled, reason} — null tant que /api/mgmt/state n'a pas répondu
   mgmt: null,           // /api/mgmt/state
   baseline: {},         // référence des administrateurs
   settings: {           // réglages serveur, lus paresseusement (voir screens/reglages.js)
@@ -20,7 +30,7 @@ export const store = {
     viz_baseline_before_update: true,
     viz_baseline_required: false,
   },
-  hidden: 0,            // sites masqués par la visibilité / le filtre Kuma
+  hidden: 0,            // sites découverts mais non suivis (ou masqués à la main)
   curjob: null,         // identifiant du job groupé en cours
   cur: null,            // site affiché par la page site
   sort: { k: 'domain', dir: 1 },
@@ -98,6 +108,53 @@ function siteHaystack(d) {
   return bouts.filter(Boolean).join(' ').toLowerCase();
 }
 
+/* ---- suivi et visibilité ---------------------------------------------------
+   Le Parc ne montre plus « ce que Kuma surveille » mais « ce que le dashboard
+   suit » : une liste qui lui appartient (`site.followed`, écrite par
+   /api/mgmt/follow). Un install découvert au scan reste donc MASQUÉ tant qu'on
+   ne l'a pas explicitement pris en charge — c'est ce qui permet de scanner un
+   serveur entier sans noyer le tableau.
+
+   `site.visible` reste au-dessus : c'est le forçage manuel (afficher / masquer
+   quoi qu'il arrive) de la route d'override. Il n'est presque jamais posé.
+
+   Repli : tant que `followed` n'est pas remonté par la collecte (backend plus
+   ancien), on retombe sur l'ancienne règle — sinon le Parc se viderait d'un
+   coup au premier déploiement du front. */
+export function suivi(d) {
+  if (typeof d.followed === 'boolean') return d.followed;
+  return d.via === 'rest' || !!kName(d);
+}
+
+/** Le site apparaît-il dans le Parc ? (forçage manuel, sinon suivi) */
+export function estAffiche(d) {
+  if (d.visible === true) return true;
+  if (d.visible === false) return false;
+  // `primary` est faux sur la copie perdante d'un domaine hébergé à deux
+  // endroits (migration en cours) : la suivre afficherait deux fois le même
+  // site. Même règle que `site_visible` côté serveur, qui fait autorité.
+  return suivi(d) && d.primary !== false;
+}
+
+/** L'affichage forcé contredit-il le suivi ? (à dire, sinon il est invisible) */
+export function affichageForce(d) {
+  return (d.visible === true || d.visible === false) && d.visible !== suivi(d);
+}
+
+/* ---- nom, client -----------------------------------------------------------
+   Le nom vient de Kuma quand il y a un moniteur, sinon du libellé saisi dans
+   Gestion (`label`), sinon du domaine. La CLÉ D'URL, elle, ne bouge pas avec le
+   libellé (cf. `cleDeSite` dans screens/site.js) : un renommage ne doit pas
+   casser les liens déjà partagés. */
+export function nomDeSite(d) {
+  return kName(d) || d.label || d.domain || '';
+}
+
+/** Client d'un site : groupe Kuma s'il existe, sinon le client saisi. */
+export function clientDe(d) {
+  return d.kuma_group || d.client || '';
+}
+
 /* Mémoïsation : `allSites()` était reconstruite 3 fois par rendu (cartes,
    filtre, méta). Le cache est vidé dès que la flotte change. */
 let SITECACHE = null;
@@ -108,10 +165,7 @@ export function allSites() {
   store.hidden = 0;
   (store.fleet?.servers || []).forEach(s => (s.sites || []).forEach(x => {
     const d = { srv: s.name, ...x };
-    if (d.visible === false) { store.hidden++; return; }
-    // un site ajouté sans SSH (mode REST) est géré explicitement : toujours visible,
-    // même tant qu'aucun moniteur Kuma ne lui correspond.
-    if (d.visible !== true && d.via !== 'rest' && ('kuma' in d) && !d.kuma) { store.hidden++; return; }
+    if (!estAffiche(d)) { store.hidden++; return; }
     d._q = siteHaystack(d);
     // État du serveur reporté sur ses sites : `stale` = injoignable à la
     // dernière collecte, les chiffres affichés datent de la précédente.
@@ -136,8 +190,95 @@ export function siteByName(nom, srv) {
       || null;
 }
 
-/** État Kuma d'un site : 1 en ligne, 0 down, 2 en attente, undefined inconnu. */
-export function st(d) { const n = kName(d); return n ? store.status[n] : undefined; }
+/* État Kuma brut d'un site : 1 en ligne, 0 down, 2 en attente, undefined si
+   aucun moniteur ne parle de lui. Volontairement NON exporté : un écran qui
+   lirait Kuma directement afficherait « inconnu » sur une installation sans
+   Kuma, alors que la sonde du dashboard, elle, a la réponse. Tout le monde
+   passe par `etatSite()`. */
+function st(d) { const n = kName(d); return n ? store.status[n] : undefined; }
+
+/* ---- disponibilité affichée ------------------------------------------------
+   UNE fonction pour tout l'écran. Elle rend un objet d'affichage — libellé,
+   niveau de chip, phrase de source — et jamais du DOM : les cartes du mobile,
+   les lignes du tableau, l'en-tête de la page site et la recherche globale
+   passent tous par là, donc ils ne peuvent pas diverger.
+
+     v      1 en ligne · 0 injoignable · 2 en attente · undefined inconnu
+     source 'kuma' | 'probe' | ''    (pour un affichage discret, pas pour trier)
+     tip    d'où vient ce verdict, et quand — la phrase de l'infobulle
+
+   Kuma prime quand un moniteur répond pour ce site : il a l'historique et les
+   alertes. Sinon la sonde du dashboard, faite à la collecte. Si aucune des deux
+   n'a parlé : « inconnu », gris — jamais vert par défaut. */
+export function etatSite(d) {
+  const v = st(d);
+  if (v !== undefined) {
+    return {
+      v,
+      txt: v === 1 ? 'en ligne' : v === 0 ? 'down' : v === 2 ? 'en attente' : 'inconnu',
+      niv: v === 1 ? 'ok' : v === 0 ? 'err' : v === 2 ? 'warn' : 'mut',
+      source: 'kuma',
+      tip: "d'après Uptime Kuma",
+    };
+  }
+  const p = d && d.probe;
+  if (p && typeof p === 'object' && typeof p.ok === 'boolean') {
+    const bouts = [];
+    if (p.status) bouts.push('HTTP ' + p.status);
+    if (p.ms) bouts.push(Math.round(p.ms) + ' ms');
+    if (!p.ok && p.error) bouts.push(String(p.error).slice(0, 120));
+    const quand = p.checked_at ? relTime(p.checked_at) : '';
+    return {
+      v: p.ok ? 1 : 0,
+      txt: p.ok ? 'en ligne' : 'injoignable',
+      niv: p.ok ? 'ok' : 'err',
+      source: 'probe',
+      tip: 'sonde du dashboard' + (quand ? ', ' + quand : '')
+        + (bouts.length ? ' · ' + bouts.join(' · ') : ''),
+    };
+  }
+  return {
+    v: undefined, txt: 'inconnu', niv: 'mut', source: '',
+    tip: "aucune sonde n'a encore relevé ce site",
+  };
+}
+
+/* ---- Uptime Kuma présent ? -------------------------------------------------
+   `store.kuma` vient de /api/mgmt/state. Tant qu'il est `null` on considère
+   Kuma présent : c'était le comportement avant, et il vaut mieux une seconde
+   d'optimisme qu'un écran qui efface ses sections puis les remet. */
+export function kumaActif() { return !store.kuma || store.kuma.enabled !== false; }
+
+/* Où lire comment brancher Uptime Kuma. Une seule constante : trois écrans
+   renvoient à cette page, et trois liens copiés-collés finissent par diverger. */
+export const DOC_KUMA = 'https://github.com/tommybds/wp-dashboard#configjson';
+
+/** Pourquoi Kuma n'est pas là (phrase du backend), pour les écrans qui le disent. */
+export function kumaRaison() { return (store.kuma && store.kuma.reason) || ''; }
+
+/* Le drapeau est lu UNE fois au démarrage : Parc, page site, Sécurité et
+   Réglages en ont besoin, et aucun d'eux n'ouvre Gestion (seul écran qui
+   chargeait /api/mgmt/state jusqu'ici). Un échec laisse `store.kuma` à null,
+   donc l'ancien affichage. */
+let KUMAP = null;
+
+export function loadKuma() {
+  if (KUMAP) return KUMAP;
+  KUMAP = api('/api/mgmt/state').then(j => {
+    setKuma(j && j.kuma);
+    return store.kuma;
+  }).catch(() => null);
+  return KUMAP;
+}
+
+/** Enregistre le drapeau Kuma (appelé aussi par Gestion, qui lit le même état). */
+export function setKuma(k) {
+  const avant = store.kuma && store.kuma.enabled;
+  store.kuma = (k && typeof k === 'object')
+    ? { enabled: k.enabled !== false, reason: String(k.reason || '') }
+    : { enabled: true, reason: '' };
+  if (store.kuma.enabled !== avant) emit();
+}
 
 /** Âge de la dernière sauvegarde UpdraftPlus, en heures (null si aucune). */
 export function bkAge(s) {
@@ -149,7 +290,7 @@ export function bkAge(s) {
 /** « À traiter » : mise à jour en attente, sauvegarde en retard, erreur, down. */
 export function attn(s) {
   return !!(s.core_update || s.plugins_updates || Object.keys(s.errors || {}).length
-    || (s.updraft && (bkAge(s) === null || bkAge(s) > seuilBackup())) || st(s) === 0);
+    || (s.updraft && (bkAge(s) === null || bkAge(s) > seuilBackup())) || etatSite(s).v === 0);
 }
 
 /** Clé stable d'un site dans la sélection. */
@@ -175,6 +316,9 @@ async function chargerFleet() {
 }
 
 export async function loadStatus() {
+  // Sans Kuma il n'y a pas de status page à interroger : aller la chercher
+  // quand même remplirait la console d'erreurs réseau à chaque minute.
+  if (!kumaActif()) { store.status = {}; return; }
   try {
     const cfg = await api('/api/status-page/' + SLUG);
     const hb = await api('/api/status-page/heartbeat/' + SLUG);

@@ -13,10 +13,11 @@ import { esc as H, h, mount, activeAuClavier, occupe } from '../lib/dom.js';
 import { debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import {
-  store, allSites, st, bkAge, attn, key, kName, loadFleet, phpEol, seuilBackup,
+  store, allSites, etatSite, bkAge, attn, key, kName, nomDeSite, clientDe,
+  loadFleet, phpEol, seuilBackup,
 } from '../lib/state.js';
 
-import { chipEl, libelleKuma, niveauKuma } from '../components/chip.js';
+import { chipEl, chipEtat } from '../components/chip.js';
 import { askInfo, askText, askChoice, askOpen } from '../components/confirm.js';
 import { demarrerJob } from '../components/job.js';
 import { NOTIF } from '../components/toast.js';
@@ -380,7 +381,7 @@ function compteurs() {
   if (!box) return;
   const S = allSites();
   let up = 0, down = 0;
-  S.forEach(s => { const v = st(s); if (v === 1) up++; else if (v === 0) down++; });
+  S.forEach(s => { const v = etatSite(s).v; if (v === 1) up++; else if (v === 0) down++; });
   const seuil = seuilBackup();
   const core = S.filter(s => s.core_update).length;
   const plug = S.reduce((a, s) => a + (s.plugins_updates || 0), 0);
@@ -410,9 +411,9 @@ function compteurs() {
 
 /* ---- filtrage et tri ---------------------------------------------------------- */
 function rowVals(s) {
-  const v = st(s), age = bkAge(s), vu = vulnDe(s);
+  const v = etatSite(s).v, age = bkAge(s), vu = vulnDe(s);
   return {
-    status: v === undefined ? 2.5 : v, domain: kName(s) || s.domain, server: s.srv || '',
+    status: v === undefined ? 2.5 : v, domain: nomDeSite(s), server: s.srv || '',
     core: s.core_version || '', plugins: s.plugins_updates || 0, themes: s.themes_updates || 0,
     viz: vizVal(s), php: s.php_version || '',
     backup: age === null ? (s.updraft ? 9e9 : -1) : age,
@@ -426,9 +427,12 @@ function filtered() {
   const q = store.filt.q.toLowerCase();
   if (q) S = S.filter(s => (s._q || '').includes(q));
   if (store.filt.srv) S = S.filter(s => s.srv === store.filt.srv);
-  if (store.filt.grp) S = S.filter(s => s.kuma_group === store.filt.grp);
+  if (store.filt.grp) S = S.filter(s => clientDe(s) === store.filt.grp);
   if (store.filt.st) {
-    S = S.filter(s => { const v = st(s); return store.filt.st === 'up' ? v === 1 : store.filt.st === 'down' ? v === 0 : v === undefined; });
+    S = S.filter(s => {
+      const v = etatSite(s).v;
+      return store.filt.st === 'up' ? v === 1 : store.filt.st === 'down' ? v === 0 : v === undefined;
+    });
   }
   if (store.filt.todo) S = S.filter(attn);
   const seuil = seuilBackup();
@@ -436,7 +440,7 @@ function filtered() {
     core: s => s.core_update, plug: s => s.plugins_updates,
     bk: s => s.updraft && (bkAge(s) === null || bkAge(s) > seuil),
     err: s => Object.keys(s.errors || {}).length,
-    down: s => st(s) === 0, up: s => st(s) === 1,
+    down: s => etatSite(s).v === 0, up: s => etatSite(s).v === 1,
   };
   if (cm[store.filt.card]) S = S.filter(cm[store.filt.card]);
   S.sort((a, b) => {
@@ -452,21 +456,22 @@ function filtered() {
    ce qui s'affiche — libellés et niveaux déjà décidés —, pas de logique. */
 function objetLigne(s) {
   const cle = kName(s) || s.domain;
+  const nom = nomDeSite(s);
   const age = bkAge(s), seuil = seuilBackup();
-  const v = st(s);
+  const e = etatSite(s);
   const nMaj = (s.plugins_updates || 0) + (s.core_update ? 1 : 0) + (s.themes_updates || 0);
   const bk = !s.updraft ? ['aucune', 'warn']
     : age === null ? ['jamais', 'warn']
       : age >= seuil ? ['il y a ' + (age / 24).toFixed(1) + ' j', 'warn']
         : ['il y a ' + Math.round(age) + ' h', 'ok'];
   const sous = [
-    s.kuma_group || '',
-    cle !== s.domain ? s.domain : '',
-    (s.blogname && s.blogname !== cle) ? s.blogname : '',
+    clientDe(s),
+    nom !== s.domain ? s.domain : '',
+    (s.blogname && s.blogname !== nom) ? s.blogname : '',
   ].filter(Boolean).join(' · ');
   return {
-    site: s, cle, label: cle, sous,
-    etat: { txt: libelleKuma(v), niv: niveauKuma(v) },
+    site: s, cle, label: nom, sous,
+    etat: e,
     stale: !!s._stale,
     maj: { n: nMaj, txt: nMaj ? String(nMaj) : 'à jour', niv: nMaj ? 'warn' : '' },
     backup: { txt: bk[0], niv: bk[1] === 'ok' ? '' : 'warn' },
@@ -477,7 +482,7 @@ function objetLigne(s) {
 
 /* ---- cellules ------------------------------------------------------------------ */
 function celluleSite(s) {
-  const label = kName(s) || s.domain;
+  const label = nomDeSite(s);
   const td = h('td', { class: 'site' }, h('b', { text: label }));
   const rs = h('button', { type: 'button', class: 'rowscan', title: 'Re-scanner ce site maintenant', 'aria-label': 'Re-scanner ce site' },
     iconEl('refresh-cw', { size: 14 }));
@@ -496,8 +501,7 @@ function celluleSite(s) {
 }
 
 function celluleEtat(s) {
-  const v = st(s);
-  const td = h('td', {}, chipEl(libelleKuma(v), niveauKuma(v)));
+  const td = h('td', {}, chipEtat(etatSite(s)));
   if (s._stale) {
     td.append(' ', chipEl('ancien', 'warn', {
       tip: 'données du ' + (s._srvAt || 'dernière collecte réussie') + ', serveur ' + (s.srv || '')
@@ -590,7 +594,7 @@ const CELLULE = {
 
 /* ---- rendu du tableau ---------------------------------------------------------- */
 function rowEl(s) {
-  const label = kName(s) || s.domain;
+  const label = nomDeSite(s);
   const tr = h('tr', { tabindex: '0', role: 'button', 'aria-label': 'Ouvrir la page de ' + label });
   tr.dataset.d = s.domain;
   tr.dataset.s = s.srv;
@@ -637,7 +641,7 @@ function carteEl(o) {
   const main = h('button', { type: 'button', class: 'scard-main' },
     h('span', { class: 'scard-h' },
       h('span', { class: 'scard-n', text: o.label }),
-      chipEl(o.etat.txt, o.etat.niv),
+      chipEtat(o.etat),
       o.stale ? chipEl('ancien', 'warn') : null),
     o.sous ? h('span', { class: 'scard-sub', text: o.sous }) : null,
     h('span', { class: 'scard-k' },
@@ -765,13 +769,14 @@ async function rowRescan(btn, srv, dom) {
 function exportCsv() {
   const S = filtered();
   const rows = [['site', 'serveur', 'client', 'wordpress', 'maj_core', 'plugins_actifs', 'plugins_total',
-    'maj_plugins', 'maj_themes', 'vizproof', 'php', 'backup_h', 'statut', 'vulnerabilites', 'erreurs']];
+    'maj_plugins', 'maj_themes', 'vizproof', 'php', 'backup_h', 'statut', 'statut_source',
+    'vulnerabilites', 'erreurs']];
   S.forEach(s => {
-    const v = st(s), age = bkAge(s), vu = vulnDe(s);
-    rows.push([kName(s) || s.domain, s.srv, s.kuma_group || '', s.core_version || '', s.core_update || '',
+    const e = etatSite(s), v = e.v, age = bkAge(s), vu = vulnDe(s);
+    rows.push([nomDeSite(s), s.srv, clientDe(s), s.core_version || '', s.core_update || '',
       s.plugins_active ?? '', s.plugins_total ?? '', s.plugins_updates ?? '', s.themes_updates ?? '',
       vizInfo(s)?.version || vizOf(s)?.version || '', s.php_version || '',
-      age === null ? '' : Math.round(age), v === 1 ? 'up' : v === 0 ? 'down' : '?',
+      age === null ? '' : Math.round(age), v === 1 ? 'up' : v === 0 ? 'down' : '?', e.source,
       vu ? vu.count : '', Object.keys(s.errors || {}).join(';')]);
   });
   const csv = rows.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -858,7 +863,7 @@ function remplirSelects() {
   const g = document.getElementById('fgrp');
   if (g) {
     const avant = store.filt.grp;
-    const grps = [...new Set(allSites().map(s => s.kuma_group).filter(Boolean))].sort();
+    const grps = [...new Set(allSites().map(clientDe).filter(Boolean))].sort();
     mount(g, h('option', { value: '', text: 'Tous les clients' }),
       grps.map(x => h('option', { value: x, text: x })));
     g.value = avant;

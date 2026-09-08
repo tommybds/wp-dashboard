@@ -12,7 +12,8 @@ Sites sans aucun accès SSH : listés dans data/rest_sites.json et interrogés v
 l'agent (mu-plugin) sur /wp-json/sumotori-dash/v1/inventory, requête signée HMAC.
 Ils sont rangés dans un serveur virtuel « rest » et portent via="rest".
 """
-import json, subprocess, sys, os, re, time, datetime, socket, hmac, hashlib, html
+import json, subprocess, sys, os, re, ssl, time, datetime, socket, hmac, hashlib, html
+import tempfile
 import concurrent.futures
 import urllib.error, urllib.parse, urllib.request
 from urllib.parse import urlparse
@@ -22,15 +23,20 @@ from urllib.parse import urlparse
 # attribut du module, comme avant la mise en commun.
 from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      PATH_PATTERN_RE as PATTERN_RE, load_json, norm_domain,
-                     site_key, sq, valid_path_pattern as valid_pattern)
+                     site_key, sq, valid_path_pattern as valid_pattern,
+                     validate_public_url, load_followed, ensure_followed_migrated)
 from dashlib import save_json as _save_json
-from dashboard_config import CONFIG
+from dashboard_config import CONFIG, kuma_disponible
 KEY = CONFIG["ssh_key"]                # clé SSH par défaut (surchargée par serveur dans servers.json)
 KUMA_STATUS = CONFIG["kuma_status_url"]  # JSON de la status page Kuma du parc
 KUMA_CONTAINER = CONFIG["kuma_container"]
 DEFAULT_PARALLEL = 4   # sites collectés simultanément sur un même serveur
 MAX_SERVERS_PARALLEL = 8  # serveurs interrogés simultanément
 KUMA_DB = CONFIG["kuma_db"]  # chemin de la base Kuma DANS le conteneur
+# ---- sondes maison (disponibilité + certificat TLS) ----
+PROBE_TIMEOUT = 8        # secondes, budget TOTAL par site et par sonde
+PROBE_REDIRECTS = 2      # sauts suivis au plus, chacun repassant la garde SSRF
+PROBE_PARALLEL = 16      # sites sondés simultanément
 # ---- collecte REST (agent distant, aucun SSH) ----
 REST_SITES_PATH = os.path.join(DATA, "rest_sites.json")
 SECRETS_PATH = os.path.join(DATA, "site_secrets.json")
@@ -718,13 +724,295 @@ def collect_rest_sites(match=""):
     return sites
 
 
+# --------------------------------------------------------------------------- #
+#  Sondes maison : disponibilité HTTP et certificat TLS                       #
+#                                                                             #
+#  Elles rendent Uptime Kuma facultatif. Kuma reste PRIORITAIRE quand il est  #
+#  là (il a l'historique, la fréquence de contrôle et les alertes) ; ces      #
+#  sondes fournissent la même information au rythme de la collecte, pour les  #
+#  installations qui n'ont pas Kuma et pour les sites qu'il ne supervise pas. #
+#                                                                             #
+#  Coût : deux ouvertures réseau par site suivi, chacune plafonnée à          #
+#  PROBE_TIMEOUT secondes, PROBE_PARALLEL sites en parallèle.                 #
+# --------------------------------------------------------------------------- #
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Empêche urllib de suivre seul : chaque saut repasse la garde anti-SSRF."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def probe_now():
+    """Horodatage d'une sonde (heure locale, comme le reste des fichiers)."""
+    return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def probe_site(url, timeout=PROBE_TIMEOUT, max_redirects=PROBE_REDIRECTS):
+    """Disponibilité d'un site → {ok, status, ms, error, checked_at}.
+
+    HEAD d'abord (rien à télécharger), GET en repli : beaucoup d'hébergements
+    répondent 403/405/501 à un HEAD tout en servant parfaitement la page.
+
+    Le budget `timeout` est le budget TOTAL : le repli GET n'a droit qu'au
+    temps restant. Un site injoignable coûte donc PROBE_TIMEOUT secondes, pas
+    deux fois plus.
+
+    La garde anti-SSRF de dashlib est appliquée à l'URL de départ ET à chaque
+    redirection : un site compromis ne peut pas se faire relayer vers un service
+    interne du serveur du dashboard.
+    """
+    t0 = time.time()
+    debut, cur, hops = str(url or ""), str(url or ""), 0
+    opener = urllib.request.build_opener(_NoRedirect)
+    statut, erreur, methode, get_essaye = None, "", "HEAD", False
+
+    # Borne dure : la chaîne HEAD puis la chaîne GET, chacune avec ses
+    # redirections. Sans elle, un site qui renvoie sans cesse vers lui-même
+    # ferait tourner la sonde jusqu'au délai.
+    etapes = 2 * (max_redirects + 2)
+    for _ in range(etapes):
+        reste = timeout - (time.time() - t0)
+        if reste <= 0.2:
+            erreur, statut = "délai dépassé", None
+            break
+        _, err = validate_public_url(cur)
+        if err:
+            erreur = err
+            break
+        req = urllib.request.Request(cur, method=methode,
+                                     headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+        try:
+            with opener.open(req, timeout=reste) as resp:
+                statut, erreur = getattr(resp, "status", resp.getcode()), ""
+                resp.read(2048)            # on ne rapatrie jamais la page entière
+            break
+        except urllib.error.HTTPError as e:
+            # urllib rend la réponse d'erreur sous forme de fichier : il faut la
+            # refermer, sinon le ramasse-miettes s'en plaint (ResourceWarning).
+            try:
+                statut = e.code
+                if e.code in (301, 302, 303, 307, 308):
+                    if hops >= max_redirects:
+                        # Chaîne trop longue (souvent une boucle) : le site n'a
+                        # jamais servi de page, ce n'est pas un « ok ».
+                        erreur = f"plus de {max_redirects} redirections"
+                        break
+                    loc = e.headers.get("Location") if e.headers else None
+                    if not loc:
+                        erreur = "redirection sans en-tête Location"
+                        break
+                    cur, hops, statut = urllib.parse.urljoin(cur, loc), hops + 1, None
+                    continue
+                if not get_essaye and methode == "HEAD" and e.code >= 400:
+                    methode, get_essaye, statut, cur = "GET", True, None, debut
+                    hops = 0
+                    continue               # repli GET, depuis l'URL de départ
+                erreur = ""                # un 4xx/5xx assumé n'est pas une panne de transport
+                break
+            finally:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            if not get_essaye and methode == "HEAD":
+                methode, get_essaye, cur, hops = "GET", True, debut, 0
+                continue
+            erreur = f"{type(e).__name__}: {e}"[:200]
+            break
+    else:
+        # Boucle épuisée sans conclusion : on ne prétend pas que le site va bien.
+        erreur, statut = erreur or f"aucune réponse en {etapes} étapes", None
+
+    ms = int((time.time() - t0) * 1000)
+    ok = bool(statut is not None and 200 <= int(statut) < 400 and not erreur)
+    return {"ok": ok, "status": statut, "ms": ms,
+            "error": erreur or ("" if ok else (f"réponse HTTP {statut}" if statut else "injoignable")),
+            "checked_at": probe_now()}
+
+
+def _cert_fields(info, host):
+    """Dictionnaire de `getpeercert()` → {issuer, not_after, days_left, host}."""
+    def _plat(champ):
+        out = {}
+        for rdn in (info.get(champ) or ()):
+            for paire in rdn:
+                if len(paire) == 2:
+                    out[paire[0]] = paire[1]
+        return out
+
+    em = _plat("issuer")
+    issuer = em.get("organizationName") or em.get("commonName") or ""
+    brut = str(info.get("notAfter") or "")
+    not_after, jours = "", None
+    if brut:
+        try:
+            d = datetime.datetime.strptime(brut, "%b %d %H:%M:%S %Y %Z").replace(
+                tzinfo=datetime.timezone.utc)
+            not_after = d.date().isoformat()
+            jours = int((d - datetime.datetime.now(datetime.timezone.utc)).days)
+        except ValueError:
+            not_after = brut               # format inattendu : on garde la chaîne
+    return {"issuer": issuer, "not_after": not_after, "days_left": jours,
+            "host": host, "error": ""}
+
+
+def read_cert(host, port=443, timeout=PROBE_TIMEOUT):
+    """Certificat TLS présenté par l'hôte → {issuer, not_after, days_left, host, error}.
+
+    DEUX passes, et c'est délibéré :
+
+      1. `ssl.create_default_context()` — vérification complète. `getpeercert()`
+         rend alors un dictionnaire exploitable. C'est le cas de la quasi-totalité
+         du parc, et une seule connexion suffit.
+
+      2. Si la vérification échoue (`SSLCertVerificationError`), on recommence
+         avec un `ssl.SSLContext` SANS vérification. Sans cette seconde passe, un
+         certificat EXPIRÉ — précisément ce que la surveillance cherche à
+         détecter — ferait échouer la poignée de main et on ne saurait rien de sa
+         date de fin : le site tomberait de la page « certificats » le jour même
+         où il aurait fallu l'y voir en rouge.
+
+    Piège du contexte non vérifiant : `getpeercert()` y rend `{}`. On récupère
+    donc le certificat en DER (`binary_form=True`) et on le décode via le même
+    analyseur X.509 qu'OpenSSL expose à Python. Cet analyseur n'est pas une API
+    publique : l'appel est gardé, et un échec devient une ligne `error`, jamais
+    une exception.
+    """
+    hote = str(host or "")
+    if not hote:
+        return {"issuer": "", "not_after": "", "days_left": None, "host": "",
+                "error": "hôte manquant"}
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection((hote, port), timeout=timeout) as brut:
+            with ctx.wrap_socket(brut, server_hostname=hote) as tls:
+                return _cert_fields(tls.getpeercert() or {}, hote)
+    except ssl.SSLCertVerificationError as e:
+        raison = f"certificat non valide ({getattr(e, 'verify_message', '') or e.reason or e})"[:200]
+    except Exception as e:
+        return {"issuer": "", "not_after": "", "days_left": None, "host": hote,
+                "error": f"{type(e).__name__}: {e}"[:200]}
+
+    # Seconde passe, sans vérification : on veut LIRE le certificat fautif.
+    libre = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    libre.check_hostname = False
+    libre.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((hote, port), timeout=timeout) as brut:
+            with libre.wrap_socket(brut, server_hostname=hote) as tls:
+                der = tls.getpeercert(binary_form=True)
+        info = _decode_cert_der(der)
+    except Exception as e:
+        return {"issuer": "", "not_after": "", "days_left": None, "host": hote,
+                "error": f"{type(e).__name__}: {e}"[:200]}
+    if not info:
+        return {"issuer": "", "not_after": "", "days_left": None, "host": hote,
+                "error": raison}
+    champs = _cert_fields(info, hote)
+    champs["error"] = raison               # le certificat est lisible, mais invalide
+    return champs
+
+
+def _decode_cert_der(der):
+    """DER → dictionnaire façon `getpeercert()`, ou {} si le décodage est impossible.
+
+    Passe par l'analyseur X.509 d'OpenSSL exposé par le module `_ssl` ; il ne
+    lit qu'un fichier PEM, d'où le fichier temporaire (créé en 0600 par mkstemp,
+    supprimé aussitôt). API privée assumée et gardée : si elle disparaît d'une
+    version de Python, on rend {} et l'appelant pose simplement `error`.
+    """
+    if not der:
+        return {}
+    try:
+        decode = ssl._ssl._test_decode_cert          # noqa: SLF001 (cf. docstring)
+    except AttributeError:
+        return {}
+    fd, chemin = tempfile.mkstemp(prefix=".cert-", suffix=".pem")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(ssl.DER_cert_to_PEM_cert(der))
+        return decode(chemin) or {}
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.unlink(chemin)
+        except OSError:
+            pass
+
+
+def probe_target(site):
+    """URL à sonder pour un site : son `siteurl`, à défaut https://<domaine>/."""
+    url = str(site.get("siteurl") or "").strip()
+    if not url.startswith("http"):
+        dom = str(site.get("domain") or "").strip()
+        if not dom:
+            return ""
+        url = "https://" + dom
+    return url
+
+
+def probe_one(site):
+    """Sonde complète d'un site : disponibilité puis certificat (si https)."""
+    url = probe_target(site)
+    if not url:
+        return
+    site["probe"] = probe_site(url)
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return
+    if u.scheme != "https" or not u.hostname:
+        site.pop("cert", None)             # pas de TLS : pas de certificat à montrer
+        return
+    try:
+        port = u.port or 443
+    except ValueError:
+        port = 443
+    site["cert"] = read_cert(u.hostname, port)
+
+
+def probe_fleet(fleet, seulement=None):
+    """Sonde les sites SUIVIS de la flotte, en parallèle.
+
+    On ne sonde QUE les sites suivis : sonder 58 installs découverts dont
+    personne ne regarde l'état coûterait autant de connexions sortantes pour
+    rien — et certains « installs » sont des copies de travail qu'il vaut mieux
+    ne pas réveiller. Un site REST se sonde comme les autres : c'est une simple
+    requête HTTP, l'absence de SSH n'y change rien.
+
+    `seulement` restreint la sonde à un jeu de domaines (re-scan d'un seul
+    site) : les autres gardent la sonde de la collecte précédente, déjà présente
+    dans fleet.json, plutôt que de rouvrir 20 connexions pour rien.
+    """
+    cibles = [s for srv in (fleet.get("servers") or [])
+              for s in (srv.get("sites") or [])
+              if isinstance(s, dict) and s.get("followed")
+              and (seulement is None or s.get("domain") in seulement)]
+    if not cibles:
+        return 0
+    t0 = time.time()
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(PROBE_PARALLEL, len(cibles))) as pool:
+        list(pool.map(probe_one, cibles))
+    en_echec = sum(1 for s in cibles if (s.get("probe") or {}).get("ok") is False)
+    print(f"[sondes] {len(cibles)} site(s) sondés, {en_echec} injoignable(s), "
+          f"{time.time() - t0:.0f}s", flush=True)
+    return len(cibles)
+
+
 def kuma_folder_map():
     """{nom monitor: dossier} via la base Kuma (docker exec).
 
     Pas d'injection possible ici : la commande est passée en argv, la requête
     est constante. La sortie, elle, reste du texte à analyser prudemment — d'où
     le try englobant et le test de code retour.
+
+    Rien n'est lancé si Kuma est absent ou désactivé (`kuma_disponible`).
     """
+    if not kuma_disponible():
+        return {}
     try:
         r = subprocess.run(
             ["docker", "exec", KUMA_CONTAINER, "sqlite3", KUMA_DB,
@@ -745,23 +1033,70 @@ def kuma_folder_map():
         return {}
 
 
-def annotate_kuma(fleet):
-    overrides = load_json(os.path.join(DATA, "overrides.json"), {})
-    aliases = {k: v.get("alias") for k, v in overrides.items() if v.get("alias")}
-    folders = kuma_folder_map()
+def kuma_monitor_names():
+    """Noms des moniteurs de la status page du parc → (ensemble, erreur).
+
+    Aucun appel réseau quand Kuma est absent ou désactivé : la fonction rend
+    tout de suite un ensemble vide.
+    """
+    if not kuma_disponible():
+        return set(), ""
     try:
         cfg = json.load(urllib.request.urlopen(KUMA_STATUS, timeout=10))
-        mon = set()
-        for g in cfg.get("publicGroupList", []):
-            for m in g.get("monitorList", []):
-                mon.add(m["name"])
     except Exception as e:
-        print(f"annotation kuma sautée ({e})")
+        return set(), f"{type(e).__name__}: {e}"[:200]
+    noms = set()
+    for g in cfg.get("publicGroupList", []):
+        for m in g.get("monitorList", []):
+            if m.get("name"):
+                noms.add(m["name"])
+    return noms, ""
+
+
+def annotate_kuma(fleet):
+    """Pose sur chaque site : `visible`, `followed`, `label`, `client` — et,
+    quand Uptime Kuma est là, `kuma` / `kuma_group`.
+
+    Kuma est FACULTATIF : sans lui, aucune requête n'est émise, la visibilité
+    vient de data/followed.json et le nom d'affichage des overrides.
+    """
+    overrides = load_json(os.path.join(DATA, "overrides.json"), {})
+    if not isinstance(overrides, dict):
+        overrides = {}
+    aliases = {k: v.get("alias") for k, v in overrides.items()
+               if isinstance(v, dict) and v.get("alias")}
+    kuma_on = kuma_disponible()
+    mon, err = kuma_monitor_names()
+    if err:
+        print(f"annotation kuma sautée ({err})")
+    folders = kuma_folder_map() if (kuma_on and mon) else {}
+    suivis = load_followed(DATA)
+
+    def finaliser():
+        """Visibilité, suivi et libellés — la partie qui ne dépend pas de Kuma."""
         for srv in fleet["servers"]:
             for s in srv["sites"]:
                 s.setdefault("kuma", None)
                 s.setdefault("kuma_group", None)
-                s.setdefault("visible", None)
+                ov = overrides.get(s.get("domain")) or {}
+                if not isinstance(ov, dict):
+                    ov = {}
+                s["visible"] = ov.get("visible")     # True / False / None (auto)
+                # « Suivi » = moniteur Kuma (quand Kuma est là) OU inscrit dans
+                # followed.json. Un site sans SSH ajouté à la main compte comme
+                # suivi : il a été déclaré explicitement, comme avant la bascule.
+                s["followed"] = bool((kuma_on and s.get("kuma"))
+                                     or s.get("domain") in suivis
+                                     or s.get("via") == "rest")
+                # Nom d'affichage et client : Kuma d'abord (nom du moniteur,
+                # dossier), sinon les champs propres au dashboard, sinon le
+                # domaine — et rien du tout pour le client, que l'interface
+                # rend par « — ».
+                s["label"] = s.get("kuma") or ov.get("label") or s.get("domain") or ""
+                s["client"] = s.get("kuma_group") or ov.get("client") or None
+
+    if not kuma_on or not mon:
+        finaliser()
         return
 
     def match(site):
@@ -785,8 +1120,7 @@ def annotate_kuma(fleet):
     for srv in fleet["servers"]:
         for s in srv["sites"]:
             s["kuma"] = None
-            ov = overrides.get(s["domain"], {})
-            s["visible"] = ov.get("visible")  # True/False/None(auto)
+            s["kuma_group"] = None
             n = match(s)
             if n:
                 cand.setdefault(n, []).append((srv, s))
@@ -811,6 +1145,49 @@ def annotate_kuma(fleet):
                             reverse=True)[0]
         chosen[1]["kuma"] = name
         chosen[1]["kuma_group"] = folders.get(name)
+    elire_principaux(fleet, prio)
+    finaliser()
+
+
+def elire_principaux(fleet, prio):
+    """Marque, pour chaque domaine, l'install à afficher (`primary`).
+
+    Un même domaine vit parfois sur deux serveurs : une migration en cours
+    laisse la copie d'origine en place. Tant que la visibilité venait de Kuma,
+    le tri se faisait tout seul — un seul install recevait le moniteur. Depuis
+    que « suivi » se décide par domaine, les deux copies passeraient, et le
+    parc afficherait des doublons.
+
+    Même arbitrage que pour le moniteur : la copie dont le serveur répond à la
+    résolution DNS du domaine, sinon celle du serveur de plus forte `priority`.
+    Un install déjà rattaché à un moniteur gagne d'office : c'est le choix qui
+    a été fait juste au-dessus, et il ne doit pas être contredit.
+    """
+    par_domaine = {}
+    for srv in fleet.get("servers", []):
+        for s in srv.get("sites", []):
+            dom = norm_domain(s.get("domain") or "")
+            if dom:
+                par_domaine.setdefault(dom, []).append((srv, s))
+    for dom, lst in par_domaine.items():
+        if len(lst) == 1:
+            lst[0][1]["primary"] = True
+            continue
+        avec_moniteur = [t for t in lst if t[1].get("kuma")]
+        if len(avec_moniteur) == 1:
+            gagnant = avec_moniteur[0]
+        else:
+            try:
+                ips = set(socket.gethostbyname_ex(dom)[2])
+            except OSError:
+                ips = set()
+            hits = [t for t in lst if t[0].get("host") in ips]
+            gagnant = hits[0] if len(hits) == 1 else sorted(
+                lst, key=lambda t: (prio.get(t[0].get("name")) if
+                                    prio.get(t[0].get("name")) is not None else 2),
+                reverse=True)[0]
+        for srv, s in lst:
+            s["primary"] = (s is gagnant[1])
 
 
 def save_json_atomic(path, obj, mode=0o600):
@@ -832,8 +1209,14 @@ def append_line(path, text, mode=0o600):
         fh.write(text if text.endswith("\n") else text + "\n")
 
 
-def write_fleet(fleet, rotate=False):
+def write_fleet(fleet, rotate=False, probe_only=None):
+    # Bascule « Kuma facultatif » : la sélection actuellement AFFICHÉE est
+    # recopiée dans data/followed.json avant tout, et calculée sur le fleet.json
+    # DÉJÀ SUR LE DISQUE — celui produit par l'ancienne règle, qui porte encore
+    # la clé `kuma` de chaque site. Idempotent : sans effet aux appels suivants.
+    ensure_followed_migrated(DATA)
     annotate_kuma(fleet)
+    probe_fleet(fleet, probe_only)
     if rotate and os.path.exists(os.path.join(DATA, "fleet.json")):
         try:
             os.replace(os.path.join(DATA, "fleet.json"), os.path.join(DATA, "fleet.prev.json"))
@@ -1048,7 +1431,8 @@ def main():
             fleet["servers"].append(fs)
         fs["sites"] = [s for s in (fs.get("sites") or []) if s.get("domain") != match] + sites
         fs["sites"].sort(key=lambda s: s.get("domain") or "")
-        write_fleet(fleet)
+        # Re-scan d'un seul site : on ne sonde que celui-là.
+        write_fleet(fleet, probe_only={match} | {s.get("domain") for s in sites})
         print(f"[{only}] {match} " + ("re-scanné." if sites else "disparu — retiré de la liste."))
         return
 

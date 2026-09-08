@@ -23,7 +23,11 @@ import { api } from '../lib/api.js';
 import { esc as H, h, mount, occupe, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime, safeUrl, hostOf, debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
-import { store, kName, loadFleet, loadStatus, cacheFrais, cacheVider } from '../lib/state.js';
+import {
+  store, kName, nomDeSite, clientDe, suivi, estAffiche, affichageForce,
+  kumaActif, kumaRaison, setKuma, loadKuma, DOC_KUMA,
+  loadFleet, loadStatus, cacheFrais, cacheVider,
+} from '../lib/state.js';
 import { askConfirm, askInfo, askChoice, registerModalCloser } from '../components/confirm.js';
 import { confirm2, setBusy, setIdle } from '../components/button.js';
 import { chipEl } from '../components/chip.js';
@@ -40,6 +44,23 @@ let CANDIDATS = [];
 const CRED = new Map();          // domaine → état des identifiants WordPress (cache d'écran)
 
 const pluriel = (n, sing, plur) => n + ' ' + (n > 1 ? (plur || sing + 's') : sing);
+
+/* Ligne posée à la place d'une section qui n'a de sens qu'avec Uptime Kuma.
+   Elle DIT pourquoi il n'y a rien — un tableau vide laisse croire à une panne —
+   et renvoie à la marche à suivre plutôt qu'à un vide poli. */
+function kumaAbsentEl(quoi) {
+  const r = kumaRaison();
+  return h('div', { class: 'box small' },
+    chipEl('Uptime Kuma n’est pas configuré', 'mut'), ' ',
+    h('span', { class: 'muted' },
+      quoi ? quoi + ' ' : '',
+      'Le dashboard fonctionne sans Uptime Kuma : il sonde lui-même la disponibilité et les '
+      + 'certificats. Kuma apporte en plus l’historique, les alertes et la page publique.'),
+    r ? h('div', { class: 'muted mt1', text: r }) : null,
+    h('div', { class: 'mt1' },
+      h('a', { href: DOC_KUMA, target: '_blank', rel: 'noopener noreferrer',
+        text: 'Comment brancher Uptime Kuma (README)' })));
+}
 
 /* ============================================================================
    Squelette : sommaire + six sections. Monté une seule fois ; ensuite seul le
@@ -76,12 +97,15 @@ function monterMgmt() {
 
 function compteursSommaire() {
   const m = store.mgmt || {};
-  const installs = toutesInstalls().length;
+  const toutes = toutesInstalls();
+  const installs = toutes.length;
   const stale = (store.fleet?.servers || []).filter(x => x && x.stale).length;
-  const sansMon = toutesInstalls().filter(s => !kName(s)).length;
+  // Sans Kuma, « aucun moniteur » est la normale et non une alerte : une pastille
+  // orange permanente ne serait plus lue par personne.
+  const aSuivre = toutes.filter(s => !suivi(s)).length;
   return {
     'mgmt-serveurs': [(m.servers || []).length, stale ? 'err' : 'mut'],
-    'mgmt-installs': [installs, sansMon ? 'warn' : 'mut'],
+    'mgmt-installs': [installs, aSuivre ? 'warn' : 'mut'],
     'mgmt-rest': [RESTSITES.length, 'mut'],
     'mgmt-moniteurs': [(m.kuma_monitors || []).filter(x => x && x.parent).length, 'mut'],
     'mgmt-docroots': [(m.extra_docroots || []).length, 'mut'],
@@ -551,22 +575,25 @@ function sectionInstalls() {
   srv.onchange = renderInstalls;
   const vue = h('select', { id: 'inst-vue', 'aria-label': 'Filtre' },
     h('option', { value: '', text: 'Toutes les installs' }),
-    h('option', { value: 'vis', text: 'Visibles dans le parc' }),
-    h('option', { value: 'mask', text: 'Masquées' }),
-    h('option', { value: 'nomon', text: 'Sans moniteur Kuma' }));
+    h('option', { value: 'vis', text: 'Suivies (visibles dans le Parc)' }),
+    h('option', { value: 'mask', text: 'Non suivies' }));
   vue.onchange = renderInstalls;
   const q = h('input', {
     type: 'search', id: 'inst-q', class: 'w-md',
-    placeholder: 'Filtrer un vhost, un alias…', 'aria-label': 'Filtrer les installs',
+    placeholder: 'Filtrer un vhost, un nom, un client…', 'aria-label': 'Filtrer les installs',
   });
   q.oninput = debounce(renderInstalls, 200);
 
   return sectionEl('mgmt-installs', 'Installs découverts',
     [h('span', { class: 'small', id: 'mgmt-count' })],
     h('p', { class: 'hint' },
-      'Tous les WordPress trouvés en SSH. « Visibilité » prime sur le filtre Kuma du tableau de bord ; '
-      + 'l’alias force le rattachement à un moniteur nommé différemment du domaine. '
-      + 'Connecter un site installe la liaison temps réel : il pousse ses évènements (nouvel administrateur, '
+      'Tous les WordPress trouvés en SSH. ',
+      h('b', { text: 'Un install n’apparaît dans le Parc que s’il est suivi' }),
+      ' : le scan découvre, vous décidez. « Affichage » force la règle dans un sens ou dans l’autre '
+      + 'et prime alors sur le suivi. Le nom affiché est celui du moniteur Kuma quand il y en a un, '
+      + 'sinon le libellé saisi ici, sinon le domaine.'),
+    h('p', { class: 'hint' },
+      'Connecter un site installe la liaison temps réel : il pousse ses évènements (nouvel administrateur, '
       + 'activation d’extension) sans attendre la collecte. Le dashboard ne garde PAS de témoin de cette '
       + 'liaison pour un site en SSH : la colonne « Dashboard » montre le résultat de la dernière action '
       + 'lancée d’ici, pas un état relu.'),
@@ -574,13 +601,44 @@ function sectionInstalls() {
       h('span', { class: 'spacer' }), h('span', { class: 'muted small', id: 'inst-count' })),
     h('div', { class: 'wrap' },
       h('table', {},
-        h('thead', {}, h('tr', {},
-          h('th', { text: 'Install (vhost)' }), h('th', { text: 'Serveur' }),
-          h('th', { text: 'Moniteur Kuma' }), h('th', { text: 'Visibilité' }),
-          h('th', { text: 'Alias' }), h('th', { text: 'Dashboard' }),
-          h('th', { text: 'WordPress' }),
-          h('th', {}, h('span', { class: 'sr-only', text: 'Enregistrer' })))),
+        h('thead', {}, h('tr', { id: 'mgmt-th' })),
         h('tbody', { id: 'mgmt-tb' }))));
+}
+
+/* Colonnes des installs. Celles qui parlent de Kuma disparaissent quand Kuma
+   n'est pas branché — une colonne « Moniteur » vide sur toutes les lignes ne
+   dit rien, sinon que l'écran n'a pas été relu depuis. */
+function colonnesInstalls() {
+  const k = kumaActif();
+  return [
+    'Install (vhost)', 'Serveur', 'Nom affiché', 'Client',
+    ...(k ? ['Moniteur Kuma'] : []),
+    'Visibilité',
+    ...(k ? ['Alias'] : []),
+    'Dashboard', 'WordPress', null,
+  ];
+}
+
+/* Le squelette de la page est monté AVANT que /api/mgmt/state n'ait dit si Kuma
+   est là : l'option « sans moniteur » se pose donc au rendu, pas au montage. */
+function majFiltreInstalls() {
+  const sel = document.getElementById('inst-vue');
+  if (!sel) return;
+  const opt = [...sel.options].find(o => o.value === 'nomon');
+  if (kumaActif() && !opt) {
+    sel.append(h('option', { value: 'nomon', text: 'Sans moniteur Kuma' }));
+  } else if (!kumaActif() && opt) {
+    if (sel.value === 'nomon') sel.value = '';
+    opt.remove();
+  }
+}
+
+function renderTeteInstalls() {
+  const tr = document.getElementById('mgmt-th');
+  if (!tr) return;
+  mount(tr, colonnesInstalls().map(lbl => (lbl
+    ? h('th', { text: lbl })
+    : h('th', {}, h('span', { class: 'sr-only', text: 'Enregistrer' })))));
 }
 
 function remplirSelectServeurs() {
@@ -700,12 +758,74 @@ async function remplirWp(cell, dom, srv) {
   mount(cell, chipEl('non autorisé', 'warn'), ' ', bt, ' ', msg);
 }
 
+/* Une install vue au travers des overrides déjà enregistrés : la ligne doit
+   montrer ce qui SERA vrai après le prochain rechargement de la flotte, pas
+   l'état d'avant l'enregistrement. */
+function installAvecOverride(s, m) {
+  const ov = (m.overrides || {})[s.domain] || {};
+  return {
+    ...s,
+    visible: ('visible' in ov) ? ov.visible : s.visible,
+    label: ('label' in ov) ? ov.label : s.label,
+    client: ('client' in ov) ? ov.client : s.client,
+  };
+}
+
+/* ---- interrupteur « Suivi » ------------------------------------------------
+   Le suivi est la SEULE chose qui s'enregistre toute seule, sans le bouton de
+   la ligne : c'est un geste unique, sans rien à saisir à côté, et le Parc doit
+   refléter la décision tout de suite. En cas d'échec la case revient d'elle-même
+   à sa position : ne jamais montrer un réglage qui n'a pas été écrit. */
+function celluleVisibilite(s, redessiner) {
+  const on = suivi(s);
+  const cb = h('input', { type: 'checkbox', 'aria-label': 'Suivre ' + s.domain });
+  cb.checked = on;
+  const msg = h('span', { class: 'small' });
+  cb.onchange = async e => {
+    const v = e.target.checked;
+    mount(msg, h('span', { class: 'muted small', text: '…' }));
+    try {
+      const r = await api('/api/mgmt/follow', { domain: s.domain, followed: v }) || {};
+      if (r.ok === false) throw new Error(r.error || r.message || 'refus du serveur');
+      mount(msg);
+      await loadFleet();
+      redessiner();
+    } catch (err) {
+      e.target.checked = !v;
+      mount(msg, chipEl('échec', 'err', { title: String(err) }));
+    }
+  };
+
+  const vis = h('select', { class: 'w-xs', 'aria-label': 'Affichage forcé de ' + s.domain },
+    h('option', { value: 'auto', text: 'suit le suivi' }),
+    h('option', { value: 'show', text: 'toujours afficher' }),
+    h('option', { value: 'hide', text: 'toujours masquer' }));
+  vis.value = s.visible === true ? 'show' : s.visible === false ? 'hide' : 'auto';
+  vis.dataset.role = 'vis';
+
+  return h('td', {},
+    h('label', { class: 'fld' }, cb, ' Suivi'),
+    h('div', { class: 'mt1' }, vis),
+    // Le forçage ne se voit pas quand il dit la même chose que le suivi : on ne
+    // le signale que lorsqu'il le CONTREDIT, sinon la colonne crie pour rien.
+    affichageForce(s)
+      ? h('div', { class: 'mt1' }, chipEl('prime sur le suivi', 'warn', {
+        title: s.visible ? 'affiché dans le Parc bien que non suivi'
+          : 'masqué du Parc bien qu’il soit suivi',
+      }))
+      : null,
+    msg);
+}
+
 function renderInstalls() {
   const tb = document.getElementById('mgmt-tb');
   if (!tb) return;
+  renderTeteInstalls();
+  majFiltreInstalls();
+  const nCols = colonnesInstalls().length;
   const m = store.mgmt;
   if (!m) {
-    mount(tb, h('tr', {}, h('td', { colspan: '8' },
+    mount(tb, h('tr', {}, h('td', { colspan: String(nCols) },
       chipEl('état indisponible', 'err'), ' ',
       h('span', { class: 'muted small', id: 'mgmt-err', text: '' }))));
     return;
@@ -714,51 +834,61 @@ function renderInstalls() {
   const vueF = (document.getElementById('inst-vue') || {}).value || '';
   const q = ((document.getElementById('inst-q') || {}).value || '').toLowerCase().trim();
 
-  /* Même règle que allSites() dans lib/state.js : la visibilité forcée prime,
-     sinon un site sans moniteur Kuma reste masqué (sauf s'il est en mode REST,
-     géré explicitement). Deux règles qui divergent, c'est un site qu'on croit
-     suivi et qui ne l'est pas. */
-  const visible = s => {
-    const ov = m.overrides[s.domain] || {};
-    if (ov.visible === true) return true;
-    if (ov.visible === false) return false;
-    return s.via === 'rest' || !!kName(s);
-  };
-
-  let list = toutesInstalls();
+  const toutes = toutesInstalls().map(s => installAvecOverride(s, m));
+  let list = toutes;
   mount('mgmt-count', chipEl(pluriel(list.length, 'install'), 'mut'));
   if (srvF) list = list.filter(s => s.srv === srvF);
-  if (vueF === 'vis') list = list.filter(visible);
-  if (vueF === 'mask') list = list.filter(s => !visible(s));
+  // Même règle que `allSites()` dans lib/state.js — importée, pas recopiée :
+  // deux règles qui divergent, c'est un site qu'on croit suivi et qui ne l'est pas.
+  if (vueF === 'vis') list = list.filter(estAffiche);
+  if (vueF === 'mask') list = list.filter(s => !estAffiche(s));
   if (vueF === 'nomon') list = list.filter(s => !kName(s));
-  if (q) list = list.filter(s => (s.domain + ' ' + (s.blogname || '') + ' ' + s.srv + ' ' + ((m.overrides[s.domain] || {}).alias || '')).toLowerCase().includes(q));
+  if (q) {
+    list = list.filter(s => [s.domain, s.blogname, s.srv, s.label, s.client,
+      (m.overrides[s.domain] || {}).alias].filter(Boolean).join(' ').toLowerCase().includes(q));
+  }
 
   const cnt = document.getElementById('inst-count');
-  if (cnt) cnt.textContent = list.length === toutesInstalls().length ? '' : pluriel(list.length, 'ligne affichée', 'lignes affichées');
+  if (cnt) cnt.textContent = list.length === toutes.length ? '' : pluriel(list.length, 'ligne affichée', 'lignes affichées');
 
   mount(tb, list.length ? list.map(s => {
     const ov = m.overrides[s.domain] || {};
     const mon = kName(s);
-    let monCell;
-    if (mon) monCell = chipEl(mon, 'ok');
-    else {
-      const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('plus'), ' créer moniteur');
-      b.onclick = () => creerMoniteur(b, s.domain);
-      monCell = b;
+    let monCell = null;
+    if (kumaActif()) {
+      if (mon) monCell = chipEl(mon, 'ok');
+      else {
+        const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('plus'), ' créer moniteur');
+        b.onclick = () => creerMoniteur(b, s.domain);
+        monCell = b;
+      }
     }
 
-    const vis = h('select', { 'aria-label': 'Visibilité de ' + s.domain },
-      h('option', { value: 'auto', text: 'auto (Kuma)' }),
-      h('option', { value: 'show', text: 'toujours afficher' }),
-      h('option', { value: 'hide', text: 'masquer' }));
-    vis.value = ov.visible === true ? 'show' : ov.visible === false ? 'hide' : 'auto';
+    const visTd = celluleVisibilite(s, renderInstalls);
+    const vis = visTd.querySelector('[data-role="vis"]');
+
+    const label = h('input', {
+      class: 'inp w-xs', placeholder: mon || s.domain, 'aria-label': 'Nom affiché de ' + s.domain,
+      title: mon ? 'Un moniteur Kuma nomme déjà ce site : c’est lui qui s’affiche.' : '',
+    });
+    // La VALEUR SAISIE, pas le nom résolu : `s.label` vaut déjà « nom Kuma,
+    // sinon libellé, sinon domaine » — le réinjecter écrirait le domaine dans
+    // l'override à chaque enregistrement de la ligne.
+    label.value = ov.label || '';
+    label.disabled = !!mon;
+    const client = h('input', {
+      class: 'inp w-xs', placeholder: 'client', 'aria-label': 'Client de ' + s.domain,
+      title: s.kuma_group ? 'Le groupe Kuma « ' + s.kuma_group + ' » prime sur cette valeur.' : '',
+    });
+    client.value = ov.client || '';
     const alias = h('input', {
       class: 'inp w-xs', placeholder: 'nom du moniteur', 'aria-label': 'Alias de ' + s.domain,
     });
     alias.value = ov.alias || '';
 
     const save = h('button', {
-      type: 'button', class: 'btn sm', title: 'Enregistrer la visibilité et l’alias',
+      type: 'button', class: 'btn sm',
+      title: 'Enregistrer le nom, le client et l’affichage forcé',
     }, iconEl('check', { label: 'Enregistrer' }));
     save.onclick = async () => {
       setBusy(save);
@@ -767,7 +897,9 @@ function renderInstalls() {
         const r = await api('/api/mgmt/override', {
           domain: s.domain,
           visible: v === 'show' ? true : v === 'hide' ? false : null,
-          alias: alias.value,
+          label: label.value,
+          client: client.value,
+          ...(kumaActif() ? { alias: alias.value } : {}),
         }) || {};
         if (r.overrides) store.mgmt.overrides = r.overrides;
       } catch (e) { /* le rechargement de la flotte dira l'état réel */ }
@@ -780,13 +912,18 @@ function renderInstalls() {
       h('td', {}, h('b', { text: s.domain }),
         s.blogname ? h('div', { class: 'sub', text: s.blogname }) : null),
       h('td', { class: 'muted', text: s.srv }),
-      h('td', {}, monCell),
-      h('td', {}, vis),
-      h('td', {}, alias),
+      h('td', {}, label,
+        h('div', { class: 'sub', text: 'affiché : ' + nomDeSite(s) })),
+      h('td', {}, client,
+        clientDe(s) ? h('div', { class: 'sub',
+          text: 'affiché : ' + clientDe(s) + (s.kuma_group ? ' (groupe Kuma)' : '') }) : null),
+      kumaActif() ? h('td', {}, monCell) : null,
+      visTd,
+      kumaActif() ? h('td', {}, alias) : null,
       h('td', {}, celluleAgent(s)),
       h('td', {}, celluleWp(s.domain, s.srv)),
       h('td', {}, save));
-  }) : h('tr', {}, h('td', { colspan: '8' },
+  }) : h('tr', {}, h('td', { colspan: String(nCols) },
     h('span', { class: 'muted small', text: 'aucune install ne correspond au filtre.' }))));
 }
 
@@ -1060,18 +1197,28 @@ async function retirerRest(d, bouton, res) {
 function sectionMoniteurs() {
   return sectionEl('mgmt-moniteurs', 'Moniteurs Uptime Kuma',
     [h('span', { class: 'small', id: 'mon-sum' })],
-    h('p', { class: 'hint', text: 'Mettre en pause, réactiver ou supprimer un moniteur. Toute modification '
-      + 'redémarre Kuma : environ 15 s d’interruption du monitoring.' }),
-    h('div', { class: 'wrap' },
-      h('table', {},
-        h('thead', {}, h('tr', {},
-          h('th', { text: 'Moniteur' }), h('th', { text: 'Client' }), h('th', { text: 'État' }),
-          h('th', { text: 'Dernier battement' }),
-          h('th', {}, h('span', { class: 'sr-only', text: 'Actions' })))),
-        h('tbody', { id: 'mon-tb' }))));
+    h('div', { id: 'mon-absent', hidden: true }),
+    h('div', { id: 'mon-box' },
+      h('p', { class: 'hint', text: 'Mettre en pause, réactiver ou supprimer un moniteur. Toute modification '
+        + 'redémarre Kuma : environ 15 s d’interruption du monitoring.' }),
+      h('div', { class: 'wrap' },
+        h('table', {},
+          h('thead', {}, h('tr', {},
+            h('th', { text: 'Moniteur' }), h('th', { text: 'Client' }), h('th', { text: 'État' }),
+            h('th', { text: 'Dernier battement' }),
+            h('th', {}, h('span', { class: 'sr-only', text: 'Actions' })))),
+          h('tbody', { id: 'mon-tb' })))));
 }
 
 function renderMoniteurs() {
+  const box = document.getElementById('mon-box');
+  const abs = document.getElementById('mon-absent');
+  if (box) box.hidden = !kumaActif();
+  if (abs) {
+    abs.hidden = kumaActif();
+    if (!kumaActif() && !abs.firstChild) mount(abs, kumaAbsentEl());
+  }
+  if (!kumaActif()) { mount('mon-sum', null); return; }
   const tb = document.getElementById('mon-tb');
   if (!tb) return;
   const m = store.mgmt;
@@ -1194,14 +1341,29 @@ async function ajouterDocroot(srv, path) {
 function sectionCandidats() {
   return sectionEl('mgmt-nongeres', 'Sites supervisés non gérés',
     [h('span', { class: 'small', id: 'cand-count' })],
-    h('p', { class: 'hint', text: 'Sites vus par le monitoring mais absents du parc géré : ajoutez-les en un '
-      + 'clic, l’URL est reprise automatiquement dans l’assistant.' }),
+    h('p', { class: 'hint', id: 'cand-hint', text: 'Sites vus par le monitoring mais absents du parc géré : '
+      + 'ajoutez-les en un clic, l’URL est reprise automatiquement dans l’assistant.' }),
     h('div', { class: 'small', id: 'cand-body' }, h('span', { class: 'muted', text: 'chargement…' })));
 }
 
 async function loadCandidates() {
   const bd = document.getElementById('cand-body');
   if (!bd) return;
+  // Le drapeau d'abord : sans lui on afficherait « chargement… » puis la liste
+  // vide de Kuma, au lieu de dire tout de suite qu'il n'y a rien à comparer.
+  await loadKuma();
+  const hint = document.getElementById('cand-hint');
+  if (hint) hint.hidden = !kumaActif();
+  /* Cette section ne liste QUE ce que le monitoring voit et que le parc ignore :
+     sans monitoring, il n'y a rien à comparer — et surtout rien à aller
+     chercher. On le dit, et on n'appelle pas la route. */
+  if (!kumaActif()) {
+    CANDIDATS = [];
+    mount('cand-count', null);
+    mount(bd, kumaAbsentEl('Cette liste compare les sites supervisés au parc géré.'));
+    majSommaire();
+    return;
+  }
   mount(bd, h('span', { class: 'muted', text: 'chargement…' }));
   let j;
   try { j = await api('/api/mgmt/candidates'); }
@@ -1364,6 +1526,10 @@ async function loadMgmt(force) {
     occupe('page-mgmt', false);
     return;
   }
+  // Le drapeau Kuma est partagé : Parc, page site, Sécurité et Réglages le
+  // lisent aussi, et il vaut mieux le poser depuis la réponse qu'on vient
+  // d'obtenir que de redemander le même état.
+  setKuma(etat.kuma);
   etat.kuma_monitors = etat.kuma_monitors || [];
   etat.kuma_groups = etat.kuma_groups || [];
   etat.overrides = etat.overrides || {};
@@ -1375,6 +1541,11 @@ async function loadMgmt(force) {
   remplirSelectServeurs();
   renderInstalls();
   renderMoniteurs();
+  /* La colonne « Dernier battement » lit `store.status`, rempli par un appel
+     séparé qui peut n'avoir pas encore répondu — on affichait alors « — » sur
+     toutes les lignes, ce qui se lit comme « aucun battement ». On ne relance
+     le relevé que s'il manque vraiment. */
+  if (kumaActif() && !Object.keys(store.status).length) loadStatus().then(renderMoniteurs);
   remplirSelectDocroot();
   renderDocroots();
   majSommaire();

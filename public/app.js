@@ -19,7 +19,7 @@
 import { esc as H } from './lib/dom.js';
 import { initIcons } from './lib/icons.js';
 import { stopPoll } from './lib/poll.js';
-import { store, subscribe, loadFleet, loadStatus } from './lib/state.js';
+import { store, subscribe, loadFleet, loadStatus, loadKuma } from './lib/state.js';
 import { V } from './version.js';
 
 import { initModals, askInfo, registerModalCloser } from './components/confirm.js';
@@ -91,6 +91,7 @@ const ANCRES = {
   reglages: {
     collecte: 'set-collecte', cadence: 'set-collecte',
     alertes: 'set-alertes', telegram: 'set-alertes',
+    kuma: 'set-kuma', 'uptime-kuma': 'set-kuma', monitoring: 'set-kuma',
     vizproof: 'set-vizproof',
     'controle-visuel': 'set-visuel', visuel: 'set-visuel', 'maj-sure': 'set-visuel',
     incidents: 'set-incidents', 'regles-incidents': 'set-incidents',
@@ -481,7 +482,11 @@ async function boot() {
   // chargée : la page site, Gestion et Sécurité se construisent à partir d'elle.
   loadFleet().then(applyHash).catch(() => applyHash());
   loadSched();
-  loadStatus();
+  /* Uptime Kuma est facultatif : on demande d'abord s'il est là, et seulement
+     ensuite son statut. Dans l'ordre inverse, une installation sans Kuma
+     appellerait la status page à chaque démarrage — une erreur réseau dans la
+     console de la personne qui n'a jamais installé Kuma. */
+  loadKuma().then(loadStatus);
   loadViews();
   chargerIncidents();
   // Pastilles de la barre latérale : un seul agrégat côté serveur

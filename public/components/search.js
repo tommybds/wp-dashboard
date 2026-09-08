@@ -11,8 +11,7 @@
 
 import { h, mount } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
-import { allSites, kName, st } from '../lib/state.js';
-import { libelleKuma, niveauKuma } from './chip.js';
+import { allSites, kName, etatSite, nomDeSite, clientDe } from '../lib/state.js';
 import { registerModalCloser } from './confirm.js';
 
 const MAX = 8;
@@ -159,9 +158,9 @@ function chercher(brut) {
   const S = allSites().filter(s => !q || (s._q || '').includes(q));
   if (S.length) {
     groupes.push(['Sites', S.slice(0, MAX).map(s => ({
-      titre: siteCle(s), ic: 'layout-grid',
-      detail: siteCle(s) !== s.domain ? s.domain : (s.kuma_group || ''),
-      chip: [libelleKuma(st(s)), niveauKuma(st(s))],
+      titre: nomDeSite(s), ic: 'layout-grid',
+      detail: nomDeSite(s) !== s.domain ? s.domain : clientDe(s),
+      chip: [etatSite(s).txt, etatSite(s).niv],
       go: () => CFG.ouvrirSite(siteCle(s)),
     })), S.length]);
   }

@@ -10,10 +10,10 @@ déclarés "no_su" (mutualisés), où l'utilisateur SSH est déjà le propriéta
 Aucun shell libre exposé.
 """
 import json, subprocess, os, re, sys, time, datetime, threading, itertools, hashlib, hmac, base64, secrets, tempfile, http.cookies
-import functools, io, ipaddress, socket, urllib.error, urllib.request, urllib.parse, zipfile
+import functools, io, urllib.error, urllib.request, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from dashboard_config import CONFIG
+from dashboard_config import CONFIG, KUMA_ABSENT_MSG, kuma_disponible, kuma_statut
 from vulns import version_compare
 # Briques communes à tous les scripts du dépôt (cf. dashlib.py) : une seule copie
 # de la lecture/écriture JSON, du quotage shell, de l'identité d'un site et des
@@ -25,7 +25,9 @@ from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      SLUG_RE, SERVER_RE, PATH_PATTERN_RE as SRV_PATH_RE,
                      _JSON_LOCKS, _JSON_LOCKS_GUARD, json_lock,
                      load_json, norm_domain, site_key, site_visible, sq,
-                     valid_path_pattern)
+                     valid_path_pattern, public_ips, validate_public_url,
+                     followed_path, load_followed, set_followed,
+                     ensure_followed_migrated)
 from dashlib import (default_mode as _default_mode, save_json as _save_json,
                      update_json as _update_json)
 
@@ -3197,7 +3199,13 @@ def kuma_sql(sql):
 
     Docker absent, conteneur arrêté ou requête bloquée : erreur lisible plutôt
     qu'une exception qui remonterait en 500 dans toutes les routes Gestion.
+
+    PORTE D'ENTRÉE UNIQUE de tout `docker exec` vers Kuma : la détection
+    (`kuma_disponible`, en cache 60 s) est testée ICI, donc une installation
+    sans Kuma ne lance jamais docker et ne remplit pas les journaux d'erreurs.
     """
+    if not kuma_disponible():
+        return KUMA_UNAVAILABLE_RC, KUMA_ABSENT_MSG
     try:
         r = subprocess.run(["docker", "exec", KUMA_CONTAINER, "sqlite3", "-cmd", ".timeout 8000",
                             KUMA_DB, sql],
@@ -3210,6 +3218,8 @@ def kuma_sql(sql):
 
 
 def kuma_restart():
+    if not kuma_disponible():
+        return              # rien à redémarrer, et surtout aucun docker à lancer
     try:
         subprocess.run(["docker", "restart", KUMA_CONTAINER], capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.SubprocessError):
@@ -3399,20 +3409,22 @@ def set_baseline(domain=None):
     return base
 
 
-# ---------- sécurité : certificats SSL (info TLS relevée par Kuma) ----------
-def ssl_certs():
+# ---------- sécurité : certificats SSL ----------
+# DEUX sources, fusionnées par `ssl_certs()` :
+#   * Uptime Kuma, quand il est là — il relève le TLS à chaque contrôle ;
+#   * les sondes du collecteur (`site["cert"]` dans fleet.json), qui suffisent
+#     seules sur une installation sans Kuma.
+# Kuma est PRIORITAIRE : à nom de moniteur égal, sa ligne gagne.
+def ssl_certs_kuma():
+    """Certificats relevés par Kuma → {"certs": [...]} ou {"certs": [], "error": …}."""
     sql = ("SELECT m.name||'|||'||t.info_json FROM monitor_tls_info t "
            "JOIN monitor m ON m.id=t.monitor_id;")
-    try:
-        r = subprocess.run(["docker", "exec", KUMA_CONTAINER, "sqlite3", KUMA_DB, sql],
-                           capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"certs": [], "error": f"docker exec: {e}"}
-    if r.returncode != 0:
-        return {"certs": [], "error": ((r.stdout + r.stderr).strip() or f"rc={r.returncode}")[-400:]}
+    rc, out = kuma_sql(sql)
+    if rc != 0:
+        return {"certs": [], "error": (out or f"rc={rc}")[-400:]}
 
     certs = []
-    for line in r.stdout.splitlines():
+    for line in out.splitlines():
         if "|||" not in line:
             continue
         name, raw = line.split("|||", 1)
@@ -3433,10 +3445,68 @@ def ssl_certs():
             days = int(days) if days is not None else None
         except (TypeError, ValueError):
             days = None
-        certs.append({"monitor": name, "days": days, "valid_to": valid_to})
-    # les plus urgents d'abord ; les jours inconnus finissent la liste
-    certs.sort(key=lambda c: c["days"] if c["days"] is not None else 10 ** 6)
+        certs.append({"monitor": name, "days": days, "days_left": days,
+                      "valid_to": valid_to, "source": "kuma"})
     return {"certs": certs}
+
+
+def ssl_certs_probe():
+    """Certificats lus par les sondes du collecteur (clé `cert` de chaque site).
+
+    Seuls les sites VISIBLES comptent : un install masqué n'a pas à peupler la
+    page Sécurité, exactement comme pour les autres sources d'incidents.
+    """
+    fleet = load_json(FLEET_PATH, {"servers": []})
+    certs, vus = [], set()
+    for srv in (fleet.get("servers") or []):
+        if not isinstance(srv, dict):
+            continue
+        for s in (srv.get("sites") or []):
+            if not isinstance(s, dict) or not site_visible(s):
+                continue
+            c = s.get("cert")
+            if not isinstance(c, dict):
+                continue
+            jours = c.get("days_left")
+            if jours is None and not c.get("not_after"):
+                continue
+            nom = s.get("kuma") or s.get("domain") or ""
+            if not nom or nom in vus:
+                continue
+            vus.add(nom)
+            certs.append({"monitor": nom, "days": jours, "days_left": jours,
+                          "valid_to": c.get("not_after") or "",
+                          "issuer": c.get("issuer") or "", "source": "sonde"})
+    return certs
+
+
+def ssl_certs():
+    """Certificats TLS du parc, Kuma d'abord, sondes du collecteur ensuite.
+
+    Sans Kuma, la fonction rend simplement les certificats sondés — la page
+    Sécurité et l'incident `cert_expiring` fonctionnent à l'identique.
+
+    `error` n'est posé que si la lecture Kuma a échoué ET qu'aucune sonde ne
+    prend le relais : une panne de docker ne doit pas faire disparaître des
+    certificats qu'on sait par ailleurs lire.
+    """
+    certs, erreur, vus = [], "", set()
+    if kuma_disponible():
+        res = ssl_certs_kuma()
+        erreur = str(res.get("error") or "")
+        for c in (res.get("certs") or []):
+            certs.append(c)
+            vus.add(c.get("monitor"))
+    for c in ssl_certs_probe():
+        if c.get("monitor") in vus:
+            continue                       # Kuma fait foi pour ce moniteur
+        certs.append(c)
+    # les plus urgents d'abord ; les jours inconnus finissent la liste
+    certs.sort(key=lambda c: c["days"] if c.get("days") is not None else 10 ** 6)
+    out = {"certs": certs}
+    if erreur and not certs:
+        out["error"] = erreur
+    return out
 
 
 # ---------- alertes Telegram (C1) ----------
@@ -3967,16 +4037,37 @@ def incident_fleet():
     return sites, index, servers
 
 
+def probe_epoch(value):
+    """`checked_at` d'une sonde (ISO local, « 2026-09-08T11:04:12 ») → epoch."""
+    s = str(value or "").strip().replace("T", " ")
+    if not s:
+        return None
+    s = s.split("+")[0].split("Z")[0].split(".")[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 def inc_down(sites, now):
-    """Moniteur Kuma dont le dernier battement est en échec (status 0)."""
-    battements = kuma_heartbeats()
+    """Site injoignable — Uptime Kuma s'il est là, sonde du dashboard sinon.
+
+    PRIORITÉ à Kuma quand un site a un moniteur : il a l'historique, la
+    fréquence et les alertes, là où la sonde ne connaît que le dernier passage
+    du collecteur. La sonde prend le relais pour tout site sans moniteur — donc
+    pour la totalité du parc sur une installation sans Kuma.
+    """
+    battements = kuma_heartbeats() if kuma_disponible() else {}
     out = []
     for server, s in sites:
         nom = s.get("kuma")
-        if not nom:
-            continue                      # site non supervisé : rien à conclure
-        hb = battements.get(nom)
-        if not hb or hb.get("status") != 0:
+        hb = battements.get(nom) if nom else None
+        if hb is None:
+            out.extend(inc_down_probe(server, s, now))
+            continue
+        if hb.get("status") != 0:
             continue
         # Un moniteur mis en pause alors qu'il était down reste à voir (le
         # tableau de bord le compte « down ») mais n'est plus une urgence.
@@ -3995,6 +4086,30 @@ def inc_down(sites, now):
             bucket="now" if actif else "plan",
             extra={"msg": hb.get("msg") or "", "since": incident_iso(hb.get("ts"))}))
     return out
+
+
+def inc_down_probe(server, s, now):
+    """Même incident `down`, alimenté par la sonde HTTP du collecteur.
+
+    Même `kind` et même clé que la version Kuma : les deux ne peuvent donc pas
+    produire deux lignes pour un même site (dédoublonnage par `id`), et un
+    acquittement posé avec Kuma survit à son retrait.
+    """
+    p = s.get("probe")
+    if not isinstance(p, dict) or p.get("ok") is not False:
+        return []                          # jamais sondé, ou sondé avec succès
+    cle = s.get("kuma") or s.get("domain") or "?"
+    detail = str(p.get("error") or "").strip()
+    if not detail:
+        statut = p.get("status")
+        detail = f"réponse HTTP {statut}" if statut else "sonde du dashboard en échec"
+    return [make_incident(
+        "down", "critical", cle, f"{cle} injoignable", detail,
+        site=cle, server=server, since=probe_epoch(p.get("checked_at")), now=now,
+        action={"label": "Re-scan", "act": "rescan", "arg": ""},
+        link={"tab": "incidents", "sub": ""}, bucket="now",
+        extra={"msg": detail, "status": p.get("status"), "ms": p.get("ms"),
+               "source": "sonde", "since": str(p.get("checked_at") or "")})]
 
 
 def inc_php_fatal(index, now):
@@ -4341,7 +4456,7 @@ def incidents_snapshot(now=None):
         sites, index, servers = [], {}, []
         errors.append({"source": "fleet", "error": f"{type(e).__name__}: {e}"[:300]})
 
-    source("kuma", lambda: inc_down(sites, now))
+    source("disponibilite", lambda: inc_down(sites, now))
     source("php_errors", lambda: inc_php_fatal(index, now))
     source("vulns", lambda: inc_vulns(index, rules, now))
     source("checksums", lambda: inc_checksums(index, now))
@@ -4729,47 +4844,8 @@ def normalize_site_url(raw):
     return urllib.parse.urlunsplit((u.scheme, u.netloc, path, "", "")), None
 
 
-def public_ips(host, port):
-    """IP publiques de l'hôte → (liste, erreur). Refuse loopback, privé, lien-local, réservé."""
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except (OSError, UnicodeError, ValueError) as e:
-        return None, f"hôte injoignable ({e})"
-    ips = []
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            return None, f"adresse non autorisée ({ip})"
-        ips.append(str(ip))
-    if not ips:
-        return None, "aucune adresse exploitable"
-    return ips, None
-
-
-def validate_public_url(url):
-    """Contrôle schéma + résolution DNS publique d'une URL (appliqué à chaque redirection)."""
-    try:
-        u = urllib.parse.urlsplit(str(url or ""))
-    except ValueError:
-        return None, "url invalide"
-    if u.scheme not in ("http", "https"):
-        return None, f"schéma non autorisé ({u.scheme or '?'})"
-    if not u.hostname:
-        return None, "hôte manquant"
-    if "@" in (u.netloc or ""):
-        return None, "identifiants interdits dans l'url"
-    try:
-        port = u.port or (443 if u.scheme == "https" else 80)
-    except ValueError:
-        return None, "port invalide"
-    ips, err = public_ips(u.hostname, port)
-    if err:
-        return None, err
-    return u, None
+# `public_ips` et `validate_public_url` viennent de dashlib : les sondes de
+# collect.py appliquent EXACTEMENT la même garde (cf. dashlib.py).
 
 
 def http_get(url, timeout=DISCOVER_TIMEOUT, max_redirects=DISCOVER_REDIRECTS,
@@ -6295,17 +6371,25 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/actions/bulk_status":
             self._send(200, get_job(q.get("job", 0)) or {"error": "job inconnu"})
         elif p == "/api/mgmt/state":
+            # `kuma_state()` ne lance rien quand Kuma est absent (garde de
+            # `kuma_sql`) : les deux listes reviennent vides et l'onglet
+            # Moniteurs sait alors quoi afficher grâce au bloc `kuma`.
             groups, monitors = kuma_state()
+            ensure_followed_migrated(DATA)
             self._send(200, {"servers": servers_list(),
                              "overrides": load_json(os.path.join(DATA, "overrides.json"), {}),
                              "extra_docroots": load_json(os.path.join(DATA, "extra_docroots.json"), []),
+                             "followed": sorted(load_followed(DATA)),
+                             "kuma": kuma_statut(),
                              "kuma_groups": groups, "kuma_monitors": monitors})
         elif p == "/api/mgmt/sshkeys":
             self._send(200, {"keys": ssh_keys_list(), "assignments": ssh_key_assignments()})
         elif p == "/api/mgmt/rest_sites":
             self._send(200, {"rest_sites": rest_sites()})
         elif p == "/api/mgmt/candidates":
-            self._send(200, {"candidates": kuma_candidates()})
+            # Sans Kuma il n'y a pas de « supervisé ailleurs » à proposer :
+            # liste vide et raison lisible, plutôt qu'une erreur.
+            self._send(200, {"candidates": kuma_candidates(), "kuma": kuma_statut()})
         elif p == "/api/mgmt/agent.zip":
             # téléchargement direct (lien) : session vérifiée en tête de do_GET
             blob, err = agent_zip_bytes()
@@ -6790,6 +6874,13 @@ class Handler(BaseHTTPRequestHandler):
             domain = str(body.get("domain", ""))
             if not SLUG_RE.match(domain):
                 return self._send(400, {"error": "domaine invalide"})
+            # `label` et `client` remplacent ce que Kuma fournissait (nom du
+            # moniteur, dossier) sur une installation qui n'en a pas. Bornés et
+            # sans caractère de contrôle : ils sont réaffichés tels quels.
+            for champ in ("label", "client"):
+                if champ in body and not kuma_text_ok(body[champ], 120):
+                    return self._send(400, {"error": f"{champ} invalide (120 caractères max, "
+                                                     "sans caractère de contrôle)"})
 
             def _muter_overrides(ov):
                 if not isinstance(ov, dict):
@@ -6800,6 +6891,10 @@ class Handler(BaseHTTPRequestHandler):
                 if "alias" in body:
                     al = str(body["alias"]).strip()
                     cur["alias"] = al or None
+                for champ in ("label", "client"):
+                    if champ in body:
+                        v = str(body[champ] or "").strip()
+                        cur[champ] = v or None
                 ov[domain] = {k: v for k, v in cur.items() if v is not None}
                 if not ov[domain]:
                     ov.pop(domain, None)
@@ -6807,6 +6902,20 @@ class Handler(BaseHTTPRequestHandler):
 
             ov = update_json(os.path.join(DATA, "overrides.json"), _muter_overrides, {})
             return self._send(200, {"ok": True, "overrides": ov})
+
+        if p == "/api/mgmt/follow":
+            # Suivre / ne plus suivre un site. C'est la source de vérité propre
+            # au dashboard : elle rend Kuma facultatif pour décider de ce qui
+            # s'affiche (cf. dashlib.site_visible).
+            domain = str(body.get("domain", ""))
+            if not SLUG_RE.match(domain):
+                return self._send(400, {"error": "domaine invalide"})
+            if not isinstance(body.get("followed"), bool):
+                return self._send(400, {"error": "« followed » doit être un booléen"})
+            ensure_followed_migrated(DATA)   # ne jamais partir d'une liste vide
+            suivis = set_followed(domain, body["followed"], DATA)
+            return self._send(200, {"ok": True, "domain": domain,
+                                    "followed": body["followed"], "list": suivis})
 
         if p == "/api/mgmt/servers":
             servers = body.get("servers")
@@ -6868,6 +6977,15 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     cleanup = f"nettoyage impossible : {e}"
             return self._send(200, {"ok": remove_rest_site(domain), "cleanup": cleanup})
+
+        if p.startswith("/api/mgmt/kuma/") and not kuma_disponible():
+            # Uptime Kuma est facultatif : ces routes répondent proprement
+            # plutôt qu'en 500. `code` est un refus attendu (cf. AGENT_REFUS),
+            # donc `agent_http_code` rend 200 et le front affiche le message
+            # sans déclencher son bandeau d'erreur.
+            res = {"ok": False, "code": "unknown", "message": KUMA_ABSENT_MSG,
+                   "output": KUMA_ABSENT_MSG, "kuma": kuma_statut()}
+            return self._send(agent_http_code(res), res)
 
         if p == "/api/mgmt/kuma/create":
             domain = str(body.get("domain", ""))
@@ -7179,4 +7297,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.makedirs(DATA, exist_ok=True)
+    # Bascule « Kuma facultatif » : au premier démarrage, la sélection affichée
+    # est recopiée telle quelle dans data/followed.json (idempotent — un second
+    # démarrage ne recalcule rien). Le collecteur fait le même appel de son côté :
+    # le premier des deux qui démarre gagne, le second ne voit rien à faire.
+    ensure_followed_migrated(DATA)
     ThreadingHTTPServer(("127.0.0.1", 8090), Handler).serve_forever()

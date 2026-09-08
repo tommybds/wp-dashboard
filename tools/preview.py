@@ -9,10 +9,18 @@ scratchpad/fixture/<nom>.json si elles existent, sinon des réponses fabriquées
     python3 tools/preview.py --scenario vide # aucun site
     python3 tools/preview.py --scenario gros # 200 sites
     python3 tools/preview.py --scenario stale --port 8788
+    python3 tools/preview.py --scenario sans-kuma   # Uptime Kuma absent
 
 Scénarios : normal · vide · gros · stale (serveur injoignable) ·
             anomalie (anomalie visuelle VizProof) ·
-            joblent (collecte, MAJ sûre et MAJ sous contrôle visuel en cours)
+            joblent (collecte, MAJ sûre et MAJ sous contrôle visuel en cours) ·
+            sans-kuma (Uptime Kuma non configuré)
+
+`sans-kuma` est le SECOND MONDE, à regarder autant que le premier : Kuma est
+facultatif, et tout écran doit rester honnête sans lui. Aucun moniteur, aucun
+groupe, aucun certificat côté Kuma ; en revanche chaque site porte la sonde du
+dashboard (`probe`), son certificat (`cert`), son suivi (`followed`) et, pour
+ceux qu'on a nommés à la main, un `label` et un `client`.
 """
 import argparse
 import http.server
@@ -30,6 +38,11 @@ PUBLIC = ROOT / "public"
 FIXTURES = ROOT / "scratchpad" / "fixture"
 
 SCENARIO = "normal"
+
+
+def sans_kuma():
+    """Uptime Kuma absent : le dashboard doit rester complet sans lui."""
+    return SCENARIO == "sans-kuma"
 
 
 # ---------------------------------------------------------------- fabrication
@@ -106,6 +119,44 @@ def faux_site(i, srv, rng):
     # « créer moniteur » et le filtre « sans moniteur » de l'écran Gestion.
     if i % 9 == 4:
         s["kuma"] = ""
+    # Sans Kuma, AUCUN site n'a de moniteur : c'est ce qui force la colonne État
+    # à retomber sur la sonde, et Gestion à masquer ses colonnes Kuma.
+    if sans_kuma():
+        s["kuma"] = ""
+        s["kuma_group"] = ""
+
+    # --- sonde du dashboard : présente dans les DEUX mondes ------------------
+    # Le contrat de fleet.json : {ok, status, ms, error, checked_at}. Un site
+    # sur onze est injoignable (503) et un autre n'a jamais été sondé — les
+    # trois états que la colonne État doit savoir rendre. `site-00` est CELUI que
+    # la file « à traiter » signale : les deux écrans doivent dire la même chose.
+    if i % 11 == 0:
+        s["probe"] = {"ok": False, "status": 503, "ms": 4120,
+                      "error": "Service Unavailable", "checked_at": now(0)}
+    elif i % 11 == 7:
+        s["probe"] = None                  # jamais sondé → « inconnu », jamais « en ligne »
+    else:
+        s["probe"] = {"ok": True, "status": 200, "ms": rng.randint(80, 900),
+                      "error": None, "checked_at": now(0)}
+
+    # --- certificat lu par la sonde -----------------------------------------
+    jours = rng.choice([3, 18, 45, 200])
+    s["cert"] = {"issuer": "Let's Encrypt R11", "host": dom,
+                 "not_after": (datetime.now() + timedelta(days=jours)).date().isoformat(),
+                 "days_left": jours}
+
+    # --- suivi, visibilité, nom : ce que collect.py pose sur chaque fiche ----
+    # Ces quatre clés sont dérivées des mêmes sources que la production
+    # (`overrides.json` et `followed.json`), tenues ici en variables de MODULE :
+    # un POST /api/mgmt/follow ou /api/mgmt/override a donc un effet VISIBLE au
+    # rechargement de la flotte, ce qui est tout l'intérêt de la page bouchonnée.
+    ov = OVERRIDES.get(dom, {})
+    s["visible"] = ov.get("visible")                     # True / False / None (auto)
+    s["followed"] = bool((not sans_kuma() and s.get("kuma"))
+                         or dom in SUIVIS
+                         or s.get("via") == "rest")
+    s["label"] = s.get("kuma") or ov.get("label") or dom
+    s["client"] = s.get("kuma_group") or ov.get("client") or None
     s["plugins_list"] = plugins
     s["plugins_updates_list"] = [p["name"] for p in plugins if p.get("update") == "available"]
     themes, _ = faux_themes(i)
@@ -130,6 +181,11 @@ def fleet():
 
 
 def status_cfg():
+    # Sans Kuma, nginx ne proxifie rien : la status page n'existe pas. On rend
+    # une réponse VIDE plutôt qu'une erreur — le front ne doit de toute façon
+    # plus l'appeler (cf. `loadStatus`), et s'il le fait on veut le voir.
+    if sans_kuma():
+        return {"publicGroupList": []}
     f = fleet()
     mons, i = [], 1
     for s in f["servers"]:
@@ -140,6 +196,8 @@ def status_cfg():
 
 
 def status_hb():
+    if sans_kuma():
+        return {"heartbeatList": {}}
     cfg = status_cfg()
     out = {}
     for k, m in enumerate(cfg["publicGroupList"][0]["monitorList"]):
@@ -255,7 +313,11 @@ def incidents(include_acked=False):
          "bucket": "now",
          "site": "site-00.exemple.fr", "server": "plesk-mutu",
          "title": "site-00.exemple.fr injoignable",
-         "detail": "moniteur Kuma en échec — 503 Service Unavailable",
+         # Le libellé DIT qui a constaté la panne : le moniteur Kuma quand il y
+         # en a un, la sonde du dashboard sinon. Une file qui parlerait de Kuma
+         # sur une installation sans Kuma laisserait chercher un écran fantôme.
+         "detail": ("sonde du dashboard : HTTP 503 Service Unavailable" if sans_kuma()
+                    else "moniteur Kuma en échec — 503 Service Unavailable"),
          "since": iso(216), "age_h": 216.0,
          "action": {"label": "Re-scan", "act": "rescan", "arg": ""},
          "link": {"tab": "incidents", "sub": ""},
@@ -383,7 +445,9 @@ def incidents(include_acked=False):
         inc = []
     # Une source en échec : la file doit le DIRE, sinon « rien à traiter » se
     # confond avec « on n'a pas pu regarder ».
-    errs = [] if SCENARIO == "vide" else [
+    # Sans Kuma, la lecture des certificats ne passe plus par docker : il n'y a
+    # donc plus cette source en échec à signaler.
+    errs = [] if SCENARIO in ("vide", "sans-kuma") else [
         {"source": "certs", "error": "RuntimeError: docker exec: conteneur uptime-kuma absent"}]
 
     visibles, masques = [], []
@@ -721,8 +785,17 @@ SERVEURS = [
      "no_su": True, "patterns": ["/home/clients/*/sites/*"], "priority": 1},
 ]
 DOCROOTS = [{"server": "vps-1", "path": "/var/www/dev"}]
+# `label` et `client` sont les DEUX nouveautés de la route d'override : elles
+# nomment un site quand aucun moniteur Kuma ne le fait. `site-08` les porte pour
+# que le cas se voie dans les deux scénarios (avec Kuma, le moniteur prime).
 OVERRIDES = {"site-03.exemple.fr": {"visible": False},
-             "site-05.exemple.fr": {"alias": "client-cinq.fr"}}
+             "site-05.exemple.fr": {"alias": "client-cinq.fr"},
+             "site-08.exemple.fr": {"label": "Boutique Durand", "client": "Durand & Fils"}}
+# Liste de suivi propre au dashboard (data/followed.json en production). Sans
+# Kuma, c'est la SEULE chose qui décide de ce qui apparaît dans le Parc : trois
+# installs en sont volontairement absentes, pour que le compteur « N masqués »
+# de l'en-tête ait quelque chose à compter.
+SUIVIS = {f"site-{i:02d}.exemple.fr" for i in range(200) if i % 8 != 5}
 MONITEURS = [
     {"id": 9, "name": "Sumotori", "active": True, "parent": None},
     {"id": 11, "name": "Client A", "active": True, "parent": None},
@@ -737,10 +810,30 @@ CLES = ["/root/.ssh/id_dashboard", "/root/.ssh/dash_sumotori"]
 
 
 def mgmt_state():
+    """État de gestion. `kuma` est le drapeau que TOUT le front consulte : sans
+    lui, chaque écran croirait Kuma présent et afficherait des sections vides."""
+    if sans_kuma():
+        return {
+            "kuma": {"enabled": False,
+                     "reason": "aucun conteneur « uptime-kuma » joignable (docker : introuvable)"},
+            "kuma_monitors": [], "kuma_groups": [],
+            "overrides": dict(OVERRIDES),
+            "followed": sorted(SUIVIS),
+            "servers": [dict(s) for s in SERVEURS],
+            "extra_docroots": [dict(d) for d in DOCROOTS],
+        }
     return {
+        # `slug`, `container` et `db` sont facultatifs dans le contrat : le
+        # backend actuel ne les expose pas encore. Le scénario normal les donne
+        # (la section Réglages montre alors les valeurs), le scénario sans-kuma
+        # les omet — les deux rendus se voient ainsi tous les deux.
+        "kuma": {"enabled": True, "reason": "conteneur uptime-kuma joignable",
+                 "slug": "parc-x7k2m9", "container": "uptime-kuma",
+                 "db": "/app/data/kuma.db"},
         "kuma_monitors": list(MONITEURS),
         "kuma_groups": [{"id": 9, "name": "Sumotori"}, {"id": 11, "name": "Client A"}],
         "overrides": dict(OVERRIDES),
+        "followed": sorted(SUIVIS),
         "servers": [dict(s) for s in SERVEURS],
         "extra_docroots": [dict(d) for d in DOCROOTS],
     }
@@ -794,6 +887,47 @@ def valider_serveur(o):
     return None
 
 
+def candidats():
+    """Sites vus par le monitoring et absents du parc — donc rien sans Kuma."""
+    if sans_kuma():
+        return {"candidates": [], "kuma": mgmt_state()["kuma"]}
+    return {"candidates": [
+        {"name": "nouveau.exemple.fr", "url": "https://nouveau.exemple.fr",
+         "source": "Kuma", "reason": "non géré"},
+        {"name": "vitrine.exemple.fr", "url": "https://vitrine.exemple.fr",
+         "source": "Kuma", "reason": "aucun install correspondant"}]}
+
+
+def certs():
+    """Certificats du parc — MÊME fusion que `ssl_certs()` côté serveur.
+
+    Avec Kuma : ses relevés d'abord, complétés par les sondes du collecteur pour
+    les hôtes qu'il ne surveille pas. Sans Kuma : les sondes seules. Un hôte ne
+    doit jamais sortir deux fois — c'est précisément ce que la page vérifie.
+    """
+    out, vus = [], set()
+    if not sans_kuma():
+        for c in ({"monitor": "site-00.exemple.fr", "days": 40,
+                   "valid_to": "2027-01-01", "source": "kuma"},
+                  {"monitor": "site-01.exemple.fr", "days": 6,
+                   "valid_to": "2026-09-09", "source": "kuma"}):
+            out.append(c)
+            vus.add(c["monitor"])
+    for srv in fleet()["servers"]:
+        for x in srv["sites"]:
+            if x.get("visible") is False or not x.get("followed"):
+                continue
+            nom = x.get("kuma") or x["domain"]
+            c = x.get("cert") or {}
+            if nom in vus or not c.get("days_left"):
+                continue
+            vus.add(nom)
+            out.append({"monitor": nom, "days": c["days_left"], "valid_to": c["not_after"],
+                        "issuer": c["issuer"], "source": "sonde"})
+    out.sort(key=lambda c: c["days"] if c.get("days") is not None else 10 ** 6)
+    return {"certs": out}
+
+
 ROUTES = {
     "fleet.json": fleet,
     "/api/status-page/parc-x7k2m9": status_cfg,
@@ -830,11 +964,7 @@ ROUTES = {
         {"kind": "collect", "label": "collecte", "status": "", "ts": now(6), "detail": ""}]},
     "/api/mgmt/state": mgmt_state,
     "/api/mgmt/events": evenements,
-    "/api/mgmt/candidates": lambda: {"candidates": [
-        {"name": "nouveau.exemple.fr", "url": "https://nouveau.exemple.fr",
-         "source": "Kuma", "reason": "non géré"},
-        {"name": "vitrine.exemple.fr", "url": "https://vitrine.exemple.fr",
-         "source": "Kuma", "reason": "aucun install correspondant"}]},
+    "/api/mgmt/candidates": lambda: candidats(),
     "/api/mgmt/rest_sites": lambda: {"rest_sites": [dict(x) for x in REST_SITES]},
     "/api/mgmt/changes": lambda: {"changes": [
         {"domain": "site-02.exemple.fr", "label": "extension ajoutée", "detail": "wp-file-manager",
@@ -858,8 +988,7 @@ ROUTES = {
     "/api/sec/vulns": vulns,
     "/api/sec/phperrors": phperrors,
     "/api/sec/baseline": lambda: {"baseline": {"site-00.exemple.fr": {"logins": ["admin"]}}},
-    "/api/sec/certs": lambda: {"certs": [{"monitor": "site-00.exemple.fr", "days": 40, "valid_to": "2027-01-01"},
-                                         {"monitor": "site-01.exemple.fr", "days": 6, "valid_to": "2026-09-09"}]},
+    "/api/sec/certs": certs,
     "/api/sec/checksums": lambda: {"checksums": {"site-00.exemple.fr": {"ok": True, "ts": now(9), "output_tail": ""}}},
     "/api/auth/check": lambda: {"ok": True},
 }
@@ -888,7 +1017,8 @@ STUB = """
   // un POST : elles vont au serveur local, qui tient cet état, au lieu du
   // paquet figé injecté au chargement. Sans cela, un serveur ajouté ou un
   // réglage enregistré n'apparaîtrait jamais au rechargement de la section.
-  const DIRECT = ['/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
+  const DIRECT = ['fleet.json',
+    '/api/mgmt/wp_credentials', '/api/mgmt/state', '/api/mgmt/rest_sites',
     '/api/mgmt/sshkeys', '/api/mgmt/settings', '/api/mgmt/alerts', '/api/mgmt/schedule',
     '/api/mgmt/candidates', '/api/mgmt/events', '/api/actions/viz_pages',
     // le détail des anomalies dépend du site, et le job comme le verdict
@@ -897,6 +1027,9 @@ STUB = """
     // la file dépend des acquittements posés depuis l'interface, et sa réponse
     // dépend de `?include=acked` : elle ne peut pas venir du paquet figé.
     '/api/incidents', '/api/mgmt/counts',
+    // les certificats sondés viennent de fleet.json, qui bouge avec le suivi et
+    // les overrides : figés, la section Certificats mentirait après un clic.
+    '/api/sec/certs',
     // le gel évolue au fil des POST, et le croisement de vulnérabilités dépend
     // du `?domain=` demandé par la page d'un site : figés, on ne verrait ni un
     // thème gelé après rechargement, ni la faille du thème de CE site-là.
@@ -906,7 +1039,8 @@ STUB = """
   window.fetch = function(url, opts){
     const u = String(url);
     const chemin = u.replace(location.origin,'').split('?')[0];
-    if(DIRECT.includes(chemin)) return vrai(url, opts);
+    const nu = chemin.charAt(0) === '/' ? chemin.slice(1) : chemin;
+    if(DIRECT.includes(chemin) || DIRECT.includes(nu)) return vrai(url, opts);
     // Ressources statiques (sprite, polices, CSS) : vrai chargement.
     if(!/^\\/api\\/|fleet\\.json/.test(u.replace(location.origin,''))) return vrai(url, opts);
     // Les ÉCRITURES passent au serveur local, qui tient un peu d'état (gel
@@ -946,6 +1080,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         chemin = self.path.split("?")[0]
+        # La flotte n'est plus figée : elle dépend du suivi et des overrides,
+        # que des POST modifient. Sans cela, cocher « Suivi » n'aurait aucun
+        # effet visible — et c'est justement le geste à vérifier.
+        if chemin == "/fleet.json":
+            return self._json(200, fixture_ou_fabrique("fleet.json"))
         if chemin == "/api/incidents":
             import urllib.parse as up
             q = up.parse_qs(self.path.split("?", 1)[-1]) if "?" in self.path else {}
@@ -1136,17 +1275,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     cur["visible"] = corps["visible"]
                 else:
                     cur.pop("visible", None)
-            if "alias" in corps:
-                al = str(corps["alias"] or "").strip()
-                if al:
-                    cur["alias"] = al
+            # `alias`, `label` et `client` suivent la MÊME règle : une chaîne
+            # vide EFFACE l'entrée au lieu d'enregistrer un vide, sinon
+            # overrides.json se remplit de clés qui ne disent rien.
+            for champ in ("alias", "label", "client"):
+                if champ not in corps:
+                    continue
+                v = " ".join(str(corps[champ] or "").split())
+                if v:
+                    cur[champ] = v
                 else:
-                    cur.pop("alias", None)
+                    cur.pop(champ, None)
             if cur:
                 OVERRIDES[dom] = cur
             else:
                 OVERRIDES.pop(dom, None)
             return 200, {"ok": True, "overrides": dict(OVERRIDES)}
+
+        if chemin == "/api/mgmt/follow":
+            # Suivre / ne plus suivre : mêmes refus que le backend, pour que la
+            # page bouchonnée ne valide pas ce que la production rejette.
+            dom = str(corps.get("domain") or "")
+            if not dom:
+                return 400, {"error": "domaine invalide"}
+            if not isinstance(corps.get("followed"), bool):
+                return 400, {"error": "« followed » doit être un booléen"}
+            if corps["followed"]:
+                SUIVIS.add(dom)
+            else:
+                SUIVIS.discard(dom)
+            return 200, {"ok": True, "domain": dom, "followed": corps["followed"],
+                         "list": sorted(SUIVIS)}
+
+        # Sans Kuma, TOUTES les routes /api/mgmt/kuma/* répondent 200 avec un
+        # refus lisible : le front doit pouvoir le dire, pas tomber sur un 500.
+        if chemin.startswith("/api/mgmt/kuma/") and sans_kuma():
+            return 200, {"ok": False, "message": "Uptime Kuma n'est pas configuré",
+                         "output": "Uptime Kuma n'est pas configuré",
+                         "kuma": mgmt_state()["kuma"]}
 
         if chemin == "/api/mgmt/kuma/create":
             mid = max([m["id"] for m in MONITEURS] or [0]) + 1
@@ -1339,7 +1505,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--scenario", default="normal",
-                    choices=["normal", "vide", "gros", "stale", "anomalie", "joblent"])
+                    choices=["normal", "vide", "gros", "stale", "anomalie", "joblent",
+                             "sans-kuma"])
     a = ap.parse_args()
     SCENARIO = a.scenario
     socketserver.TCPServer.allow_reuse_address = True

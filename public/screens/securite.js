@@ -26,7 +26,9 @@ import { esc as H, h, mount, activeAuClavier, occupe, zoneMessage } from '../lib
 import { relTime, absTime, safeUrl, debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
-import { store, allSites, siteByName, kName, cacheFrais, cacheVider } from '../lib/state.js';
+import {
+  store, allSites, siteByName, kName, kumaActif, loadKuma, cacheFrais, cacheVider,
+} from '../lib/state.js';
 import { askConfirm, askInfo } from '../components/confirm.js';
 import { setBusy, setIdle } from '../components/button.js';
 import { demarrerJob } from '../components/job.js';
@@ -140,7 +142,7 @@ function compteursSommaire() {
   const nPhe = (PHERR.sites || []).reduce((a, s) => a + (s.groups || []).length, 0);
   const nRisky = risques().length;
   const nPhp = phpObsoletes(S).reduce((a, g) => a + g.sites.length, 0);
-  const certs = (CERTS || []).filter(c => c.days !== null && c.days !== undefined && Number(c.days) < 21);
+  const certs = certsFusionnes().filter(c => c.days !== null && c.days !== undefined && Number(c.days) < 21);
   const nCk = Object.values(CKS).filter(x => x && typeof x === 'object' && !x.ok).length;
   const nCkVus = Object.keys(CKS).length;
   return {
@@ -868,31 +870,82 @@ function renderPhp() {
    ========================================================================== */
 function sectionCerts() {
   return sectionEl('sec-certs', 'Certificats SSL', null,
-    h('p', { class: 'hint', text: 'Expiration vue par Uptime Kuma, du plus urgent au plus lointain. Alerte sous 21 jours, critique sous 7 jours.' }),
+    h('p', { class: 'hint', id: 'cert-hint' }),
     h('div', { class: 'wrap' },
       h('table', {},
         h('thead', {}, h('tr', {},
-          h('th', { text: 'Moniteur' }), h('th', { text: 'Jours restants' }), h('th', { text: 'Expire le' }))),
+          h('th', { text: 'Hôte' }), h('th', { text: 'Jours restants' }),
+          h('th', { text: 'Expire le' }), h('th', { text: 'Source' }))),
         h('tbody', { id: 'cert-tb' }))),
     zoneMessage('cert-msg', 'small muted mt2', 'div'));
 }
 
-function renderCerts() {
-  const tb = document.getElementById('cert-tb'), msg = document.getElementById('cert-msg');
-  if (!tb) return;
-  const certs = (CERTS || []).slice().sort((a, b) => {
+/* Source lisible d'une ligne. Le backend pose « kuma » ou « sonde » ; un
+   backend antérieur ne pose rien, et la ligne vient alors forcément de Kuma. */
+function certSource(x) {
+  const s = String(x.source || '').toLowerCase();
+  return (s === 'sonde' || s === 'probe') ? 'sonde du dashboard' : 'Uptime Kuma';
+}
+
+/* ---- fusion des deux sources ----------------------------------------------
+   /api/sec/certs fusionne déjà Kuma et les sondes du collecteur. Ce qui suit
+   ne fait que COMPLÉTER : un site visible dont le certificat a été lu à la
+   collecte mais qui n'apparaît pas dans la réponse (backend plus ancien,
+   moniteur nommé autrement) doit se voir quand même.
+
+   Doublons : une seule ligne par hôte. À hôte égal, celle dont l'expiration est
+   la PLUS LOINTAINE gagne — pour un même certificat les deux sources disent la
+   même date, elles ne divergent que si l'une a vu un renouvellement, et
+   celle-là est nécessairement la plus fraîche. */
+function certsFusionnes() {
+  const par = new Map();
+  const poser = x => {
+    const k = String(x.monitor || '').toLowerCase();
+    if (!k) return;
+    const av = par.get(k);
+    if (!av) { par.set(k, x); return; }
+    const a = Date.parse(String(av.valid_to || '')), b = Date.parse(String(x.valid_to || ''));
+    if (isFinite(b) && (!isFinite(a) || b > a)) par.set(k, x);
+  };
+  (CERTS || []).forEach(poser);
+  allSites().forEach(s => {
+    const c = s.cert;
+    if (!c || typeof c !== 'object') return;
+    if ((c.days_left === null || c.days_left === undefined) && !c.not_after) return;
+    poser({
+      monitor: kName(s) || s.domain, days: c.days_left, valid_to: c.not_after || '',
+      issuer: c.issuer || '', source: 'sonde',
+    });
+  });
+  return [...par.values()].sort((a, b) => {
     const x = a.days, y = b.days;
     if (x === null || x === undefined) return 1;
     if (y === null || y === undefined) return -1;
     return Number(x) - Number(y);
   });
+}
+
+function renderCerts() {
+  const tb = document.getElementById('cert-tb'), msg = document.getElementById('cert-msg');
+  if (!tb) return;
+  const certs = certsFusionnes();
+  const hint = document.getElementById('cert-hint');
+  if (hint) {
+    hint.textContent = (kumaActif()
+      ? 'Expiration vue par Uptime Kuma et par les sondes du dashboard, du plus urgent au plus '
+        + 'lointain — un hôte relevé des deux côtés n’apparaît qu’une fois. '
+      : 'Expiration relevée par les sondes du dashboard à chaque collecte, du plus urgent au plus '
+        + 'lointain. ')
+      + 'Alerte sous 21 jours, critique sous 7 jours.';
+  }
   mount(tb, certs.map(x => {
     const d = x.days;
     const niv = (d === null || d === undefined) ? 'mut' : Number(d) < 7 ? 'err' : Number(d) < 21 ? 'warn' : 'ok';
     return h('tr', {},
       h('td', {}, lienSite(x.monitor)),
       h('td', {}, chipEl(d === null || d === undefined ? '?' : d + ' j', niv)),
-      h('td', { class: 'sub', text: x.valid_to || '' }));
+      h('td', { class: 'sub', text: x.valid_to || '' }),
+      h('td', {}, chipEl(certSource(x), 'mut', { point: false, title: x.issuer || '' })));
   }));
   msg.textContent = certs.length ? '' : (CERTMSG || 'aucun certificat remonté.');
 }
@@ -1030,7 +1083,11 @@ async function loadSec(force) {
   renderPhp();
 
   try {
-    const c = await api('/api/sec/certs');
+    // Le drapeau Kuma décide de la phrase d'introduction (« vue par Uptime Kuma
+    // et par les sondes » ou « relevée par les sondes ») : on l'attend, sinon la
+    // section parle de Kuma une fraction de seconde sur une installation qui
+    // n'en a pas.
+    const [c] = await Promise.all([api('/api/sec/certs'), loadKuma()]);
     CERTS = c.certs || [];
     CERTMSG = c.error || '';
   } catch (e) { CERTS = []; CERTMSG = 'erreur de chargement : ' + e; }

@@ -6,23 +6,27 @@
    de l'utilisateur, et un échec ne se confond jamais avec un autre.
 
      1. Collecte             cadence du cron, dernier relevé, collecte manuelle
-     2. Alertes Telegram     jeton, chat, interrupteur général, déclencheurs
-     3. VizProof             jeton de compte, base API
-     4. Contrôle visuel      les quatre cases qui pilotent les mises à jour
-     5. Règles d'incidents   seuils de la file « à traiter »
-     6. Clés SSH             liste, génération, affectation, test
-     7. Apparence            thème, densité des tableaux
-     8. Session              qui est connecté, déconnexion
+     2. Uptime Kuma          présent ou non, et où se règle son branchement
+     3. Alertes Telegram     jeton, chat, interrupteur général, déclencheurs
+     4. VizProof             jeton de compte, base API
+     5. Contrôle visuel      les quatre cases qui pilotent les mises à jour
+     6. Règles d'incidents   seuils de la file « à traiter »
+     7. Clés SSH             liste, génération, affectation, test
+     8. Apparence            thème, densité des tableaux
+     9. Session              qui est connecté, déconnexion
+
+   Uptime Kuma est FACULTATIF : la section 2 le dit en clair plutôt que de
+   laisser deviner pourquoi le Parc n'affiche pas d'historique de disponibilité.
 
    Les SECRETS (jeton Telegram, jeton VizProof) ne sont jamais réinjectés dans
    un champ : l'API n'en renvoie qu'un témoin et les derniers caractères. Un
    champ laissé vide veut dire « inchangé » ; effacer est un geste explicite. */
 
-import { api, logout } from '../lib/api.js';
+import { api, logout, SLUG } from '../lib/api.js';
 import { esc as H, h, mount, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
-import { store } from '../lib/state.js';
+import { store, kumaActif, kumaRaison, loadKuma, DOC_KUMA } from '../lib/state.js';
 import { askConfirm } from '../components/confirm.js';
 import { setBusy, setIdle } from '../components/button.js';
 import { chipEl } from '../components/chip.js';
@@ -36,6 +40,7 @@ let SETTINGSLU = false;
 
 const ANCRES = [
   ['set-collecte', 'collecte', 'Collecte'],
+  ['set-kuma', 'kuma', 'Uptime Kuma'],
   ['set-alertes', 'alertes', 'Alertes'],
   ['set-vizproof', 'vizproof', 'VizProof'],
   ['set-visuel', 'controle-visuel', 'Contrôle visuel'],
@@ -88,6 +93,7 @@ function monterReglages() {
       ANCRES.map(([, slug, lbl]) => h('a', { class: 'anchor', href: '#reglages/' + slug },
         h('span', { text: lbl })))),
     sectionCollecte(),
+    sectionKuma(),
     sectionAlertes(),
     sectionVizproof(),
     sectionVisuel(),
@@ -156,13 +162,77 @@ async function loadSchedule() {
 }
 
 /* ============================================================================
-   2. Alertes Telegram
+   2. Uptime Kuma — présent ou non, et où se règle son branchement
+   ==========================================================================
+   Kuma est FACULTATIF depuis la refonte : le dashboard sonde lui-même la
+   disponibilité et lit lui-même les certificats. Cette section existe pour que
+   la question « pourquoi n'ai-je pas d'historique de disponibilité ? » trouve
+   sa réponse ici, et pas dans une console.
+
+   Les trois valeurs de branchement (slug, conteneur, base) vivent dans
+   `config.json` sur le serveur et ne sont exposées par AUCUNE route d'écriture :
+   elles sont donc montrées, jamais saisies. Les afficher désactivées est plus
+   honnête qu'un formulaire qui n'enregistrerait rien. */
+function sectionKuma() {
+  return sectionEl('set-kuma', 'Uptime Kuma',
+    [h('span', { class: 'small', id: 'kuma-sum' })],
+    h('p', { class: 'hint', text: 'Uptime Kuma est facultatif. Sans lui le dashboard reste complet : '
+      + 'il sonde lui-même chaque site à la collecte et lit lui-même les certificats. Avec lui, on gagne '
+      + 'l’historique de disponibilité, les alertes, la page publique et l’import de sites supervisés.' }),
+    h('div', { id: 'kuma-body' }, h('span', { class: 'muted small', text: 'chargement…' })));
+}
+
+/** Une valeur de configuration : montrée, jamais saisie ici. */
+function champConfigKuma(id, libelle, valeur, aide, actif) {
+  const inp = h('input', { class: 'inp w100', id, readonly: true, 'aria-label': libelle });
+  inp.value = valeur || '';
+  inp.disabled = !actif;
+  if (!valeur) inp.placeholder = 'défini dans config.json (non exposé par l’API)';
+  return h('div', { class: 'field' },
+    h('label', { for: id, text: libelle }), inp,
+    h('div', { class: 'aide', text: aide }));
+}
+
+function renderKuma() {
+  const bd = document.getElementById('kuma-body');
+  if (!bd) return;
+  const actif = kumaActif();
+  const raison = kumaRaison();
+  const k = store.kuma || {};
+
+  mount('kuma-sum', chipEl(actif ? 'connecté' : 'non configuré', actif ? 'ok' : 'mut'));
+
+  mount(bd,
+    h('div', { class: 'box small' },
+      chipEl(actif ? 'Uptime Kuma : connecté' : 'Uptime Kuma : non configuré', actif ? 'ok' : 'mut'),
+      raison ? h('div', { class: 'muted mt1', text: raison }) : null,
+      actif ? null : h('div', { class: 'muted mt1', text:
+        'La colonne État du Parc, le bloc de statut de la page site et les certificats viennent alors '
+        + 'des sondes du dashboard. Les sections « Moniteurs » et « Non gérés » de Gestion restent vides, '
+        + 'et c’est normal.' })),
+    h('div', { class: 'fieldrow mt2' },
+      champConfigKuma('kuma-slug', 'Slug de la status page', k.slug || SLUG,
+        'Status page privée qui liste les moniteurs du parc : c’est elle qui relie chaque site au sien.',
+        actif),
+      champConfigKuma('kuma-container', 'Conteneur Docker', k.container || '',
+        'Nom du conteneur Uptime Kuma, interrogé pour les moniteurs et les certificats.', actif),
+      champConfigKuma('kuma-db', 'Base SQLite', k.db || '',
+        'Chemin de la base DANS le conteneur.', actif)),
+    h('p', { class: 'hint hint-loose' },
+      'Ces trois valeurs se modifient dans ', h('code', { text: 'config.json' }),
+      ' sur le serveur, puis au redémarrage du service — aucune route ne les écrit depuis l’interface. ',
+      h('a', { href: DOC_KUMA, target: '_blank', rel: 'noopener noreferrer',
+        text: 'Voir la documentation (README)' })));
+}
+
+/* ============================================================================
+   3. Alertes Telegram
    ========================================================================== */
 const AL_CHK = [
   ['new_admin', 'nouvel administrateur'],
   ['checksum_fail', 'checksums en anomalie'],
   ['viz_anomaly', 'anomalie visuelle VizProof'],
-  ['site_down', 'site down (Kuma)'],
+  ['site_down', 'site injoignable'],
 ];
 const AL_NUM = [
   ['backup_stale_h', 'sauvegarde plus vieille que (h)', 48],
@@ -273,7 +343,7 @@ async function loadAlerts() {
 }
 
 /* ============================================================================
-   3. VizProof
+   4. VizProof
    ========================================================================== */
 function sectionVizproof() {
   return sectionEl('set-vizproof', 'VizProof',
@@ -368,7 +438,7 @@ function renderVizSettings(cfg) {
 }
 
 /* ============================================================================
-   4. Contrôle visuel (les quatre cases)
+   5. Contrôle visuel (les quatre cases)
    ========================================================================== */
 const CASES_VIZ = [
   ['set-vizrb', 'viz_anomaly_rollback', false,
@@ -427,7 +497,7 @@ function renderVisuel() {
 }
 
 /* ============================================================================
-   5. Règles d'incidents
+   6. Règles d'incidents
    ========================================================================== */
 function sectionIncidents() {
   return sectionEl('set-incidents', 'Règles d’incidents',
@@ -540,7 +610,7 @@ function renderIncidentRules() {
 }
 
 /* ============================================================================
-   6. Clés SSH
+   7. Clés SSH
    ========================================================================== */
 function sectionCles() {
   return sectionEl('set-cles', 'Clés SSH',
@@ -694,7 +764,7 @@ async function loadKeys() {
 }
 
 /* ============================================================================
-   7. Apparence
+   8. Apparence
    ========================================================================== */
 const DENS_CLE = 'dashDensite';
 
@@ -744,7 +814,7 @@ function sectionApparence() {
 }
 
 /* ============================================================================
-   8. Session
+   9. Session
    ========================================================================== */
 function sectionSession() {
   const qui = document.getElementById('nav-user');
@@ -799,6 +869,9 @@ async function loadSettings() {
 export function loadReglages() {
   monterReglages();
   loadSchedule();
+  // Le drapeau est mémoïsé : ce n'est un appel réseau qu'au tout premier écran.
+  loadKuma().then(renderKuma);
+  renderKuma();
   loadAlerts();
   loadSettings();
   loadKeys();

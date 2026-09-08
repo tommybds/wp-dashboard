@@ -76,10 +76,14 @@ class IncidentsBase(unittest.TestCase):
         self.vider_cache()
 
         # Kuma : aucun battement, aucun certificat, tant qu'un test n'en pose pas.
+        # `kuma_disponible` est forcé à True : ces tests décrivent le parc de
+        # Tommy, qui A Uptime Kuma. Les tests de l'installation SANS Kuma vivent
+        # dans TestSansKuma, plus bas, et le forcent à False.
         self.battements = {}
         self.certs = {"certs": []}
         self.sql = []
         for cible, valeur in (("kuma_sql", self._kuma_sql),
+                              ("kuma_disponible", lambda *a, **k: True),
                               ("ssl_certs", lambda: self.certs)):
             p = mock.patch.object(A, cible, valeur)
             p.start()
@@ -744,7 +748,7 @@ class TestAgregation(IncidentsBase):
         self.parc_complet()
         with mock.patch.object(A, "kuma_sql", lambda sql: (95, "docker indisponible")):
             payload, _ = A.incidents_snapshot()
-        self.assertEqual([e["source"] for e in payload["errors"]], ["kuma"])
+        self.assertEqual([e["source"] for e in payload["errors"]], ["disponibilite"])
         self.assertIn("docker indisponible", payload["errors"][0]["error"])
         self.assertEqual([i["kind"] for i in payload["incidents"]],
                          ["server_stale", "backup_late"])
@@ -1493,6 +1497,117 @@ class TestRoutesAck(RoutesBase):
         self.post("/api/incidents/ack", {"id": "down:fantome.fr:", "mode": "ignore"},
                   cookie=self.cookie)
         self.assertFalse(os.path.exists(A.LOG))
+
+
+# --------------------------------------------------------------------------- #
+#  `down` : Uptime Kuma prioritaire, sonde du dashboard en relais              #
+# --------------------------------------------------------------------------- #
+def sonde(ok=True, status=200, error="", ms=120, checked_at=None):
+    return {"ok": ok, "status": status, "ms": ms, "error": error,
+            "checked_at": checked_at or datetime.datetime.now().strftime(
+                "%Y-%m-%dT%H:%M:%S")}
+
+
+class TestDownSonde(IncidentsBase):
+
+    def incidents_down(self):
+        payload, _ = A.incidents_snapshot()
+        self.assertEqual(payload["errors"], [])
+        return [i for i in payload["incidents"] if i["kind"] == "down"]
+
+    def test_sonde_en_echec_sans_moniteur_ouvre_un_incident(self):
+        """C'est TOUTE la disponibilité d'une installation sans Uptime Kuma."""
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", kuma=None, followed=True,
+                 probe=sonde(ok=False, status=None, error="TimeoutError"))]))
+        inc = self.incidents_down()
+        self.assertEqual(len(inc), 1)
+        self.assertEqual(inc[0]["id"], "down:a.fr:")
+        self.assertEqual(inc[0]["severity"], "critical")
+        self.assertEqual(inc[0]["bucket"], "now")
+        self.assertIn("TimeoutError", inc[0]["detail"])
+        self.assertEqual(inc[0]["extra"]["source"], "sonde")
+
+    def test_sonde_ok_n_ouvre_rien(self):
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", kuma=None, followed=True, probe=sonde())]))
+        self.assertEqual(self.incidents_down(), [])
+
+    def test_site_jamais_sonde_ne_conclut_rien(self):
+        """Pas de sonde = pas d'information ; surtout pas « injoignable »."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr", kuma=None, followed=True)]))
+        self.assertEqual(self.incidents_down(), [])
+
+    def test_statut_http_sans_message_reste_lisible(self):
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", kuma=None, followed=True,
+                 probe=sonde(ok=False, status=503, error=""))]))
+        self.assertIn("503", self.incidents_down()[0]["detail"])
+
+    def test_kuma_prioritaire_sur_la_sonde(self):
+        """Le site a un moniteur qui le dit debout : la sonde ne le contredit pas.
+
+        Kuma a l'historique, la fréquence et les alertes ; la sonde ne connaît
+        que le dernier passage du collecteur, parfois vieux d'une demi-heure.
+        """
+        self.battements = {"a.fr": {"status": 1, "time": ts_utc(time.time())}}
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", probe=sonde(ok=False, error="TimeoutError"))]))
+        self.assertEqual(self.incidents_down(), [])
+
+    def test_kuma_prioritaire_meme_quand_il_signale_la_panne(self):
+        """Une seule ligne, celle de Kuma — jamais un doublon avec la sonde."""
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time() - 600),
+                                    "msg": "connect ETIMEDOUT"}}
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", probe=sonde(ok=False, error="TimeoutError"))]))
+        inc = self.incidents_down()
+        self.assertEqual(len(inc), 1)
+        self.assertEqual(inc[0]["extra"]["msg"], "connect ETIMEDOUT")
+        self.assertNotIn("source", inc[0]["extra"])
+
+    def test_site_sans_moniteur_a_cote_d_un_site_supervise(self):
+        """Les deux sources cohabitent sur une même flotte."""
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time())}}
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr"),
+            site("b.fr", kuma=None, followed=True, probe=sonde(ok=False, status=500))]))
+        self.assertEqual(sorted(i["id"] for i in self.incidents_down()),
+                         ["down:a.fr:", "down:b.fr:"])
+
+    def test_kuma_absent_tout_vient_des_sondes(self):
+        with mock.patch.object(A, "kuma_disponible", lambda *a, **k: False):
+            with mock.patch.object(A, "kuma_sql",
+                                   lambda sql: self.fail("docker appelé sans Kuma")):
+                self.poser_fleet(self.serveur(sites=[
+                    site("a.fr", kuma="a.fr", followed=True,
+                         probe=sonde(ok=False, error="ConnectionRefusedError"))]))
+                inc = self.incidents_down()
+        self.assertEqual([i["id"] for i in inc], ["down:a.fr:"])
+        self.assertEqual(inc[0]["extra"]["source"], "sonde")
+
+    def test_site_masque_reste_hors_de_la_file(self):
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", kuma=None, followed=False, probe=sonde(ok=False))]))
+        self.assertEqual(self.incidents_down(), [])
+
+    def test_acquittement_survit_au_retrait_de_kuma(self):
+        """Même `id` des deux côtés : un incident acquitté le reste."""
+        self.battements = {"a.fr": {"status": 0, "time": ts_utc(time.time())}}
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        avec = self.incidents_down()[0]["id"]
+        with mock.patch.object(A, "kuma_disponible", lambda *a, **k: False):
+            self.poser_fleet(self.serveur(sites=[
+                site("a.fr", followed=True, probe=sonde(ok=False))]))
+            sans = self.incidents_down()[0]["id"]
+        self.assertEqual(avec, sans)
+
+    def test_horodatage_de_la_sonde_donne_l_age(self):
+        vieux = datetime.datetime.now() - datetime.timedelta(hours=3)
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", kuma=None, followed=True,
+                 probe=sonde(ok=False, checked_at=vieux.strftime("%Y-%m-%dT%H:%M:%S")))]))
+        self.assertAlmostEqual(self.incidents_down()[0]["age_h"], 3.0, delta=0.2)
 
 
 if __name__ == "__main__":

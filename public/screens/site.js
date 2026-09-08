@@ -23,10 +23,12 @@ import {
 } from '../lib/format.js';
 import { icon, iconEl } from '../lib/icons.js';
 import { poll, stopPoll } from '../lib/poll.js';
-import { store, allSites, st, bkAge, kName, loadFleet, phpEol, seuilBackup } from '../lib/state.js';
+import {
+  store, allSites, etatSite, bkAge, kName, nomDeSite, clientDe, loadFleet, phpEol, seuilBackup,
+} from '../lib/state.js';
 
 import { setBusy, setIdle } from '../components/button.js';
-import { chipEl, libelleKuma, niveauKuma } from '../components/chip.js';
+import { chipEl, chipEtat } from '../components/chip.js';
 import { erreurPhpEl, incidentEl } from '../components/incident.js';
 import { askConfirm, askInfo, askOpen } from '../components/confirm.js';
 import { menuActions, fermerMenus } from '../components/actions-menu.js';
@@ -202,11 +204,12 @@ function dessiner() {
 
 /* ---- en-tête -------------------------------------------------------------- */
 function entete(s) {
-  const v = st(s);
+  const e = etatSite(s);
+  const client = clientDe(s);
   const meta = h('div', { class: 'meta sitemeta' });
   const bout = (txt, cls) => h('span', { class: cls || '', text: txt });
   const sep = () => h('span', { class: 'sep', text: '·' });
-  if (s.kuma_group) { meta.append(bout(s.kuma_group)); meta.append(sep()); }
+  if (client) { meta.append(bout(client)); meta.append(sep()); }
   meta.append(bout(s.srv || '—'));
   if (s.path) { meta.append(sep()); meta.append(h('code', { class: 'small', text: s.path })); }
   meta.append(sep());
@@ -218,14 +221,18 @@ function entete(s) {
     text: s.via === 'rest' ? 'via REST' : 'via SSH',
   }));
 
+  const nom = nomDeSite(s);
   const fil = h('nav', { class: 'fil', 'aria-label': "Fil d'Ariane" },
     h('a', { href: '#parc', text: 'Parc' }),
     h('span', { class: 'sep', text: '›' }),
-    h('span', { 'aria-current': 'page', text: cleDeSite(s) }));
+    h('span', { 'aria-current': 'page', text: nom }));
 
+  /* Le bloc de statut live suit la MÊME règle que la colonne État du Parc :
+     Kuma s'il surveille ce site, sinon la sonde du dashboard, et l'infobulle
+     dit laquelle des deux a parlé. */
   const titre = h('div', { class: 'sitetitle' },
-    h('h1', { text: cleDeSite(s) }),
-    chipEl(libelleKuma(v), niveauKuma(v)),
+    h('h1', { text: nom }),
+    chipEtat(e),
     s._stale ? chipEl('données du ' + (s._srvAt || 'relevé précédent'), 'warn', {
       tip: 'serveur ' + (s.srv || '') + ' injoignable à la dernière collecte'
         + (s._srvErr ? ' : ' + s._srvErr : '') + ' — les chiffres datent du relevé précédent.',
@@ -724,7 +731,10 @@ function ongletApercu(s) {
         : h('span', { class: 'muted', text: s.siteurl || '—' })),
       h('span', { class: 'k', text: 'Serveur' }), h('span', {}, srvCellEl(s)),
       ...(s.path ? [h('span', { class: 'k', text: 'Chemin' }), h('span', {}, h('code', { class: 'small', text: s.path }))] : []),
-      h('span', { class: 'k', text: 'Client (Kuma)' }), h('span', { text: s.kuma_group || '—' }),
+      h('span', { class: 'k', text: 'Client' }), h('span', { text: clientDe(s) || '—' }),
+      h('span', { class: 'k', text: 'Disponibilité' }),
+      h('span', {}, chipEtat(etatSite(s)), ' ',
+        h('span', { class: 'muted small', text: etatSite(s).tip })),
       h('span', { class: 'k', text: 'Administrateurs' }), adm,
       h('span', { class: 'k', text: 'Collecté' }),
       h('span', { class: 'muted', text: s.collected_at || store.fleet?.generated_at || '—' }))));

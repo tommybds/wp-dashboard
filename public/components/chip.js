@@ -34,18 +34,14 @@ export function chipEl(label, level = 'mut', opts = {}) {
   return tpl.content.firstElementChild;
 }
 
-/* Niveau déduit de l'état Kuma, pour que les écrans ne le ré-inventent pas.
-   1 en ligne · 0 down · 2 en attente · undefined pas de monitoring. */
-export function niveauKuma(v) {
-  if (v === 1) return 'ok';
-  if (v === 0) return 'err';
-  if (v === 2) return 'warn';
-  return 'mut';
-}
+/* La disponibilité d'un site — libellé, niveau, provenance — n'est PLUS décidée
+   ici : elle dépend de la présence d'Uptime Kuma et de la sonde du dashboard,
+   deux choses qu'un composant de présentation n'a pas à connaître. La règle
+   vit dans `etatSite()` (lib/state.js) ; ce qui suit ne fait que la rendre.
 
-export function libelleKuma(v) {
-  if (v === 1) return 'en ligne';
-  if (v === 0) return 'down';
-  if (v === 2) return 'en attente';
-  return 'inconnu';
+   L'infobulle porte la SOURCE (« d'après Uptime Kuma », « sonde du dashboard,
+   il y a 12 min ») : discrète, mais jamais absente — un « en ligne » dont on ne
+   sait pas qui l'a mesuré ne vaut pas grand-chose. */
+export function chipEtat(e, opts = {}) {
+  return chipEl(e.txt, e.niv, { tip: e.tip, ...opts });
 }

@@ -16,7 +16,7 @@ import { esc as H } from '../lib/dom.js';
 import { relTime } from '../lib/format.js';
 import { icon } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
-import { store, allSites, st, loadFleet, loadStatus } from '../lib/state.js';
+import { store, allSites, etatSite, loadFleet, loadStatus } from '../lib/state.js';
 import { NOTIF } from './toast.js';
 import { chip } from './chip.js';
 import { initJournal } from './log.js';
@@ -78,7 +78,10 @@ export function updMeta() {
   el.innerHTML =
     `<b>${n}</b> site${n > 1 ? 's' : ''} suivi${n > 1 ? 's' : ''}<span class="sep">·</span>`
     + `collecté ${H(rel)}<span class="sep">·</span>${schedLabel()}`
-    + (store.hidden ? `<span class="sep">·</span>${store.hidden} masqué${store.hidden > 1 ? 's' : ''}` : '')
+    + (store.hidden ? `<span class="sep">·</span>` + chip(
+        `${store.hidden} masqué${store.hidden > 1 ? 's' : ''}`, 'mut', { point: false,
+          tip: "Installs découvertes sur les serveurs mais pas suivies par le dashboard, ou masquées à "
+            + "la main. Elles se prennent en charge dans Gestion → Installs découverts." }) : '')
     // Un serveur muet fausse la lecture de tout le tableau : il se dit en clair.
     + (ko.length ? `<span class="sep">·</span>` + chip(
         `${ko.length} serveur${ko.length > 1 ? 's' : ''} injoignable${ko.length > 1 ? 's' : ''}`, 'warn',
@@ -119,10 +122,12 @@ function setCounter(name, value, level) {
   });
 }
 
-/** Compteurs déduits de la flotte + du statut Kuma (sites injoignables). */
+/** Compteurs déduits de la flotte + de la disponibilité (sites injoignables).
+    « Injoignable » vient de Kuma quand il est là, sinon de la sonde du
+    dashboard : le repli est dans `etatSite()`, pas ici. */
 export function majCompteurs() {
   if (!store.fleet || INCIDENTS_CONNUS) return;
-  const down = allSites().filter(s => st(s) === 0).length;
+  const down = allSites().filter(s => etatSite(s).v === 0).length;
   setCounter('incidents', down, 'err');
 }
 

@@ -35,6 +35,25 @@ from unittest import mock
 import actions_server as A
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Uptime Kuma est facultatif depuis septembre 2026 : `kuma_disponible()` sonde
+# le conteneur avec `docker exec`. Aucun test n'a le droit de lancer docker —
+# la détection est donc forcée à « présent » pour tout ce module, ce qui laisse
+# les tests existants décrire le parc de Tommy tel qu'il est. Les tests de
+# l'installation SANS Kuma (TestKumaFacultatif) la forcent à False eux-mêmes.
+_KUMA_ON = None
+
+
+def setUpModule():
+    global _KUMA_ON
+    _KUMA_ON = mock.patch.object(A, "kuma_disponible", lambda *a, **k: True)
+    _KUMA_ON.start()
+
+
+def tearDownModule():
+    if _KUMA_ON is not None:
+        _KUMA_ON.stop()
 CRON_FIXTURE = os.path.join(REPO, "deploy", "wp-dashboard.cron")
 SERVERS_EXAMPLE = os.path.join(REPO, "servers.example.json")
 
@@ -2335,6 +2354,241 @@ class TestRunRouteViz(BaseTmp):
     def test_viz_last_vide_avant_tout_scan(self):
         _st, j = self.get("/api/actions/viz_last?domain=jamais.fr")
         self.assertIsNone(j["viz"])
+
+
+# --------------------------------------------------------------------------- #
+#  Uptime Kuma facultatif : routes, visibilité et sondes                        #
+# --------------------------------------------------------------------------- #
+class KumaRoutesBase(BaseTmp):
+    """Un vrai serveur HTTP sur 127.0.0.1 et une session valide."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), A.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+        self.cookie = "dash_session=" + A.make_token("tommy")
+        self._fp = A.FLEET_PATH
+        A.FLEET_PATH = os.path.join(self.data, "fleet.json")
+        self.addCleanup(lambda: setattr(A, "FLEET_PATH", self._fp))
+
+    def _appel(self, methode, chemin, corps=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request(methode, chemin,
+                      body=json.dumps(corps).encode() if corps is not None else None,
+                      headers={"Cookie": self.cookie, "X-Dash": "1",
+                               "Content-Type": "application/json"})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"{}")
+        finally:
+            c.close()
+
+    def get(self, chemin):
+        return self._appel("GET", chemin)
+
+    def post(self, chemin, corps):
+        return self._appel("POST", chemin, corps)
+
+    def sans_kuma(self):
+        """Kuma absent, ET un docker qui échoue si quoi que ce soit l'appelle."""
+        p = mock.patch.object(A, "kuma_disponible", lambda *a, **k: False)
+        p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch.object(A, "kuma_statut",
+                              lambda *a, **k: {"enabled": False,
+                                               "reason": "conteneur absent"})
+        q.start()
+        self.addCleanup(q.stop)
+        r = mock.patch.object(A.subprocess, "run", self._docker_interdit)
+        r.start()
+        self.addCleanup(r.stop)
+
+    @staticmethod
+    def _docker_interdit(*a, **kw):
+        raise AssertionError("commande lancée alors que Kuma est absent : %r" % (a,))
+
+
+class TestRoutesSansKuma(KumaRoutesBase):
+
+    def setUp(self):
+        super().setUp()
+        self.sans_kuma()
+
+    def test_etat_annonce_kuma_absent(self):
+        st, j = self.get("/api/mgmt/state")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["kuma"], {"enabled": False, "reason": "conteneur absent"})
+        self.assertEqual((j["kuma_groups"], j["kuma_monitors"]), ([], []))
+        self.assertEqual(j["followed"], [])
+
+    def test_candidats_liste_vide_sans_erreur(self):
+        st, j = self.get("/api/mgmt/candidates")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["candidates"], [])
+        self.assertFalse(j["kuma"]["enabled"])
+
+    def test_routes_kuma_repondent_200_avec_ok_false(self):
+        for chemin, corps in (("/api/mgmt/kuma/create",
+                               {"domain": "a.fr", "group_id": 1}),
+                              ("/api/mgmt/kuma/pause", {"monitor_id": 1, "active": 0}),
+                              ("/api/mgmt/kuma/delete", {"monitor_id": 1})):
+            st, j = self.post(chemin, corps)
+            self.assertEqual(st, 200, chemin)
+            self.assertIs(j["ok"], False, chemin)
+            self.assertIn("Uptime Kuma", j["message"])
+
+    def test_kuma_sql_ne_lance_pas_docker(self):
+        rc, out = A.kuma_sql("SELECT 1;")
+        self.assertEqual(rc, A.KUMA_UNAVAILABLE_RC)
+        self.assertIn("Uptime Kuma", out)
+        A.kuma_restart()                      # ne lève pas, ne lance rien
+        self.assertEqual(A.kuma_state(), ([], []))
+        self.assertEqual(A.kuma_candidates(), [])
+        self.assertEqual(A.kuma_monitor_urls(), [])
+
+    def test_certificats_viennent_des_sondes(self):
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "sites": [
+            {"domain": "a.fr", "followed": True,
+             "cert": {"issuer": "R11", "not_after": "2026-09-20",
+                      "days_left": 12, "host": "a.fr"}},
+            {"domain": "masque.fr", "followed": False,
+             "cert": {"issuer": "R11", "not_after": "2026-09-11",
+                      "days_left": 3, "host": "masque.fr"}}]}]})
+        st, j = self.get("/api/sec/certs")
+        self.assertEqual(st, 200)
+        self.assertNotIn("error", j)
+        self.assertEqual([(c["monitor"], c["days_left"]) for c in j["certs"]],
+                         [("a.fr", 12)])
+        self.assertEqual(j["certs"][0]["source"], "sonde")
+
+    def test_incidents_et_compteurs_tournent_sans_kuma(self):
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "complete": True, "sites": [
+            {"domain": "a.fr", "followed": True, "via": "ssh",
+             "probe": {"ok": False, "status": None, "ms": 8000,
+                       "error": "TimeoutError", "checked_at": "2026-09-08T10:00:00"}}]}]})
+        st, j = self.get("/api/incidents")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["errors"], [])
+        self.assertEqual([i["kind"] for i in j["incidents"]], ["down"])
+        self.assertEqual(j["incidents"][0]["extra"]["source"], "sonde")
+        st, j = self.get("/api/mgmt/counts")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["incidents"]["now_critical"], 1)
+
+
+class TestRouteFollow(KumaRoutesBase):
+
+    def test_suivre_et_ne_plus_suivre(self):
+        st, j = self.post("/api/mgmt/follow", {"domain": "a.fr", "followed": True})
+        self.assertEqual((st, j["ok"]), (200, True))
+        self.assertEqual(j["list"], ["a.fr"])
+        self.assertEqual(A.load_followed(A.DATA), {"a.fr"})
+        st, j = self.post("/api/mgmt/follow", {"domain": "a.fr", "followed": False})
+        self.assertEqual(j["list"], [])
+
+    def test_domaine_invalide_refuse(self):
+        for mauvais in ("../etc/passwd", "a b", ""):
+            st, _ = self.post("/api/mgmt/follow", {"domain": mauvais, "followed": True})
+            self.assertEqual(st, 400, mauvais)
+
+    def test_booleen_exige(self):
+        st, j = self.post("/api/mgmt/follow", {"domain": "a.fr", "followed": "oui"})
+        self.assertEqual(st, 400)
+        self.assertIn("booléen", j["error"])
+
+    def test_migration_avant_le_premier_suivi(self):
+        """Suivre un site ne doit pas partir d'une liste vide : la sélection
+        actuelle est reprise d'abord, sinon tout le reste disparaîtrait."""
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "sites": [
+            {"domain": "deja.fr", "kuma": "deja.fr"},
+            {"domain": "cache.fr", "kuma": None}]}]})
+        self.post("/api/mgmt/follow", {"domain": "cache.fr", "followed": True})
+        self.assertEqual(A.load_followed(A.DATA), {"deja.fr", "cache.fr"})
+
+    def test_fichier_en_0600(self):
+        self.post("/api/mgmt/follow", {"domain": "a.fr", "followed": True})
+        self.assertEqual(mode_of(A.followed_path(A.DATA)), 0o600)
+
+
+class TestOverrideLabelClient(KumaRoutesBase):
+
+    def test_label_et_client_enregistres(self):
+        st, j = self.post("/api/mgmt/override",
+                          {"domain": "a.fr", "label": "Boutique Dupont",
+                           "client": "Dupont SA"})
+        self.assertEqual(st, 200)
+        self.assertEqual(j["overrides"]["a.fr"],
+                         {"label": "Boutique Dupont", "client": "Dupont SA"})
+
+    def test_valeur_vide_efface_le_champ(self):
+        self.post("/api/mgmt/override", {"domain": "a.fr", "label": "X"})
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "label": ""})
+        self.assertEqual(j["overrides"], {})
+
+    def test_label_douteux_refuse(self):
+        for mauvais in ("x" * 200, "avec\x00nul", "retour\nligne"):
+            st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "label": mauvais})
+            self.assertEqual(st, 400, repr(mauvais))
+            self.assertIn("label", j["error"])
+
+    def test_visible_et_alias_toujours_acceptes(self):
+        st, j = self.post("/api/mgmt/override",
+                          {"domain": "a.fr", "visible": False, "alias": "mon-moniteur"})
+        self.assertEqual(j["overrides"]["a.fr"],
+                         {"visible": False, "alias": "mon-moniteur"})
+
+
+class TestCertsFusion(BaseTmp):
+    """`ssl_certs()` : Kuma prioritaire, sondes en complément."""
+
+    def setUp(self):
+        super().setUp()
+        self._fp = A.FLEET_PATH
+        A.FLEET_PATH = os.path.join(self.data, "fleet.json")
+        self.addCleanup(lambda: setattr(A, "FLEET_PATH", self._fp))
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "sites": [
+            {"domain": "a.fr", "kuma": "a.fr", "followed": True,
+             "cert": {"issuer": "sonde", "not_after": "2026-11-01",
+                      "days_left": 54, "host": "a.fr"}},
+            {"domain": "b.fr", "followed": True,
+             "cert": {"issuer": "R11", "not_after": "2026-09-20",
+                      "days_left": 12, "host": "b.fr"}}]}]})
+
+    def test_kuma_gagne_sur_la_sonde_pour_un_meme_moniteur(self):
+        with mock.patch.object(A, "ssl_certs_kuma", lambda: {"certs": [
+                {"monitor": "a.fr", "days": 30, "days_left": 30,
+                 "valid_to": "2026-10-08", "source": "kuma"}]}):
+            res = A.ssl_certs()
+        par_nom = {c["monitor"]: c for c in res["certs"]}
+        self.assertEqual(par_nom["a.fr"]["source"], "kuma")
+        self.assertEqual(par_nom["a.fr"]["days_left"], 30)
+        self.assertEqual(par_nom["b.fr"]["source"], "sonde")
+        # les plus urgents d'abord
+        self.assertEqual([c["monitor"] for c in res["certs"]], ["b.fr", "a.fr"])
+
+    def test_panne_kuma_n_efface_pas_les_sondes(self):
+        with mock.patch.object(A, "ssl_certs_kuma",
+                               lambda: {"certs": [], "error": "docker indisponible"}):
+            res = A.ssl_certs()
+        self.assertNotIn("error", res)
+        self.assertEqual(sorted(c["monitor"] for c in res["certs"]), ["a.fr", "b.fr"])
+
+    def test_panne_kuma_sans_sonde_remonte_l_erreur(self):
+        A.save_json(A.FLEET_PATH, {"servers": []})
+        with mock.patch.object(A, "ssl_certs_kuma",
+                               lambda: {"certs": [], "error": "docker indisponible"}):
+            res = A.ssl_certs()
+        self.assertIn("docker indisponible", res["error"])
+
+    def test_site_masque_n_apparait_pas(self):
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "s1", "sites": [
+            {"domain": "z.fr", "followed": True, "visible": False,
+             "cert": {"days_left": 2, "not_after": "2026-09-10"}}]}]})
+        with mock.patch.object(A, "ssl_certs_kuma", lambda: {"certs": []}):
+            self.assertEqual(A.ssl_certs()["certs"], [])
 
 
 if __name__ == "__main__":

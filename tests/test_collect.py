@@ -13,16 +13,25 @@ import io
 import json
 import os
 import shutil
+import socket
+import ssl
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 
 import collect            # noqa: E402
+import dashboard_config   # noqa: E402
+import dashlib            # noqa: E402
 import digest             # noqa: E402
 import phperrors          # noqa: E402
 import vulns              # noqa: E402
@@ -112,6 +121,11 @@ class TempDirs(unittest.TestCase):
             mock.patch.object(collect, "CHANGES_PATH", os.path.join(self.data, "changes.jsonl")),
             mock.patch.object(collect, "REST_SITES_PATH", os.path.join(self.data, "rest_sites.json")),
             mock.patch.object(collect.subprocess, "run", faux_subprocess),
+            # Kuma est facultatif : sa détection lancerait `docker exec`, et les
+            # sondes ouvriraient de vraies connexions. Les deux sont neutralisées
+            # par défaut ; les tests qui les visent les réactivent explicitement.
+            mock.patch.object(collect, "kuma_disponible", lambda *a, **k: False),
+            mock.patch.object(collect, "probe_fleet", lambda fleet, *a, **k: 0),
         ]
         for p in self.patchs:
             p.start()
@@ -821,6 +835,520 @@ class TestDigest(unittest.TestCase):
         texte, n_sites, n_warn = digest.build_message(ch, 24)
         self.assertEqual((n_sites, n_warn), (1, 1))
         self.assertIn("pirate", texte)
+
+
+# --------------------------------------------------------------------------- #
+#  Sondes maison : disponibilité HTTP                                          #
+#                                                                              #
+#  Contre un VRAI serveur HTTP sur 127.0.0.1 : c'est le seul moyen d'éprouver   #
+#  le repli HEAD → GET, le suivi des redirections et le délai dépassé tels que  #
+#  urllib les vit. Aucune sortie réseau : la garde anti-SSRF (qui refuserait    #
+#  le loopback, à raison) est neutralisée le temps du test.                     #
+# --------------------------------------------------------------------------- #
+def url_acceptee(url):
+    """Garde SSRF neutralisée : pas de DNS, le loopback est autorisé ici."""
+    return urllib.parse.urlsplit(str(url or "")), None
+
+
+class ServeurLocal:
+    """Petit serveur HTTP jetable, piloté par une fonction de réponse."""
+
+    def __init__(self, repondre):
+        self.vus = []
+        essai = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def _traiter(self):
+                essai.vus.append((self.command, self.path))
+                code, entetes, corps = repondre(self.command, self.path)
+                if code is None:          # « ne réponds pas » : provoque le délai
+                    time.sleep(3)
+                    return
+                self.send_response(code)
+                for k, v in (entetes or {}).items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(corps or b"")))
+                self.end_headers()
+                if self.command != "HEAD" and corps:
+                    self.wfile.write(corps)
+
+            do_GET = do_HEAD = _traiter
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        self.fil = threading.Thread(target=self.srv.serve_forever, daemon=True)
+        self.fil.start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}/"
+
+    def fermer(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class TestSondeHttp(unittest.TestCase):
+
+    def setUp(self):
+        p = mock.patch.object(collect, "validate_public_url", url_acceptee)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def servir(self, repondre):
+        srv = ServeurLocal(repondre)
+        self.addCleanup(srv.fermer)
+        return srv
+
+    def test_succes(self):
+        srv = self.servir(lambda m, p: (200, {}, b"ok"))
+        res = collect.probe_site(srv.url)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], 200)
+        self.assertEqual(res["error"], "")
+        self.assertIsInstance(res["ms"], int)
+        self.assertTrue(res["checked_at"])
+        # HEAD suffit : rien n'est téléchargé quand le site répond normalement.
+        self.assertEqual([m for m, _ in srv.vus], ["HEAD"])
+
+    def test_erreur_serveur(self):
+        srv = self.servir(lambda m, p: (500, {}, b"boum"))
+        res = collect.probe_site(srv.url)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["status"], 500)
+        self.assertIn("500", res["error"])
+
+    def test_repli_get_quand_head_est_refuse(self):
+        """Beaucoup d'hébergements répondent 405 à un HEAD et servent le GET."""
+        srv = self.servir(lambda m, p: (405, {}, b"") if m == "HEAD" else (200, {}, b"ok"))
+        res = collect.probe_site(srv.url)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], 200)
+        self.assertEqual([m for m, _ in srv.vus], ["HEAD", "GET"])
+
+    def test_delai_depasse(self):
+        srv = self.servir(lambda m, p: (None, {}, b""))
+        res = collect.probe_site(srv.url, timeout=0.6)
+        self.assertFalse(res["ok"])
+        self.assertIsNone(res["status"])
+        self.assertTrue(res["error"])
+
+    def test_delai_total_borne_malgre_le_repli_get(self):
+        """Le repli GET n'a droit qu'au temps RESTANT : un site muet coûte
+        `timeout` secondes, pas deux fois plus."""
+        srv = self.servir(lambda m, p: (None, {}, b""))
+        t0 = time.time()
+        collect.probe_site(srv.url, timeout=1.0)
+        self.assertLess(time.time() - t0, 2.0)
+
+    def test_port_ferme(self):
+        srv = ServeurLocal(lambda m, p: (200, {}, b""))
+        port = srv.port
+        srv.fermer()
+        res = collect.probe_site(f"http://127.0.0.1:{port}/")
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["error"])
+
+    def test_redirection_suivie(self):
+        def repondre(m, p):
+            if p == "/":
+                return 302, {"Location": "/final"}, b""
+            return 200, {}, b"ok"
+        srv = self.servir(repondre)
+        res = collect.probe_site(srv.url)
+        self.assertTrue(res["ok"])
+        self.assertEqual([p for _, p in srv.vus], ["/", "/final"])
+
+    def test_boucle_de_redirection_bornee(self):
+        srv = self.servir(lambda m, p: (302, {"Location": "/encore"}, b""))
+        res = collect.probe_site(srv.url, max_redirects=2)
+        self.assertFalse(res["ok"])
+        self.assertLessEqual(len(srv.vus), 6)
+
+    def test_garde_ssrf_appliquee(self):
+        """Sans la neutralisation, le loopback est refusé — c'est bien la garde
+        partagée avec l'API qui tranche, jamais une copie locale."""
+        with mock.patch.object(collect, "validate_public_url",
+                               dashlib.validate_public_url):
+            res = collect.probe_site("http://127.0.0.1:9/")
+        self.assertFalse(res["ok"])
+        self.assertIn("adresse non autorisée", res["error"])
+
+
+# --------------------------------------------------------------------------- #
+#  Sondes maison : certificat TLS                                              #
+# --------------------------------------------------------------------------- #
+# Certificat auto-signé EXPIRÉ (CN=localhost, valide du 01/01/2020 au
+# 01/01/2021), avec sa clé. Il ne protège rien : il n'existe que pour prouver
+# qu'un certificat périmé — le cas que la surveillance doit justement voir —
+# reste LISIBLE. Une vérification complète échouerait sur ces deux motifs
+# (auto-signé, expiré) et ne rendrait aucune date.
+CERT_EXPIRE_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIDWTCCAkGgAwIBAgIUer6HmvB58FG5NxPY9aSvsZdoV40wDQYJKoZIhvcNAQEL
+BQAwPDESMBAGA1UEAwwJbG9jYWxob3N0MSYwJAYDVQQKDB1BdXRvcml0ZSBkZSB0
+ZXN0IHdwLWRhc2hib2FyZDAeFw0yMDAxMDEwMDAwMDBaFw0yMTAxMDEwMDAwMDBa
+MDwxEjAQBgNVBAMMCWxvY2FsaG9zdDEmMCQGA1UECgwdQXV0b3JpdGUgZGUgdGVz
+dCB3cC1kYXNoYm9hcmQwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCr
+Vr6WJSVLVwP8U/rE1tLoah0aSO1l3/MP8qUy2BBpjQAEDHVPuo+/H40wkt8tnPgl
+XzKIGNgOSLXYumdk4PJyAl78vN0CD3fvoZBky1fW7q5dJ/pBHSido7scxTmXVzI3
+GH8PuLWhIUU1Ek2GU2MhyFdPxhaCsoZJZWBI0xkI9qzLkjaPppDJW2a68WDPeJra
+nm6rqDh4ZbTWaVZQUEyquV5WX2hpxowK1csbgHoIoqjntBYiClR9aaQh4qOyrnKt
+1QlaOhp2FkVc4HTO55eLe/aC5vSYaEW8U5N2CpaihnxzeINeXbjEWccW8AgyKlP4
+OSu1u14x4hh5Eg8elijRAgMBAAGjUzBRMB0GA1UdDgQWBBTacbG62+yICbTsfeys
+RvqwybH83TAfBgNVHSMEGDAWgBTacbG62+yICbTsfeysRvqwybH83TAPBgNVHRMB
+Af8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBVpF/vB98DMXAzSHgk43tP6Cq9
+JddFZ3ONF3a+AkMxJAPlzwwe1Tnz+u5q2jv423H48F/5/5jAxPJV3lI2RIot7rX1
+KTwBXLdM+KHlctvcDdV86TSmAwby4xS3fvOSPsfBGOG+dBvESe775dAzSrKCx72X
+1EpCgxRsC+2f5CuZTM08F9U6g4MJVPmbgIjfX18dI8mi1KX4NcF38ctmx6Cr1cae
+JnvbnUuSezroAiBPj6mmkYV0PLagur6Hkc1JnTyCvkAkybI+AOyFO7V2k9SFUSZM
+gGw26z+XFE0SIV9P2LT964rxG8bKMAW+wLLrzZYMuIODDeb2iVKI+oOORsxi
+-----END CERTIFICATE-----
+"""
+CLE_EXPIREE_PEM = """\
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCrVr6WJSVLVwP8
+U/rE1tLoah0aSO1l3/MP8qUy2BBpjQAEDHVPuo+/H40wkt8tnPglXzKIGNgOSLXY
+umdk4PJyAl78vN0CD3fvoZBky1fW7q5dJ/pBHSido7scxTmXVzI3GH8PuLWhIUU1
+Ek2GU2MhyFdPxhaCsoZJZWBI0xkI9qzLkjaPppDJW2a68WDPeJranm6rqDh4ZbTW
+aVZQUEyquV5WX2hpxowK1csbgHoIoqjntBYiClR9aaQh4qOyrnKt1QlaOhp2FkVc
+4HTO55eLe/aC5vSYaEW8U5N2CpaihnxzeINeXbjEWccW8AgyKlP4OSu1u14x4hh5
+Eg8elijRAgMBAAECggEAPIIzZ2Hx5EP0J+HejzJQpHyJD5XOpOosdCbceXK9hREi
+/ssJiOEZT8VMPum3gGvNZKFUfqTLdGvwMHxP9FvOsz2sHvRx1n7w+8Mic74uJL0A
+/ewW4HT0OYuvkk8CcjR8iuGPSdWQ6zkNMFto3nXHbhBK6WTK4Vg7vWLcWIuYbUXf
+yh5RxX353laqUdYjRl2wYj7+T3MFhcy1xxoWCbn+aRdeylWkIOhUDr2qzPZZXeqd
+AdVLfXMFRVucNSEMd4ITq4BiQSb+cR66jcoN2tHw+Ba6y/AxkQWK3cQxvpHiUaJY
+EY58JwKJD+X/fEARQ1j5rBJVSE58iYJt8h9jtgBd+wKBgQDiehakpeQnA5ypZ8Qs
+NvmCyxmYn8+pz6ygfsrTovB32jzbAqQRbXzIbPd9TXxJQpIgWJRd5dTh65YaohSv
+L/mDniIkc9d3RaecJPyUjwyXSa2tTkiq4WAVFkhsKiGr8fjFMRjmZknLzAuMWEDF
+eRdhIorafNnzGTDH3Pk/zdx26wKBgQDBrJto/V4kSLviUuDfZhNXTszGn1cF2pEI
+T16Fd3fufGR3wrZoMh9KXag4kmQE1jEQg+ee2mhlt9mA9ovjFVuZIMPnLZfIxHm/
+aAgdlXEYRSCejjIKO9yVYJBHAVz5lUDct9+QV9G8doE3V0OjM/VdqSewzFpmLg6l
+yhy9AVFoMwKBgQCns8Iqn5DHdvw90VHJb9fpCx3kD4rFcrugiOMGPiSUi2z+vADj
+ytBY1Z+aEJOU6A+ulgkfUr4FoN6g0B5C72JzHNipZ4JIlrKbhCPomdi3+l358/sJ
+ViRA2SQ9vCD84wvUcRvAGERS/cAbZ4pm79jpG5v4V/VH9wJRLQcAQR8ciwKBgCJX
+nhMm4luivhYqxg83BXT01yDdPkwebps/n64g+hZC3nnSABBH2v6PzvWBF9U3uemI
+yjiD2AE5cYsJrNJuhhiIE9TZY9HI7SHAq7e7ORupnlgfNMZVyQ5/2fWNS1RCYAcD
+X9QzjlBR3yXWBntZCkg6Z3xVMC5wOk6xoRjus+W7AoGAY0W6c9mUReJn5rjDk31E
+8yYq/o5NI+Pr4jjOUQegrltRjiVCNztVsgpNS6uU3RiaXSETP43BjT6CdXlq6E8i
+mLmXko2I5tbSMuSM+V8wA8MREOjdA+xKxzOUrRCmwZW+ZrCakmLYmm4OvxS388Yu
+5nQ6qoWakB938cwEQL/VmsM=
+-----END PRIVATE KEY-----
+"""
+
+
+class ServeurTls:
+    """Serveur TLS jetable qui présente le certificat qu'on lui donne."""
+
+    def __init__(self, cert_pem, cle_pem, repertoire):
+        cert = os.path.join(repertoire, "c.pem")
+        cle = os.path.join(repertoire, "k.pem")
+        for chemin, texte in ((cert, cert_pem), (cle, cle_pem)):
+            with open(chemin, "w") as fh:
+                fh.write(texte)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert, keyfile=cle)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.port = self.sock.getsockname()[1]
+        self.stop = False
+
+        def boucle():
+            while not self.stop:
+                try:
+                    conn, _ = self.sock.accept()
+                except OSError:
+                    return
+                try:
+                    with ctx.wrap_socket(conn, server_side=True) as tls:
+                        tls.recv(64)
+                except Exception:
+                    pass          # le client abandonne la poignée de main : normal
+                finally:
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+
+        self.fil = threading.Thread(target=boucle, daemon=True)
+        self.fil.start()
+
+    def fermer(self):
+        self.stop = True
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+class TestSondeCertificat(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wpdash-tls-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_certificat_expire_reste_lisible(self):
+        """LE cas qui justifie la seconde passe sans vérification.
+
+        Avec `create_default_context()` seul, la poignée de main échoue et on ne
+        saurait rien de la date de fin — le site disparaîtrait de la page des
+        certificats le jour même où il faut l'y voir en rouge.
+        """
+        srv = ServeurTls(CERT_EXPIRE_PEM, CLE_EXPIREE_PEM, self.tmp)
+        self.addCleanup(srv.fermer)
+        cert = collect.read_cert("localhost", srv.port, timeout=5)
+        self.assertEqual(cert["not_after"], "2021-01-01")
+        self.assertLess(cert["days_left"], 0)
+        self.assertIn("Autorite de test", cert["issuer"])
+        self.assertEqual(cert["host"], "localhost")
+        self.assertTrue(cert["error"], "le motif de rejet doit rester lisible")
+
+    def test_hote_injoignable(self):
+        cert = collect.read_cert("localhost", 9, timeout=2)
+        self.assertIsNone(cert["days_left"])
+        self.assertTrue(cert["error"])
+
+    def test_hote_manquant(self):
+        self.assertEqual(collect.read_cert("")["error"], "hôte manquant")
+
+    def test_decodage_der(self):
+        der = ssl.PEM_cert_to_DER_cert(CERT_EXPIRE_PEM)
+        info = collect._decode_cert_der(der)
+        self.assertEqual(info.get("notAfter"), "Jan  1 00:00:00 2021 GMT")
+        # et aucun fichier temporaire ne survit à l'appel
+        self.assertEqual([f for f in os.listdir(tempfile.gettempdir())
+                          if f.startswith(".cert-")], [])
+
+    def test_decodage_der_vide(self):
+        self.assertEqual(collect._decode_cert_der(b""), {})
+
+
+# --------------------------------------------------------------------------- #
+#  probe_fleet : qui est sondé, et qui ne l'est pas                            #
+# --------------------------------------------------------------------------- #
+class TestProbeFleet(unittest.TestCase):
+
+    def test_seuls_les_sites_suivis_sont_sondes(self):
+        sondes = []
+        f = fleet(srv("s1", [site("a.fr", followed=True),
+                             site("b.fr", followed=False),
+                             site("c.fr", followed=True, via="rest")]))
+        with mock.patch.object(collect, "probe_one", lambda s: sondes.append(s["domain"])):
+            with muet():
+                n = collect.probe_fleet(f)
+        self.assertEqual(n, 2)
+        self.assertEqual(sorted(sondes), ["a.fr", "c.fr"])
+
+    def test_restriction_a_un_seul_site(self):
+        """Re-scan d'un site : les autres gardent la sonde de la collecte
+        précédente plutôt que de rouvrir 20 connexions pour rien."""
+        sondes = []
+        f = fleet(srv("s1", [site("a.fr", followed=True), site("b.fr", followed=True)]))
+        with mock.patch.object(collect, "probe_one", lambda s: sondes.append(s["domain"])):
+            with muet():
+                collect.probe_fleet(f, {"b.fr"})
+        self.assertEqual(sondes, ["b.fr"])
+
+    def test_aucun_site_suivi_ne_lance_rien(self):
+        f = fleet(srv("s1", [site("a.fr", followed=False)]))
+        with mock.patch.object(collect, "probe_one",
+                               lambda s: self.fail("sonde lancée sur un site non suivi")):
+            self.assertEqual(collect.probe_fleet(f), 0)
+
+    def test_probe_one_sonde_url_et_certificat(self):
+        vus = {}
+
+        def faux_probe(url, **kw):
+            vus["url"] = url
+            return {"ok": True, "status": 200, "ms": 12, "error": "",
+                    "checked_at": "2026-09-08T10:00:00"}
+
+        def faux_cert(host, port=443, **kw):
+            vus["cert"] = (host, port)
+            return {"issuer": "R11", "not_after": "2026-12-01",
+                    "days_left": 84, "host": host, "error": ""}
+
+        s = {"domain": "a.fr", "siteurl": "https://a.fr"}
+        with mock.patch.object(collect, "probe_site", faux_probe):
+            with mock.patch.object(collect, "read_cert", faux_cert):
+                collect.probe_one(s)
+        self.assertEqual(vus["url"], "https://a.fr")
+        self.assertEqual(vus["cert"], ("a.fr", 443))
+        self.assertTrue(s["probe"]["ok"])
+        self.assertEqual(s["cert"]["days_left"], 84)
+
+    def test_site_en_http_simple_n_a_pas_de_certificat(self):
+        s = {"domain": "a.fr", "siteurl": "http://a.fr", "cert": {"vieux": 1}}
+        with mock.patch.object(collect, "probe_site", lambda url, **kw: {"ok": True}):
+            with mock.patch.object(collect, "read_cert",
+                                   lambda *a, **k: self.fail("TLS lu sur un site en http")):
+                collect.probe_one(s)
+        self.assertNotIn("cert", s)
+
+    def test_url_deduite_du_domaine_sans_siteurl(self):
+        self.assertEqual(collect.probe_target({"domain": "a.fr"}), "https://a.fr")
+        self.assertEqual(collect.probe_target({}), "")
+
+
+# --------------------------------------------------------------------------- #
+#  Uptime Kuma facultatif : annotation et absence totale de docker              #
+# --------------------------------------------------------------------------- #
+class TestKumaFacultatif(TempDirs):
+
+    def test_kuma_absent_ne_lance_aucun_docker_ni_reseau(self):
+        """`collect.subprocess.run` et `urlopen` échouent si on les appelle."""
+        with mock.patch.object(collect.urllib.request, "urlopen",
+                               side_effect=AssertionError("appel réseau vers Kuma")):
+            f = fleet(srv("s1", [site("a.fr", kuma=None)]))
+            with muet():
+                collect.annotate_kuma(f)      # subprocess.run lève déjà (TempDirs)
+        s = f["servers"][0]["sites"][0]
+        self.assertIsNone(s["kuma"])
+        self.assertIs(s["followed"], False)
+        self.assertEqual(s["label"], "a.fr")
+        self.assertIsNone(s["client"])
+
+    def test_site_suivi_visible_sans_kuma(self):
+        with open(os.path.join(self.data, "followed.json"), "w") as fh:
+            json.dump(["a.fr"], fh)
+        f = fleet(srv("s1", [site("a.fr", kuma=None), site("b.fr", kuma=None)]))
+        with muet():
+            collect.annotate_kuma(f)
+        par_dom = {s["domain"]: s for s in f["servers"][0]["sites"]}
+        self.assertTrue(par_dom["a.fr"]["followed"])
+        self.assertFalse(par_dom["b.fr"]["followed"])
+        self.assertTrue(dashlib.site_visible(par_dom["a.fr"]))
+        self.assertFalse(dashlib.site_visible(par_dom["b.fr"]))
+
+    def test_label_et_client_viennent_des_overrides_sans_kuma(self):
+        with open(os.path.join(self.data, "overrides.json"), "w") as fh:
+            json.dump({"a.fr": {"label": "Boutique Dupont", "client": "Dupont SA"}}, fh)
+        f = fleet(srv("s1", [site("a.fr", kuma=None)]))
+        with muet():
+            collect.annotate_kuma(f)
+        s = f["servers"][0]["sites"][0]
+        self.assertEqual(s["label"], "Boutique Dupont")
+        self.assertEqual(s["client"], "Dupont SA")
+
+    def test_site_rest_reste_suivi_d_office(self):
+        f = fleet(srv("rest", [site("a.fr", kuma=None, via="rest")]))
+        with muet():
+            collect.annotate_kuma(f)
+        self.assertTrue(f["servers"][0]["sites"][0]["followed"])
+
+    def test_write_fleet_migre_puis_annote(self):
+        """La bascule reprend la sélection lisible dans le fleet.json du disque."""
+        ancien = fleet(srv("s1", [site("a.fr", kuma="a.fr"), site("b.fr", kuma=None)]))
+        with open(os.path.join(self.data, "fleet.json"), "w") as fh:
+            json.dump(ancien, fh)
+        nouveau = fleet(srv("s1", [site("a.fr", kuma=None), site("b.fr", kuma=None)]))
+        with muet():
+            collect.write_fleet(nouveau)
+        with open(os.path.join(self.data, "followed.json")) as fh:
+            self.assertEqual(json.load(fh), ["a.fr"])
+        par_dom = {s["domain"]: s for s in self.fleet_json()["servers"][0]["sites"]}
+        self.assertTrue(par_dom["a.fr"]["followed"])
+        self.assertFalse(par_dom["b.fr"]["followed"])
+
+
+class TestVeillesSansKuma(unittest.TestCase):
+    """`vulns.py` et `phperrors.py` ne connaissent QUE `site_visible`.
+
+    C'est ce qui les rend indépendants d'Uptime Kuma : sur une flotte où aucune
+    fiche ne porte de clé `kuma`, ils doivent voir exactement les sites suivis.
+    """
+
+    FLOTTE = {"servers": [{"name": "s1", "sites": [
+        {"domain": "suivi.fr", "followed": True, "core_version": "6.5.2",
+         "php_version": "8.2.1", "path": "/var/www/suivi",
+         "plugins_list": [{"name": "akismet", "version": "5.3"}]},
+        {"domain": "decouvert.fr", "followed": False, "core_version": "5.9",
+         "php_version": "7.4.3", "path": "/var/www/decouvert",
+         "plugins_list": [{"name": "plugin-fantome", "version": "1.0"}]},
+    ]}]}
+
+    def test_vulns_ne_voit_que_les_sites_suivis(self):
+        retenus, slugs, _themes, cores, phps = vulns.fleet_targets(self.FLOTTE)
+        self.assertEqual(sorted(retenus), ["suivi.fr"])
+        self.assertEqual(slugs, {"akismet"})
+        self.assertEqual((cores, phps), ({"6.5.2"}, {"8.2.1"}))
+
+    def test_phperrors_ne_releve_que_les_sites_suivis(self):
+        vus = []
+        for srv in self.FLOTTE["servers"]:
+            for site_ in srv["sites"]:
+                if phperrors.A.site_visible(site_):
+                    vus.append(site_["domain"])
+        self.assertEqual(vus, ["suivi.fr"])
+
+
+class TestDetectionKuma(unittest.TestCase):
+    """`kuma_disponible()` : la porte d'entrée unique de tout `docker exec`."""
+
+    def setUp(self):
+        dashboard_config.reset_kuma_cache()
+        self.addCleanup(dashboard_config.reset_kuma_cache)
+        self._reglage = dashboard_config.CONFIG.get("kuma_enabled")
+        self.addCleanup(lambda: dashboard_config.CONFIG.__setitem__(
+            "kuma_enabled", self._reglage))
+
+    @staticmethod
+    def _docker_interdit(*a, **kw):
+        raise AssertionError("docker lancé alors que Kuma est désactivé : %r" % (a,))
+
+    def test_desactive_ne_lance_aucun_docker(self):
+        dashboard_config.CONFIG["kuma_enabled"] = False
+        with mock.patch.object(dashboard_config.subprocess, "run", self._docker_interdit):
+            self.assertFalse(dashboard_config.kuma_disponible())
+            self.assertIn("désactivé", dashboard_config.kuma_statut()["reason"])
+
+    def test_force_a_vrai_ne_sonde_pas_non_plus(self):
+        dashboard_config.CONFIG["kuma_enabled"] = True
+        with mock.patch.object(dashboard_config.subprocess, "run", self._docker_interdit):
+            self.assertTrue(dashboard_config.kuma_disponible())
+
+    def test_auto_sonde_une_seule_fois_par_minute(self):
+        dashboard_config.CONFIG["kuma_enabled"] = "auto"
+        appels = []
+
+        def faux_run(cmd, **kw):
+            appels.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "1\n", "")
+
+        with mock.patch.object(dashboard_config.subprocess, "run", faux_run):
+            for _ in range(5):
+                self.assertTrue(dashboard_config.kuma_disponible())
+        self.assertEqual(len(appels), 1, "le cache doit éviter un docker par appel")
+        self.assertEqual(appels[0][:3], ["docker", "exec",
+                                         dashboard_config.CONFIG["kuma_container"]])
+
+    def test_auto_conteneur_absent(self):
+        dashboard_config.CONFIG["kuma_enabled"] = "auto"
+        with mock.patch.object(dashboard_config.subprocess, "run",
+                               side_effect=FileNotFoundError("docker")):
+            statut = dashboard_config.kuma_statut()
+        self.assertFalse(statut["enabled"])
+        self.assertIn("docker", statut["reason"])
+
+    def test_force_relit_malgre_le_cache(self):
+        dashboard_config.CONFIG["kuma_enabled"] = "auto"
+        appels = []
+
+        def faux_run(cmd, **kw):
+            appels.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "No such container")
+
+        with mock.patch.object(dashboard_config.subprocess, "run", faux_run):
+            dashboard_config.kuma_disponible()
+            dashboard_config.kuma_disponible(force=True)
+        self.assertEqual(len(appels), 2)
 
 
 if __name__ == "__main__":

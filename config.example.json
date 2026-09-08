@@ -1,6 +1,7 @@
 {
   "dashboard_url": "https://dashboard.example.com",
   "ssh_key": "/root/.ssh/id_dashboard",
+  "kuma_enabled": "auto",
   "kuma_container": "uptime-kuma",
   "kuma_db": "/app/data/kuma.db",
   "kuma_slug": "REMPLACER-par-le-slug-de-votre-status-page-kuma",

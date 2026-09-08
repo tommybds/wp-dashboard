@@ -5,7 +5,9 @@ WordPress.
 
 - **Inventaire** de chaque site : cœur, extensions, thèmes, PHP, comptes
   administrateurs, réglages de sauvegarde UpdraftPlus.
-- **Disponibilité en direct** via **Uptime Kuma**, certificats TLS compris.
+- **Disponibilité et certificats TLS** : le dashboard sonde lui-même chaque
+  site suivi à la collecte. **Uptime Kuma est optionnel** — branché, il
+  reprend la main sur l'état (historique, fréquence, alertes).
 - **Mises à jour sûres** : archivage des fichiers et de la base, mise à jour,
   contrôle de santé, puis **retour arrière automatique** si le site casse.
 - **Rétablissement d'une version** : depuis l'archive locale (extensions
@@ -68,9 +70,11 @@ Et les tâches périodiques, toutes lancées par cron :
 
 À côté :
 
-- **Uptime Kuma** (conteneur Docker) fournit l'état de disponibilité. Le
+- **Uptime Kuma** (conteneur Docker) est **optionnel**. Quand il est là, le
   dashboard lit sa base SQLite en lecture (`docker exec … sqlite3`) pour relier
-  chaque site à son moniteur, et proxifie sa status page.
+  chaque site à son moniteur, et proxifie sa status page. Quand il ne l'est pas,
+  `collect.py` sonde lui-même disponibilité et certificats. Voir
+  [Uptime Kuma, optionnel](#uptime-kuma-optionnel).
 - **`dashboard_config.py`** lit `config.json` : c'est le seul endroit où vivent
   les valeurs propres à une installation.
 - **`dashlib.py`** regroupe les briques communes à tous les scripts ci-dessus
@@ -436,13 +440,14 @@ vhost.
 - Un serveur Linux (testé sur Ubuntu 24.04) avec **Python 3.8+** (stdlib seule).
 - **nginx** en frontal + un certificat TLS (Let's Encrypt/certbot).
 - **Uptime Kuma** en conteneur Docker (image `louislam/uptime-kuma`), joignable
-  en local sur le port 3001. Le dashboard est conçu autour de Kuma pour l'état
-  de disponibilité : c'est une dépendance de fait.
+  en local sur le port 3001 — **optionnel**, voir
+  [Uptime Kuma, optionnel](#uptime-kuma-optionnel). Sans lui, le dashboard sonde
+  lui-même les sites et fonctionne au complet.
 - Accès aux sites à superviser, au choix par site :
   - **SSH** avec `wp-cli` installé sur le serveur cible (fonctions complètes) ;
   - **ou l'agent** installé sur le site (inventaire + évènements, lecture seule).
-- Le service tourne en **root** (lecture des clés SSH du parc, `docker exec`
-  vers Kuma). Voir [Sécurité](#sécurité).
+- Le service tourne en **root** (lecture des clés SSH du parc, et `docker exec`
+  vers Kuma s'il est installé). Voir [Sécurité](#sécurité).
 
 ---
 
@@ -506,6 +511,7 @@ Copie de `config.example.json`. Toutes les valeurs propres à votre déploiement
 |---|---|---|
 | `dashboard_url` | URL publique du dashboard (sert d'endpoint d'ingestion des agents et de retour d'autorisation WordPress). | `https://dashboard.example.com` |
 | `ssh_key` | Clé SSH par défaut pour joindre les serveurs (surchargeable par serveur). | `/root/.ssh/id_dashboard` |
+| `kuma_enabled` | Uptime Kuma présent ou non. `"auto"` sonde le conteneur (résultat en cache 60 s) ; `true` / `false` forcent. À `false`, **aucun** `docker exec` n'est lancé. | `"auto"` |
 | `kuma_container` | Nom du conteneur Docker Uptime Kuma. | `uptime-kuma` |
 | `kuma_db` | Chemin de la base SQLite **dans** le conteneur. | `/app/data/kuma.db` |
 | `kuma_slug` | Slug de la status page Kuma listant vos moniteurs (**à renseigner**). | `""` |
@@ -514,8 +520,60 @@ Copie de `config.example.json`. Toutes les valeurs propres à votre déploiement
 | `bot_admin_email` | Base d'adresse e-mail de ce compte. | `admin@example.com` |
 | `vuln_skip_slugs` | Slugs à exclure de la veille de vulnérabilités — **extensions comme thèmes** : mu-plugins maison, extensions internes, thèmes sur mesure, tout ce qui n'existe pas sur wordpress.org. Les drop-ins WordPress (`object-cache.php`…) sont déjà ignorés. | `[]` |
 
-Créez une **status page privée** dans Uptime Kuma qui regroupe les moniteurs de
-votre parc, et reportez son slug dans `kuma_slug`.
+Les quatre clés `kuma_*` ne servent que si vous avez Uptime Kuma. Dans ce cas,
+créez une **status page privée** qui regroupe les moniteurs de votre parc et
+reportez son slug dans `kuma_slug`. Sinon, laissez-les telles quelles (ou posez
+`"kuma_enabled": false` pour couper la détection).
+
+### Uptime Kuma, optionnel
+
+Le dashboard fonctionne **sans Uptime Kuma**. Il sonde alors lui-même, à chaque
+collecte et pour chaque site suivi :
+
+- **la disponibilité** — une requête `HEAD` (puis `GET` en repli), 8 s de budget,
+  2 redirections au plus, sous la même garde anti-SSRF que le reste de l'API.
+  Résultat dans `site.probe` : `{ok, status, ms, error, checked_at}` ;
+- **le certificat TLS** — `site.cert` : `{issuer, not_after, days_left, host}`.
+  La lecture se fait d'abord avec vérification complète ; si elle échoue, une
+  seconde passe **sans vérification** relit quand même le certificat, sans quoi
+  un certificat **expiré** — exactement ce qu'on cherche — deviendrait illisible
+  le jour où il faut le signaler.
+
+Ce que Kuma apporte **en plus**, et qui justifie de le brancher quand on l'a :
+
+- **l'historique** de disponibilité et la page publique de statut ;
+- une **fréquence de contrôle** propre (toutes les minutes), là où la sonde
+  maison suit le rythme de la collecte ;
+- les **alertes** (Telegram, e-mail…) émises par Kuma lui-même ;
+- le **relevé TLS** à chaque contrôle, et le rattachement d'un site à un
+  **client** (le dossier du moniteur).
+
+**Kuma reste prioritaire** partout où les deux sources se recouvrent : l'état
+d'un site qui a un moniteur vient de son dernier battement, et un certificat
+relevé par Kuma l'emporte sur celui de la sonde. La sonde prend le relais pour
+tout site sans moniteur — donc pour la totalité du parc sur une installation
+sans Kuma.
+
+**Visibilité.** Elle ne dépend plus de Kuma : `data/followed.json` liste les
+sites **suivis** (source de vérité propre au dashboard) et `data/overrides.json`
+garde le dernier mot (`show` / `hide`). La règle exacte :
+
+| override | suivi ? | affiché |
+|---|---|---|
+| `hide` | — | non |
+| `show` | — | oui |
+| `auto` | oui (moniteur Kuma **ou** inscrit dans `followed.json`) | oui |
+| `auto` | non | non |
+
+Un install découvert par la collecte reste donc **masqué** tant qu'il n'est pas
+suivi explicitement. Au premier démarrage après la bascule, une migration
+**idempotente** recopie dans `followed.json` tout site alors visible : l'écran
+est identique avant et après. Elle ne se rejoue jamais — le marqueur est
+l'existence du fichier.
+
+`data/overrides.json` porte aussi, par site, un **`label`** et un **`client`**
+éditables : ils remplacent le nom du moniteur et son dossier quand Kuma est
+absent. Repli : le domaine pour le libellé, « — » pour le client.
 
 ### `servers.json`
 
@@ -791,7 +849,7 @@ branchement.
 | **Serveurs** (`#gestion/serveurs`) | Le tableau de `servers.json` : hôte, port, utilisateur, clé, priorité, parallélisme, motifs de docroot, nombre d'installs relevées et état du dernier relevé. **Ajouter** / **Modifier** ouvrent un **formulaire**, un champ par attribut, avec son aide. La validation reproduit `validate_server()` à la saisie, et un refus du serveur (HTTP 400) s'affiche **sur le champ concerné** — le message backend nomme le serveur et l'attribut. **Tester la connexion** ouvre une session SSH avec la clé choisie (sur un serveur déjà enregistré). **éditer le JSON** reste disponible en repli, pour une clé que le formulaire ne connaît pas. |
 | **Installs découverts** (`#gestion/installs`) | Tous les WordPress trouvés en SSH, filtrables par serveur, par visibilité et par « sans moniteur ». Par ligne : moniteur Kuma (ou **créer moniteur**, avec choix du client et du type de contrôle), **visibilité** (auto / toujours afficher / masquer), **alias** de moniteur, **Dashboard** (connecter ou dissocier l'agent), **WordPress** (identifiants d'application : Autoriser / Révoquer). |
 | **Sites sans SSH** (`#gestion/mode-rest`) | L'assistant **« Ajouter un site par URL »** en trois étapes : analyse de l'URL (`discover`), choix de la méthode (SSH ou appairage), puis ZIP de l'agent + code d'appairage à usage unique avec son compte à rebours et l'adresse du dashboard à recopier. En dessous, la liste des sites pilotés par l'agent, avec leurs identifiants WordPress et le retrait (qui propose de supprimer, ou non, le compte dédié créé sur le site). |
-| **Moniteurs Kuma** (`#gestion/moniteurs`) | Pause, réactivation, suppression. Chaque modification redémarre Kuma (~15 s sans monitoring). |
+| **Moniteurs Kuma** (`#gestion/moniteurs`) | Pause, réactivation, suppression. Chaque modification redémarre Kuma (~15 s sans monitoring). Sans Uptime Kuma, la section annonce « Uptime Kuma n'est pas configuré » : les routes `/api/mgmt/kuma/*` répondent **200** avec `ok:false` et ce message, jamais une erreur. |
 | **Docroots** (`#gestion/docroots`) | Chemins scannés en plus des motifs du serveur. Même règle de validation que les motifs, appliquée à la saisie et côté serveur. |
 | **Non gérés** (`#gestion/sites-non-geres`) | Sites vus par le monitoring mais absents du parc : **Ajouter par URL** ouvre l'assistant, URL pré-remplie. |
 
@@ -953,7 +1011,7 @@ disponible : l'incident reste, le bouton disparaît. `since` vaut `null` (et
 
 | `kind` | Gravité | `bucket` | Déclenchement | Action proposée |
 |---|---|---|---|---|
-| `down` | critique | `now` | Dernier battement Kuma en `status 0`, sur un site visible. `since` = heure du battement | `rescan` |
+| `down` | critique | `now` | Site visible injoignable : dernier battement Kuma en `status 0` s'il a un moniteur, sinon `site.probe.ok === false`. `since` = heure du battement ou de la sonde | `rescan` |
 | `down` (moniteur en **pause**) | avertissement | `plan` | Même chose, mais la surveillance a été coupée exprès : situation connue, pas une urgence | `rescan` |
 | `php_fatal` | critique | `now` | `Fatal error` / `Parse error` dans la fenêtre courante de `data/php_errors.json` | — |
 | `vuln_critical_fixable` | critique | `now` | Vulnérabilité `critical` **avec** `update_to` renseigné ; une entrée par (site, genre, composant) | `plugin_update` / `theme_update` / `core_update`, selon le `kind` de la trouvaille |
@@ -1006,7 +1064,7 @@ connaît pas une l'ignore. Il est toujours présent, éventuellement vide.
 | `vuln_critical_fixable` | `cve` (liste — un composant cumule souvent plusieurs CVE graves), `slug`, `kind` (`plugin` / `theme` / `core`), `from`, `to` |
 | `backup_late` | `last_backup` (ISO, `""` si jamais), `age_h` (`null` si jamais), `service` |
 | `cert_expiring` | `days_left`, `expires` |
-| `down` | `msg` (message du moniteur Kuma), `since` |
+| `down` | `msg`, `since` — et, quand la ligne vient de la sonde, `source: "sonde"`, `status`, `ms` |
 | `server_stale` | `error`, `last_attempt` |
 | `php_eol` | `version`, `sites` (**tous** les sites, là où `detail` s'arrête à 12) |
 | `checksums_modified` | `files` (chemins relevés dans la sortie wp-cli, 20 au plus) |
@@ -1014,12 +1072,12 @@ connaît pas une l'ignore. Il est toujours présent, éventuellement vide.
 
 Tri : **critique avant avertissement**, puis `age_h` décroissant — le plus ancien
 d'abord. Chaque source est lue isolément : celle qui échoue laisse une ligne dans
-`errors` (`{"source": "kuma", "error": "…"}`) sans empêcher les autres de
-remonter. Une source jamais lancée (fichier absent) n'est **pas** une erreur.
+`errors` (`{"source": "disponibilite", "error": "…"}`) sans empêcher les autres
+de remonter. Une source jamais lancée (fichier absent) n'est **pas** une erreur.
 
 La route ne fait **aucun appel réseau ni ssh** : elle relit les fichiers de
-`data/` et interroge la base SQLite de Kuma (`docker exec`, comme
-`/api/sec/certs`). `/api/incidents` recalcule à chaque appel ;
+`data/` (dont les sondes déjà enregistrées dans `fleet.json`) et, si Uptime Kuma
+est installé, sa base SQLite (`docker exec`, comme `/api/sec/certs`). `/api/incidents` recalcule à chaque appel ;
 `/api/mgmt/counts` sert le **même** agrégat, mis en cache **30 s**.
 
 Les seuils vivent dans `data/settings.json`, sous la clé `incident_rules` :
