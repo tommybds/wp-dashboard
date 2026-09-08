@@ -267,6 +267,51 @@ TRACE = [
 ]
 
 
+def scan():
+    """Fichiers suspects — les deux états qui comptent sont représentés :
+    un site AVEC référence (rien de nouveau, mais des connus) et un site SANS,
+    où tout est à examiner une fois. Sans les deux, on ne voit pas que l'écran
+    dit des choses différentes selon le cas."""
+    regles = {
+        "eval_decode": {"sev": "critical", "label": "eval() sur une chaîne décodée",
+                        "why": "Le code réellement exécuté n'est pas lisible dans le fichier."},
+        "auth_cookie": {"sev": "high", "label": "ouverture de session sans mot de passe",
+                        "why": "Légitime dans un plugin de connexion, à examiner ailleurs."},
+        "php_in_uploads": {"sev": "high", "label": "script PHP dans le dossier des médias",
+                           "why": "Aucun .php n'a sa place dans wp-content/uploads."},
+        "wp_cron_ghost": {"sev": "high", "label": "tâche planifiée sans code",
+                          "why": "Un événement wp-cron dont le crochet n'a aucune fonction."},
+        "chr_chain": {"sev": "low", "label": "chaîne construite caractère par caractère",
+                      "why": "Obfuscation : le nom de fonction n'apparaît pas en clair."},
+    }
+    def f(rule, short, line, new, excerpt="", mtime="1757000000"):
+        return {"rule": rule, "sev": regles[rule]["sev"], "short": short, "path": "/var/www/" + short,
+                "line": line, "new": new, "excerpt": excerpt, "mtime": mtime,
+                "size": "4212", "owner": "www-data", "fp": short + rule}
+    return {
+        "generated_at": now(2), "files_scanned": 302560, "running": False,
+        "new_total": 2, "total": 7, "sites_flagged": 2,
+        "counts": {"critical": 1, "high": 1, "medium": 0, "low": 0},
+        "rules": regles, "baseline_at": now(30),
+        "servers_failed": {}, "unreadable": {}, "truncated": {},
+        "sites": [
+            {"domain": "site-03.exemple.fr", "total": 3, "new": 2, "shown": 3, "hidden": 0,
+             "has_baseline": True, "worst": "critical", "rules": ["eval_decode", "wp_cron_ghost"],
+             "findings": [
+                 f("eval_decode", "wp-content/plugins/x/loader.php", 4, True,
+                   "eval(base64_decode($_COOKIE['k']));"),
+                 f("wp_cron_ghost", "sys_maint", 0, True),
+                 f("auth_cookie", "wp-content/plugins/profile-builder/edit.php", 77, False,
+                   "wp_set_auth_cookie($user_id);")]},
+            {"domain": "site-07.exemple.fr", "total": 4, "new": 4, "shown": 2, "hidden": 2,
+             "has_baseline": False, "worst": "high", "rules": ["php_in_uploads", "chr_chain"],
+             "findings": [
+                 f("php_in_uploads", "wp-content/uploads/2026/06/export.php", 0, True),
+                 f("chr_chain", "wp-content/plugins/mpdf/glyphs.php", 812, True,
+                   "chr(101).chr(118).chr(97).chr(108)")]},
+        ]}
+
+
 def phperrors():
     return {"sites": [{"domain": "site-01.exemple.fr", "total": 42, "groups": [
         {"severity": "Fatal error", "count": 12,
@@ -1041,6 +1086,7 @@ ROUTES = {
     "/api/mgmt/counts": sidebar_counts,
     "/api/sec/vulns": vulns,
     "/api/sec/phperrors": phperrors,
+    "/api/sec/scan": scan,
     "/api/sec/baseline": lambda: {"baseline": {"site-00.exemple.fr": {"logins": ["admin"]}}},
     "/api/sec/certs": certs,
     "/api/sec/checksums": lambda: {"checksums": {"site-00.exemple.fr": {"ok": True, "ts": now(9), "output_tail": ""}}},
@@ -1283,10 +1329,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                          "tasks": [{"domain": "site-00.exemple.fr", "status": "ok", "rc": 0,
                                     "output_tail": "Success: verifies against checksums."}]})
             rep = {"job": "apercu", "ok": True}
-        elif chemin.endswith("/api/sec/vulns/run") or chemin.endswith("/api/sec/phperrors/run"):
+        elif (chemin.endswith("/api/sec/vulns/run") or chemin.endswith("/api/sec/phperrors/run")
+              or chemin.endswith("/api/sec/scan/run")):
             # `running: True` : le front enchaîne sur son sondage, puis le GET
             # correspondant répond `running: False` — le cycle complet est joué.
             rep = {"ok": True, "running": True}
+        elif chemin.endswith("/api/sec/scan/baseline"):
+            rep = {"ok": True, "sites": 1, "findings": 3}
         self._json(code, rep)
 
     def _mgmt_post(self, chemin, corps):

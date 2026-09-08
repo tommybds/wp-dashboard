@@ -873,10 +873,20 @@ blanchir une porte dérobée déjà installée. Elle s'accepte site par site dep
 Sécurité → Fichiers suspects. Ensuite, seul le nouveau compte, et il entre dans
 la file « à traiter » à partir de la gravité élevée.
 
-Ce que ce scan ne voit pas, par construction : ce qui n'est pas un fichier. Une
-charge stockée en base (option géante réécrivant `functions.php`), du spam
-injecté dans un contenu, un événement `wp-cron` sans fichier ne laissent aucune
-trace ici.
+Un balayage de fichiers ne voit pas ce qui n'est pas un fichier. L'agent
+compagnon comble l'autre moitié depuis sa route `/scan` (version **1.6.0**) :
+tâche `wp-cron` sans code enregistré, option de plus de 20 Ko contenant du PHP
+ou un bloc encodé, extension présente sur le disque mais absente de la liste que
+WordPress rend (elle se retire par `all_plugins`), extension active dont le
+fichier a disparu, `auto_prepend_file` effectif, mu-plugins. `scan.py` interroge
+l'agent des sites sans SSH et fusionne ses signalements dans la même liste, avec
+la même référence.
+
+Les deux moitiés ne se recouvrent pas, et aucune ne suffit : l'agent tourne DANS
+le site, donc il ne voit rien de ce qui est posé à côté du docroot et une porte
+dérobée du même processus PHP peut lui mentir ; le balayage SSH voit le disque
+entier mais ni la base, ni le planificateur. Un agent antérieur à la 1.6.0 est
+signalé comme tel, pas comme une panne.
 
 Deux plafonds, et ils se disent dans l'interface plutôt que de se taire :
 `MAX_FILES` (400 000 fichiers par serveur) et `MAX_HITS` (4 000 correspondances).

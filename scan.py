@@ -49,6 +49,7 @@ from dashlib import DATA_DIR as DATA          # noqa: E402
 from dashlib import save_json as _save_json   # noqa: E402
 from dashlib import scan_fingerprint, scan_baseline_from  # noqa: E402
 import actions_server as A                    # noqa: E402
+import collect                                # noqa: E402  — agent_get, partagé avec la collecte
 
 OUT_PATH = os.path.join(DATA, "scan_found.json")
 BASELINE_PATH = os.path.join(DATA, "scan_baseline.json")
@@ -175,9 +176,50 @@ PATH_RULES = {
                            "réellement sinophone met ses traductions dans des .po, pas "
                            "au milieu de son code."},
 }
+# ---------------------------------------------------------------------------
+#  Ce que seul WordPress voit — remonté par l'agent (route /scan, 1.6.0+).
+#
+#  Ces contrôles ne doublonnent PAS le balayage de fichiers : ils regardent là
+#  où un balayage ne peut rien voir. Trois des incidents les plus coûteux du
+#  parc vivaient exactement là — une charge de 36 Ko dans une option qui
+#  réécrivait functions.php à chaque visite, un événement wp-cron sans le
+#  moindre fichier, une extension qui se retirait de la liste des extensions.
+#
+#  Et l'inverse est vrai aussi, d'où les deux moitiés : l'agent tourne DANS le
+#  site, donc il ne voit rien de ce qui est posé à côté du docroot, et une porte
+#  dérobée qui s'exécute dans le même processus PHP peut lui mentir.
+# ---------------------------------------------------------------------------
+AGENT_RULES = {
+    "wp_plugin_hidden": {"sev": "critical", "label": "extension absente de la liste de WordPress",
+                         "why": "Le dossier porte un en-tête d'extension valide, mais WordPress ne "
+                                "la rend pas : elle se retire du filtre `all_plugins`. C'est ce que "
+                                "faisait le faux « cidaas-pro-master ». Aucun balayage de fichiers "
+                                "ne peut le constater — il faut demander à WordPress lui-même."},
+    "wp_cron_ghost": {"sev": "high", "label": "tâche planifiée sans code",
+                      "why": "Un événement wp-cron dont le crochet n'a aucune fonction enregistrée. "
+                             "Une extension désactivée laisse la même trace, mais c'est aussi la "
+                             "forme d'une porte dérobée sans fichier, réveillée par le cron."},
+    "wp_option_code": {"sev": "high", "label": "option contenant du code",
+                       "why": "Une option volumineuse qui contient du PHP, un eval() ou un long "
+                              "bloc encodé. Sur sisma-androgyne, 36 Ko dans une option "
+                              "réécrivaient functions.php à chaque visite : le fichier « revenait » "
+                              "après chaque nettoyage."},
+    "wp_auto_prepend": {"sev": "high", "label": "code exécuté avant chaque page",
+                        "why": "auto_prepend_file tel que PHP l'applique vraiment — pas tel qu'un "
+                               "fichier de configuration le déclare, ce qui permet de le voir même "
+                               "quand le .user.ini est ailleurs qu'attendu."},
+    "wp_plugin_missing": {"sev": "medium", "label": "extension active dont le fichier a disparu",
+                          "why": "Souvent une suppression manuelle mal terminée. Parfois le "
+                                 "nettoyage d'une extension qui n'a jamais existé sur le disque."},
+    "wp_mu_plugin": {"sev": "low", "label": "mu-plugin",
+                     "why": "Les mu-plugins s'exécutent sans activation et ne se désactivent pas "
+                            "depuis l'administration. Le durcissement `zzz-incident-harden` du parc "
+                            "en est un : à connaître, pas à craindre."},
+}
+
 ALL_RULES = dict(
     {r["id"]: {"sev": r["sev"], "label": r["label"], "why": r["why"]} for r in RULES},
-    **PATH_RULES)
+    **PATH_RULES, **AGENT_RULES)
 
 SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
@@ -485,6 +527,47 @@ def garde_muette(t, meta):
         return False
 
 
+def scan_agents():
+    """Interroge l'agent des sites sans SSH → (trouvailles, erreurs par site).
+
+    Un agent antérieur à la 1.6.0 ne connaît pas la route : ce n'est pas une
+    panne, c'est une version. On le dit sans le compter comme un échec, sinon la
+    même ligne rouge s'afficherait indéfiniment sur un site parfaitement sain.
+    """
+    entries = A.load_json(os.path.join(DATA, "rest_sites.json"), [])
+    secrets = A.load_json(os.path.join(DATA, "site_secrets.json"), {})
+    if not isinstance(entries, list) or not isinstance(secrets, dict):
+        return [], {}
+    trouvailles, erreurs = [], {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("url"):
+            continue
+        dom = entry.get("domain") or A.site_key(entry["url"])
+        secret = secrets.get(dom) or secrets.get(A.norm_domain(dom))
+        if not secret:
+            continue                      # site non appairé : la collecte le dit déjà
+        try:
+            rep = collect.agent_get(entry["url"], "/scan", secret)
+        except Exception as e:
+            code = getattr(e, "code", None)
+            erreurs[dom] = ("agent antérieur à la 1.6.0 : contrôles WordPress indisponibles"
+                            if code == 404 else collect.agent_error(e))
+            continue
+        for f in (rep.get("findings") or []) if isinstance(rep, dict) else []:
+            regle = AGENT_RULES.get(str(f.get("rule") or ""))
+            if not regle:
+                continue
+            trouvailles.append({
+                "rule": f["rule"], "sev": regle["sev"], "domain": dom, "server": "(agent)",
+                # Pas de chemin de fichier ici : la « cible » est un crochet de
+                # cron, un nom d'option ou un fichier d'extension. Elle tient la
+                # même place, et c'est elle qui doit rendre l'empreinte stable.
+                "path": str(f.get("target") or ""), "line": 0, "inside": True,
+                "excerpt": str(f.get("detail") or "")[:200],
+            })
+    return trouvailles, erreurs
+
+
 def raccourcir(chemin, docroot):
     """wp-content/plugins/x/y.php — le chemin complet n'apprend rien de plus."""
     if docroot and chemin.startswith(docroot.rstrip("/") + "/"):
@@ -590,6 +673,15 @@ def main():
                 for t in trv:
                     t["server"] = nom
                 resultats.extend(trv)
+
+    # Les contrôles de l'agent complètent le balayage : ils voient la base et le
+    # cron, il voit les fichiers et le voisinage. Ni l'un ni l'autre seul.
+    if not seulement:
+        trv_agent, err_agent = scan_agents()
+        resultats.extend(trv_agent)
+        erreurs.update(err_agent)
+        for t in trv_agent:
+            chemins_sites.setdefault(t["domain"], "")
 
     reference = A.load_json(BASELINE_PATH, {}).get("sites") or {}
     sites = agrege(resultats, chemins_sites, reference)

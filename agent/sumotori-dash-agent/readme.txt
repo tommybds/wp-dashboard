@@ -4,7 +4,7 @@ Tags: maintenance, monitoring, management, inventory, multisite
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.0
-Stable tag: 1.5.0
+Stable tag: 1.6.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -266,6 +266,30 @@ administration (`manage_network_options` capability). The inventory can target
 any sub-site through the `blog_id` parameter.
 
 == Changelog ==
+
+= 1.6.0 =
+
+* New signed endpoint `GET /wp-json/sumotori-dash/v1/scan`: structural checks
+  that **only WordPress can perform**. A dashboard scanning files over SSH sees
+  the disk, including what sits outside the document root, and cannot be lied to
+  by code running inside the site; it does not see the database, the scheduler,
+  or the plugin list as WordPress actually renders it. This endpoint covers that
+  second half, and nothing else — it deliberately does not scan files.
+* Six checks, all read-only: a scheduled `wp-cron` hook with no registered
+  callback (a backdoor can live in the scheduler with no file at all); an option
+  over 20 KB whose value contains PHP source, a call to `eval()` or a long
+  encoded block (a payload that rewrites a theme file on every visit leaves no
+  suspicious file to find); a plugin directory carrying a valid plugin header
+  that `get_plugins()` does not return, which means it removes itself through the
+  `all_plugins` filter; a plugin marked active whose file is missing; the
+  effective `auto_prepend_file` and `auto_append_file` as PHP applies them; and
+  the list of must-use plugins, which run without ever being activated.
+* Nothing is written, changed or deleted: the endpoint only describes. Deciding
+  what is legitimate is left to the dashboard, which keeps a per-site reference
+  of what was already there — without one, a perfectly healthy site would report
+  the same findings on every pass.
+* Transients are excluded from the option check: they regenerate, and including
+  them would fill the answer with entries that no longer exist the next day.
 
 = 1.5.0 =
 

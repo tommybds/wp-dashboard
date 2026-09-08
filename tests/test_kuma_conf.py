@@ -537,6 +537,12 @@ class TestAucuneLectureFigee(BaseTmp):
         """tools/preview.py ne doit accepter que ce que le backend accepte."""
         import importlib.util
         chemin = os.path.join(REPO, "tools", "preview.py")
+        # `tools/` ne part pas en production : seuls les modules du service y sont
+        # copiés. Sur le serveur, ce test n'a pas d'objet — le faire échouer là
+        # rendrait inutilisable la suite comme contrôle de déploiement (même
+        # raison et même geste que tests/test_check_front.py).
+        if not os.path.exists(chemin):
+            raise unittest.SkipTest("tools/preview.py absent (déploiement sans tools/)")
         spec = importlib.util.spec_from_file_location("preview_kuma", chemin)
         preview = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(preview)

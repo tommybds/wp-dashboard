@@ -20,6 +20,7 @@ elle, seul ce qui S'AJOUTE compte.
 """
 import os
 import unittest
+import urllib.error
 from unittest import mock
 
 import dashlib
@@ -281,3 +282,58 @@ class Raccourci(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ControlesAgent(unittest.TestCase):
+    """Ce que seul WordPress voit, remonté par l'agent (route /scan, 1.6.0+)."""
+
+    REPONSE = {"findings": [
+        {"rule": "wp_cron_ghost", "target": "sys_maint", "detail": "crochet sans code"},
+        {"rule": "wp_option_code", "target": "_wp_pbn_c", "detail": "36 Ko de PHP"},
+        {"rule": "inconnue", "target": "x", "detail": "règle non reconnue"},
+    ]}
+
+    def setUp(self):
+        self.entries = [{"url": "https://a.fr", "domain": "a.fr"}]
+        self.secrets = {"a.fr": "s3cret"}
+
+    def _charge(self, chemin, defaut):
+        return self.entries if chemin.endswith("rest_sites.json") else self.secrets
+
+    def test_trouvailles_normalisees(self):
+        with mock.patch.object(scan.A, "load_json", side_effect=self._charge), \
+             mock.patch.object(scan.collect, "agent_get", return_value=self.REPONSE):
+            trv, err = scan.scan_agents()
+        self.assertEqual(err, {})
+        # La règle inconnue est écartée : un agent plus récent que le dashboard
+        # ne doit pas injecter des signalements que l'écran ne sait pas décrire.
+        self.assertEqual([t["rule"] for t in trv], ["wp_cron_ghost", "wp_option_code"])
+        self.assertEqual(trv[0]["path"], "sys_maint")
+        self.assertEqual(trv[0]["sev"], "high")
+        self.assertEqual(trv[0]["domain"], "a.fr")
+
+    def test_agent_trop_ancien_nest_pas_une_panne(self):
+        """404 = version, pas incident. Sinon la même ligne rouge s'afficherait
+        indéfiniment sur un site parfaitement sain."""
+        erreur = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with mock.patch.object(scan.A, "load_json", side_effect=self._charge), \
+             mock.patch.object(scan.collect, "agent_get", side_effect=erreur):
+            trv, err = scan.scan_agents()
+        self.assertEqual(trv, [])
+        self.assertIn("antérieur à la 1.6.0", err["a.fr"])
+
+    def test_site_non_appaire_ignore(self):
+        with mock.patch.object(scan.A, "load_json", side_effect=lambda c, d: self.entries if c.endswith("rest_sites.json") else {}), \
+             mock.patch.object(scan.collect, "agent_get") as appel:
+            trv, err = scan.scan_agents()
+        appel.assert_not_called()
+        self.assertEqual((trv, err), ([], {}))
+
+    def test_regles_agent_toutes_decrites(self):
+        """Une règle sans `label` ni `why` produit une ligne que personne ne sait
+        traiter : l'écran affiche le pourquoi, il doit exister."""
+        for rid, r in scan.AGENT_RULES.items():
+            self.assertTrue(r.get("label"), rid)
+            self.assertTrue(r.get("why"), rid)
+            self.assertIn(r["sev"], scan.SEV_RANK, rid)
+            self.assertIn(rid, scan.ALL_RULES)

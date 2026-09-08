@@ -3,7 +3,7 @@
  * Plugin Name: Sumotori Dash Agent
  * Plugin URI: https://github.com/tommybds/wp-dashboard
  * Description: Connects this site to a monitoring dashboard of your choice: reports sensitive administration events and answers signed, read-only inventory requests.
- * Version: 1.5.0
+ * Version: 1.6.0
  * Requires at least: 5.2
  * Requires PHP: 7.0
  * Author: Tommy Bordas
@@ -73,6 +73,7 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const REST_NAMESPACE   = 'sumotori-dash/v1';
 		const ROUTE_INVENTORY  = '/inventory';
 		const ROUTE_SITES      = '/sites';
+		const ROUTE_SCAN       = '/scan';
 		const ROUTE_PAIR       = '/pair';
 		const MENU_SLUG        = 'sumotori-dash-agent';
 		const NONCE_ACTION     = 'sumotori_dash_agent_admin';
@@ -83,7 +84,11 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 		const MAX_EVENT_ITEMS  = 25;
 		const MAX_SITES_LISTED = 500;
 		const MAX_THEMES_LISTED = 100;
-		const VERSION          = '1.5.0';
+		const VERSION          = '1.6.0';
+		// Taille à partir de laquelle une option mérite qu'on regarde sa forme.
+		// En dessous, une charge ne tiendrait pas ; au-dessus sans forme de
+		// code, c'est un cache d'extension et ça ne nous regarde pas.
+		const SCAN_OPTION_MIN  = 20000;
 		const SECRET_MIN_LEN   = 16;
 		const SECRET_MAX_LEN   = 512;
 
@@ -1243,6 +1248,19 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 
 			register_rest_route(
 				self::REST_NAMESPACE,
+				self::ROUTE_SCAN,
+				array(
+					array(
+						'methods'             => 'GET',
+						'permission_callback' => array( $this, 'can_read_inventory' ),
+						'callback'            => array( $this, 'rest_get_scan' ),
+						'args'                => array(),
+					),
+				)
+			);
+
+			register_rest_route(
+				self::REST_NAMESPACE,
 				self::ROUTE_PAIR,
 				array(
 					array(
@@ -1470,6 +1488,284 @@ if ( ! class_exists( 'Sumotori_Dash_Agent' ) ) {
 			$payload['network']   = is_multisite() ? $this->build_network_inventory() : null;
 
 			return new WP_REST_Response( $payload, 200 );
+		}
+
+		/**
+		 * Contrôles structurels que SEUL WordPress peut faire.
+		 *
+		 * Le dashboard balaie déjà les fichiers des serveurs en SSH, et il le fait
+		 * mieux : il voit aussi ce qui vit à côté du docroot, et une porte dérobée
+		 * ne peut pas lui mentir puisqu'elle ne s'exécute pas dans le même
+		 * processus. Cette route ne refait donc pas ce travail. Elle regarde ce
+		 * qu'un balayage de fichiers ne peut pas voir, et qui a coûté le plus cher
+		 * sur le parc :
+		 *
+		 *   - un événement wp-cron dont le crochet n'a AUCUN code enregistré : une
+		 *     porte dérobée sans fichier, réveillée par le cron ;
+		 *   - une option énorme qui contient du PHP ou du base64 : la charge qui
+		 *     réécrit functions.php à chaque visite ;
+		 *   - une extension présente sur le disque mais absente de la liste que
+		 *     WordPress rend : elle se masque par le filtre `all_plugins` ;
+		 *   - une extension active dont le fichier a disparu ;
+		 *   - un `auto_prepend_file` effectif, lu dans la configuration PHP réelle ;
+		 *   - les mu-plugins, qui s'exécutent sans jamais s'activer.
+		 *
+		 * Rien n'est modifié, rien n'est supprimé : la route ne fait que décrire.
+		 * L'interprétation revient au dashboard, qui tient la référence de ce qui
+		 * était déjà là — sans quoi un site sain crierait à chaque passage.
+		 *
+		 * @param WP_REST_Request|null $request Requête.
+		 * @return WP_REST_Response
+		 */
+		public function rest_get_scan( $request = null ) {
+			unset( $request );
+
+			$findings = array_merge(
+				$this->scan_cron_ghosts(),
+				$this->scan_options(),
+				$this->scan_plugins(),
+				$this->scan_php_config(),
+				$this->scan_mu_plugins()
+			);
+
+			return new WP_REST_Response(
+				array(
+					'generated_at' => gmdate( 'c' ),
+					'agent'        => self::VERSION,
+					'findings'     => array_values( $findings ),
+				),
+				200
+			);
+		}
+
+		/**
+		 * Événements wp-cron dont le crochet n'a aucun code enregistré.
+		 *
+		 * C'est la forme exacte de la porte dérobée « sys_maint » restée sur un
+		 * site du parc : aucun fichier à trouver, une entrée dans l'option `cron`
+		 * qui rappelait du code chargé autrement. Un crochet sans action n'est pas
+		 * une preuve — une extension désactivée laisse le même vide — mais c'est
+		 * ce qu'il faut aller regarder.
+		 *
+		 * @return array
+		 */
+		private function scan_cron_ghosts() {
+			$cron = get_option( 'cron' );
+			if ( ! is_array( $cron ) ) {
+				return array();
+			}
+			$out = array();
+			foreach ( $cron as $timestamp => $hooks ) {
+				if ( ! is_array( $hooks ) ) {
+					continue;
+				}
+				foreach ( $hooks as $hook => $events ) {
+					$hook = (string) $hook;
+					if ( '' === $hook || has_action( $hook ) ) {
+						continue;
+					}
+					$out[] = array(
+						'rule'   => 'wp_cron_ghost',
+						'sev'    => 'high',
+						'target' => $hook,
+						'detail' => sprintf(
+							/* translators: %s: next run date. */
+							__( 'Scheduled hook with no registered callback (next run %s).', 'sumotori-dash-agent' ),
+							gmdate( 'Y-m-d H:i', is_numeric( $timestamp ) ? (int) $timestamp : 0 )
+						),
+					);
+				}
+			}
+			return $out;
+		}
+
+		/**
+		 * Options volumineuses dont le contenu ressemble à du code.
+		 *
+		 * La taille seule ne dit rien : un cache d'extension pèse aussi lourd. Ce
+		 * qui compte est la CONJONCTION taille + forme de code. Les transitoires
+		 * sont écartés : ils se régénèrent, et les inclure remplirait la liste
+		 * d'entrées qui n'existent plus le lendemain.
+		 *
+		 * @return array
+		 */
+		private function scan_options() {
+			global $wpdb;
+
+			// Requête directe assumée : le cœur n'offre aucune API pour parcourir
+			// les options par TAILLE, et `wp_load_alloptions()` ne rend que les
+			// options autochargées — or une charge peut très bien ne pas l'être.
+			// Pas de cache non plus : ce contrôle doit voir l'état du moment.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT option_name, option_value FROM {$wpdb->options}
+					 WHERE LENGTH(option_value) > %d
+					   AND option_name NOT LIKE %s
+					   AND option_name NOT LIKE %s
+					 ORDER BY LENGTH(option_value) DESC
+					 LIMIT 40",
+					self::SCAN_OPTION_MIN,
+					$wpdb->esc_like( '_transient_' ) . '%',
+					$wpdb->esc_like( '_site_transient_' ) . '%'
+				)
+			);
+			if ( ! is_array( $rows ) ) {
+				return array();
+			}
+
+			$out = array();
+			foreach ( $rows as $row ) {
+				$valeur = (string) $row->option_value;
+				$forme  = $this->looks_like_code( $valeur );
+				if ( '' === $forme ) {
+					continue;
+				}
+				$out[] = array(
+					'rule'   => 'wp_option_code',
+					'sev'    => 'high',
+					'target' => (string) $row->option_name,
+					'detail' => sprintf(
+						/* translators: 1: size in kilobytes, 2: what was recognised. */
+						__( 'Option of %1$s KB containing %2$s.', 'sumotori-dash-agent' ),
+						number_format_i18n( strlen( $valeur ) / 1024, 1 ),
+						$forme
+					),
+				);
+			}
+			return $out;
+		}
+
+		/**
+		 * Ce que contient une valeur, si c'est du code — chaîne vide sinon.
+		 *
+		 * @param string $valeur Valeur de l'option.
+		 * @return string
+		 */
+		private function looks_like_code( $valeur ) {
+			if ( false !== strpos( $valeur, '<?php' ) || false !== strpos( $valeur, '<?=' ) ) {
+				return __( 'PHP source', 'sumotori-dash-agent' );
+			}
+			if ( preg_match( '/\b(eval|assert|create_function)\s*\(/i', $valeur ) ) {
+				return __( 'a call to eval()', 'sumotori-dash-agent' );
+			}
+			if ( preg_match( '/[A-Za-z0-9+\/]{1500,}={0,2}/', $valeur ) ) {
+				return __( 'a long encoded block', 'sumotori-dash-agent' );
+			}
+			return '';
+		}
+
+		/**
+		 * Extensions qui se masquent, et extensions actives disparues.
+		 *
+		 * `get_plugins()` passe par le filtre `all_plugins` : une extension qui s'en
+		 * retire devient invisible dans l'écran Extensions. En comparant cette
+		 * liste au contenu réel du dossier, l'écart saute aux yeux. C'est
+		 * exactement ce que faisait le faux « cidaas-pro-master » trouvé sur le
+		 * parc, et rien d'autre que WordPress ne peut le constater.
+		 *
+		 * @return array
+		 */
+		private function scan_plugins() {
+			if ( ! $this->ensure_plugin_api() ) {
+				return array();
+			}
+			$out     = array();
+			$connus  = array_keys( (array) get_plugins() );
+			$dossier = defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR : '';
+
+			if ( '' !== $dossier && is_dir( $dossier ) ) {
+				$fichiers = (array) glob( $dossier . '/*/*.php' );
+				foreach ( $fichiers as $chemin ) {
+					$relatif = ltrim( str_replace( $dossier, '', (string) $chemin ), '/\\' );
+					if ( in_array( $relatif, $connus, true ) ) {
+						continue;
+					}
+					$entete = get_plugin_data( (string) $chemin, false, false );
+					if ( empty( $entete['Name'] ) ) {
+						continue;   // un fichier quelconque de l'extension, pas son fichier principal
+					}
+					$out[] = array(
+						'rule'   => 'wp_plugin_hidden',
+						'sev'    => 'critical',
+						'target' => $relatif,
+						'detail' => sprintf(
+							/* translators: %s: plugin name declared in the header. */
+							__( 'Plugin header "%s" on disk but absent from the list WordPress returns.', 'sumotori-dash-agent' ),
+							sanitize_text_field( (string) $entete['Name'] )
+						),
+					);
+				}
+			}
+
+			foreach ( (array) get_option( 'active_plugins', array() ) as $actif ) {
+				$actif = (string) $actif;
+				if ( '' === $actif || in_array( $actif, $connus, true ) ) {
+					continue;
+				}
+				$out[] = array(
+					'rule'   => 'wp_plugin_missing',
+					'sev'    => 'medium',
+					'target' => $actif,
+					'detail' => __( 'Plugin marked active but its file is missing.', 'sumotori-dash-agent' ),
+				);
+			}
+			return $out;
+		}
+
+		/**
+		 * Configuration PHP effective : `auto_prepend_file` exécute du code avant
+		 * TOUT script du site, sans qu'aucun fichier WordPress ne l'appelle.
+		 *
+		 * Lu par `ini_get()`, donc tel que PHP l'applique vraiment — un `.user.ini`
+		 * peut être ailleurs que là où on le cherche.
+		 *
+		 * @return array
+		 */
+		private function scan_php_config() {
+			$out = array();
+			foreach ( array( 'auto_prepend_file', 'auto_append_file' ) as $cle ) {
+				$valeur = trim( (string) ini_get( $cle ) );
+				if ( '' === $valeur ) {
+					continue;
+				}
+				$out[] = array(
+					'rule'   => 'wp_auto_prepend',
+					'sev'    => 'high',
+					'target' => $cle . ' = ' . $valeur,
+					'detail' => __( 'PHP runs this file before every script of the site.', 'sumotori-dash-agent' ),
+				);
+			}
+			return $out;
+		}
+
+		/**
+		 * Les mu-plugins s'exécutent sans jamais s'activer et ne se désactivent
+		 * pas depuis l'administration. Les lister n'est pas une accusation : c'est
+		 * la seule façon de savoir ce qui tourne là. Le dashboard tient la
+		 * référence, donc un mu-plugin légitime ne se signale qu'une fois.
+		 *
+		 * @return array
+		 */
+		private function scan_mu_plugins() {
+			$dossier = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : '';
+			if ( '' === $dossier || ! is_dir( $dossier ) ) {
+				return array();
+			}
+			$out = array();
+			foreach ( (array) glob( $dossier . '/*.php' ) as $chemin ) {
+				$out[] = array(
+					'rule'   => 'wp_mu_plugin',
+					'sev'    => 'low',
+					'target' => basename( (string) $chemin ),
+					'detail' => sprintf(
+						/* translators: %s: last modification date. */
+						__( 'Must-use plugin, active by presence alone (modified %s).', 'sumotori-dash-agent' ),
+						gmdate( 'Y-m-d H:i', (int) filemtime( (string) $chemin ) )
+					),
+				);
+			}
+			return $out;
 		}
 
 		/**
