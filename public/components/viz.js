@@ -557,7 +557,7 @@ export async function openVizConnect(sites) {
      « connecte » plus rien, elle montre l'état et propose de refaire la
      liaison. « Connecter VizProof » y était un contresens. */
   document.getElementById('vz-title').textContent = seul
-    ? 'VizProof · ' + (kName(VZSITES[0]) || VZSITES[0].domain)
+    ? (relie ? 'VizProof · ' : 'Relier à VizProof · ') + (kName(VZSITES[0]) || VZSITES[0].domain)
     : 'Connecter VizProof';
   if (relie) {
     const info = vizInfo(VZSITES[0]) || {};
@@ -573,24 +573,31 @@ export async function openVizConnect(sites) {
       ? `<b>${VZSITES.length}</b> site(s) à relier.` + (VZTOK
         ? ' Le jeton enregistré vaut pour tous ; laissez l’identifiant vide pour que chaque site soit retrouvé ou créé d’après son URL.'
         : " L'identifiant est propre à chaque site ; le jeton, lui, est celui de votre compte et vaut pour tous.")
-      : `Relier <b>${H(kName(VZSITES[0]) || VZSITES[0].domain)}</b> à VizProof.`;
+      /* Sur un site unique, le titre porte déjà « VizProof · <domaine> » :
+         « Relier <domaine> à VizProof » redisait le domaine sans rien
+         apprendre, juste au-dessus d'une ligne qui le redit une fois de plus. */
+      : '';
   }
   document.getElementById('vz-rows').innerHTML = VZSITES.map((s, i) => {
     // Avec un jeton enregistré, le champ reste VIDE : « par URL » est le défaut.
     const cur = VZTOK ? '' : ((vizInfo(s) || {}).site_id || vizSlug(s.domain));
     return `<div class="logline"><b>${H(kName(s) || s.domain)}</b>
-      <span class="muted small">${H(s.srv)}</span>
+      ${seul ? '' : `<span class="muted small">${H(s.srv)}</span>`}
       <input class="inp w-sm" data-vzid="${i}" aria-label="${H('identifiant VizProof de ' + s.domain)}"
              autocomplete="off" spellcheck="false" value="${H(cur)}"
              placeholder="${VZTOK ? 'par URL' : ''}">
       <span class="small" data-vzres="${i}"></span></div>`;
   }).join('');
-  // Site déjà relié : les identifiants passent derrière « Options avancées ».
-  VZROWSADV = relie;
+  /* Passent derrière « Options avancées » : les identifiants d'un site déjà
+     relié (rien à ressaisir pour reconnecter), et ceux d'un site unique quand
+     un jeton est enregistré (le défaut « par URL » est le bon cas). Restent
+     visibles dès qu'il y a plusieurs sites à distinguer, ou pas de jeton. */
+  VZROWSADV = relie || (seul && !!VZTOK);
   const adv = document.getElementById('vz-advbox');
   adv.hidden = true;
   document.getElementById('vz-adv').textContent = 'Options avancées';
   majLignesAvancees(false);
+  document.querySelectorAll('#vz-rows input').forEach(i => { i.oninput = invaliderApercu; });
   document.getElementById('vz-tokstored').hidden = !VZTOK;
   document.getElementById('vz-toktail').textContent = '…' + (cfg.vizproof_token_tail || '');
   document.getElementById('vz-othertok').hidden = false;
@@ -628,10 +635,18 @@ export async function openVizConnect(sites) {
 /* Aperçu : `viz_resolve` ne crée rien. Il dit quel site existant sera relié. */
 function vizApercuTexte(j) {
   if (!j || j.ok === false) return `<span class="pill err">aperçu impossible</span> <span class="muted">${H(String((j && j.error) || 'échec'))}</span>`;
-  const nom = H(j.name || j.host || '?');
-  if (j.created) return `<span class="pill ok">Site VizProof : <b>${nom}</b></span> <span class="muted">créé pour <code>${H(j.host || '')}</code></span>`;
+  // Sans nom renvoyé, « Site VizProof : ? existant » se lit comme une erreur
+  // alors que la résolution a réussi : on dit simplement qu'il existe.
+  const nom = H(j.name || j.host || '');
+  if (j.created) return `<span class="pill ok">Site VizProof${nom ? ` : <b>${nom}</b>` : ''}</span> <span class="muted">créé pour <code>${H(j.host || '')}</code></span>`;
   if (j.would_create) return `<span class="pill warn">Aucun site VizProof pour <code>${H(j.host || '')}</code></span> <span class="muted">il sera créé à la connexion</span>`;
-  return `<span class="pill ok">Site VizProof : <b>${nom}</b></span> <span class="muted">existant, domaine <code>${H(j.matched_domain || j.host || '')}</code></span>`
+  const dom = H(j.matched_domain || j.host || '');
+  const seul = VZSITES.length === 1;
+  // Le domaine résolu n'est utile que s'il DIFFÈRE de celui qu'on relie : c'est
+  // le seul cas où il apprend quelque chose (alias, www, changement d'URL).
+  const surprise = seul && dom && dom !== H(VZSITES[0].domain);
+  return `<span class="pill ok">Site VizProof${nom ? ` : <b>${nom}</b>` : ''}</span> `
+    + `<span class="muted">existant${surprise ? `, domaine <code>${dom}</code>` : ''}</span>`
     + (j.ambiguous ? ' <span class="pill warn" title="plusieurs sites VizProof portent cet hôte : le premier est retenu">ambigu</span>' : '');
 }
 async function vizResolveOne(s) {
@@ -662,6 +677,17 @@ async function runVizPreview() {
     zone.innerHTML = '<span class="muted">aperçu terminé — rien n’a été connecté.</span>';
   }
   ap.disabled = false; ap.textContent = 'Aperçu';
+  if (VZSITES.length === 1) ap.hidden = true;
+}
+
+/* L'identifiant modifié invalide l'aperçu affiché : le bouton redevient utile,
+   et le résultat périmé s'efface plutôt que de mentir. */
+function invaliderApercu() {
+  const ap = document.getElementById('vz-preview');
+  if (ap && !ap.hidden) return;
+  const zone = document.getElementById('vz-apercu');
+  if (zone) zone.innerHTML = '';
+  if (ap && VZTOK) ap.hidden = false;
 }
 
 async function runVizConnect() {

@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-09-1440">
-<link rel="stylesheet" href="css/base.css?v=2026-09-09-1440">
-<link rel="stylesheet" href="css/components.css?v=2026-09-09-1440">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-09-1440">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-09-1450">
+<link rel="stylesheet" href="css/base.css?v=2026-09-09-1450">
+<link rel="stylesheet" href="css/components.css?v=2026-09-09-1450">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-09-1450">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,37 +21,37 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-09-1440",
-    "./lib/api.js": "./lib/api.js?v=2026-09-09-1440",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-09-1440",
-    "./lib/format.js": "./lib/format.js?v=2026-09-09-1440",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-09-1440",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-09-1440",
-    "./lib/state.js": "./lib/state.js?v=2026-09-09-1440",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-09-1440",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-09-1440",
-    "./components/button.js": "./components/button.js?v=2026-09-09-1440",
-    "./components/chip.js": "./components/chip.js?v=2026-09-09-1440",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-09-1440",
-    "./components/incident.js": "./components/incident.js?v=2026-09-09-1440",
-    "./components/job.js": "./components/job.js?v=2026-09-09-1440",
-    "./components/log.js": "./components/log.js?v=2026-09-09-1440",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-09-1440",
-    "./components/search.js": "./components/search.js?v=2026-09-09-1440",
-    "./components/sheet.js": "./components/sheet.js?v=2026-09-09-1440",
-    "./components/shell.js": "./components/shell.js?v=2026-09-09-1440",
-    "./components/table.js": "./components/table.js?v=2026-09-09-1440",
-    "./components/tip.js": "./components/tip.js?v=2026-09-09-1440",
-    "./components/toast.js": "./components/toast.js?v=2026-09-09-1440",
-    "./components/viz.js": "./components/viz.js?v=2026-09-09-1440",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-09-1440",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-09-1440",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-09-1440",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-09-1440",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-09-1440",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-09-1440",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-09-1440",
-    "./screens/site.js": "./screens/site.js?v=2026-09-09-1440"
+    "./version.js": "./version.js?v=2026-09-09-1450",
+    "./lib/api.js": "./lib/api.js?v=2026-09-09-1450",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-09-1450",
+    "./lib/format.js": "./lib/format.js?v=2026-09-09-1450",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-09-1450",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-09-1450",
+    "./lib/state.js": "./lib/state.js?v=2026-09-09-1450",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-09-1450",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-09-1450",
+    "./components/button.js": "./components/button.js?v=2026-09-09-1450",
+    "./components/chip.js": "./components/chip.js?v=2026-09-09-1450",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-09-1450",
+    "./components/incident.js": "./components/incident.js?v=2026-09-09-1450",
+    "./components/job.js": "./components/job.js?v=2026-09-09-1450",
+    "./components/log.js": "./components/log.js?v=2026-09-09-1450",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-09-1450",
+    "./components/search.js": "./components/search.js?v=2026-09-09-1450",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-09-1450",
+    "./components/shell.js": "./components/shell.js?v=2026-09-09-1450",
+    "./components/table.js": "./components/table.js?v=2026-09-09-1450",
+    "./components/tip.js": "./components/tip.js?v=2026-09-09-1450",
+    "./components/toast.js": "./components/toast.js?v=2026-09-09-1450",
+    "./components/viz.js": "./components/viz.js?v=2026-09-09-1450",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-09-1450",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-09-1450",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-09-1450",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-09-1450",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-09-1450",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-09-1450",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-09-1450",
+    "./screens/site.js": "./screens/site.js?v=2026-09-09-1450"
   }
 }
 </script>
@@ -255,7 +255,7 @@
   <div id="vz-apercu" class="small mt2"></div>
   <p class="hint hint-loose" id="vz-tokstored" hidden>
     Jeton VizProof enregistré (<span id="vz-toktail"></span>) — il servira pour cette connexion.
-    <button class="btn sm" type="button" id="vz-othertok">utiliser un autre token</button></p>
+    <button class="btn sm" type="button" id="vz-othertok">utiliser un autre jeton</button></p>
   <div id="vz-credbox">
   <div class="filters filters-baseline mt3">
     <label class="fld small">mode
@@ -270,7 +270,7 @@
       <input class="inp w-sm" id="vz-code" autocomplete="off" spellcheck="false"
              placeholder="code à usage unique"></label>
   </div>
-  <p class="hint hint-loose">Le token se crée dans <b>VizProof → Réglages → API</b>. Saisi ici, il n'est pas enregistré par le dashboard : il ne sert qu'à cet appel.
+  <p class="hint hint-loose">Le jeton se crée dans <b>VizProof → Réglages → API</b>. Saisi ici, il n'est pas enregistré par le dashboard : il ne sert qu'à cet appel.
     <span id="vz-goset" hidden><button class="btn sm" type="button" id="vz-setlink">l'enregistrer dans les Réglages</button></span></p>
   </div>
   <p class="hint hint-loose"><button class="btn sm" type="button" id="vz-adv">Options avancées</button></p>
@@ -357,6 +357,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-09-1440"></script>
+<script type="module" src="app.js?v=2026-09-09-1450"></script>
 </body>
 </html>
