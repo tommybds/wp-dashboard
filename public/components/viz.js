@@ -41,6 +41,22 @@ export function vizAnom(s) {
   if (!r) return false;
   return (Number(r.anomalies) > 0) || /anomal/i.test(String(r.status ?? ''));
 }
+/* Gravité du dernier scan : 'err' si quelque chose est CASSÉ, 'warn' s'il y a
+   seulement à regarder, '' si tout va bien.
+
+   La pastille de l'onglet peignait tout en rouge, y compris quand le volet
+   affichait « visuel : à vérifier » en orange trois lignes plus bas. Deux
+   couleurs pour le même fait, c'est une des deux qui ment. L'inventaire porte
+   les totaux du run (`{fail, warn, ok}`) : ils tranchent. Sans eux — relevé
+   plus ancien — l'orange est le repli honnête : on sait qu'il y a quelque
+   chose, on ne sait pas que c'est cassé. */
+export function vizGravite(s) {
+  if (!vizAnom(s)) return '';
+  const t = (vizRun(s) || {}).totals;
+  if (t && typeof t === 'object') return (Number(t.fail) > 0) ? 'err' : 'warn';
+  return 'warn';
+}
+
 /* `configured` est arrivé avec la 1.3.6 côté plugin ; sur un inventaire plus
    ancien, la connexion établie est la seule preuve disponible. */
 function vizConfigured(s) { const v = vizInfo(s); if (!v) return false; return v.configured === undefined ? !!v.connected : !!v.configured; }

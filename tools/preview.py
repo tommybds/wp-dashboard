@@ -118,8 +118,15 @@ def faux_site(i, srv, rng):
         s["vizproof"] = {
             "connected": True, "configured": True, "version": "1.4.2", "has_cli": True,
             "pages": 3, "site_id": f"site-{i:02d}",
+            # `totals` accompagne `anomalies` dans l'inventaire réel : c'est lui
+            # qui dit si c'est CASSÉ (fail) ou seulement à regarder (warn), donc
+            # la couleur de la pastille de l'onglet. Un site sur deux tombe en
+            # échec dans le scénario « anomalie », pour voir les deux couleurs.
             "last_run": {"at": now(2), "anomalies": 2 if SCENARIO == "anomalie" else 0,
-                         "status": "ok", "url": "https://vizproof.example/r/1"},
+                         "status": "ok", "url": "https://vizproof.example/r/1",
+                         "totals": ({"fail": 1, "warn": 1, "ok": 0} if i % 8 == 0
+                                    else {"fail": 0, "warn": 2, "ok": 0})
+                         if SCENARIO == "anomalie" else {"fail": 0, "warn": 0, "ok": 3}},
         }
     elif i % 4 == 1:
         # v1.0.3 : installée, mais trop ancienne pour exposer « wp vizproof ».

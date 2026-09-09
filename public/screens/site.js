@@ -38,7 +38,7 @@ import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
-  vizAnom} from '../components/viz.js';
+  vizAnom, vizGravite} from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -649,7 +649,10 @@ function renderVulnsSite() {
 function vizPastilleOnglet(s) {
   const t = vizEtatTexte(s);
   if (!t || t.etat === 'nodata') return null;
-  if (t.etat === 'connecte') return vizAnom(s) ? { texte: 'à voir', ton: 'err' } : null;
+  if (t.etat === 'connecte') {
+    const g = vizGravite(s);
+    return g ? { texte: g === 'err' ? 'cassé' : 'à voir', ton: g } : null;
+  }
   return { texte: t.etat === 'absent' ? 'absent' : 'à faire', ton: 'warn' };
 }
 
