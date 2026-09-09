@@ -65,6 +65,11 @@
 .btn:disabled:hover{border-color:var(--line);color:var(--muted);background:var(--surface)}
 .btn.primary:disabled:hover{background:var(--accent);color:var(--on-accent)}
 .btn.sm{padding:2px 8px;font-size:var(--t-12);min-height:24px}
+/* Encore plus petit : un bouton-icône glissé dans une ligne de méta, à hauteur
+   de texte. Il ne doit pas hausser la ligne ni attirer l'œil plus que la
+   donnée qu'il accompagne. */
+.btn.xs{padding:2px 6px;font-size:var(--t-12);line-height:1.2}
+.btn.xs>.ic{width:13px;height:13px}
 .btn.icon{padding:5px 8px}
 .btn.is-busy{cursor:progress}
 /* Libellé d'un bouton qui devient une icône en étroit : il passe en `sr-only`
@@ -151,6 +156,11 @@ td .sub{color:var(--muted);font-size:var(--t-12);max-width:340px;overflow:hidden
 .ptable td{padding:5px 4px;border-bottom:1px solid var(--line-2)}
 .ptable tr:last-child td{border-bottom:0}
 .ptable tr{cursor:default}
+/* Les boutons d'une ligne se touchaient : trois collés passaient encore, quatre
+   font un bloc où l'on ne distingue plus les cibles. En étroit, screens.css
+   reprend la main avec un `display:flex` et son propre `gap`. */
+.ptable td.pcell{white-space:nowrap}
+.ptable td.pcell .btn + .btn{margin-left:6px}
 .ptable tr:hover td{background:transparent}
 .row-frozen{opacity:.55}
 

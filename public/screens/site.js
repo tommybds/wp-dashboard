@@ -234,6 +234,17 @@ function entete(s) {
   if (s.path) { meta.append(sep()); meta.append(h('code', { class: 'small', text: s.path })); }
   meta.append(sep());
   meta.append(h('span', { title: absTime(s.collected_at || store.fleet?.generated_at), text: 'relevé ' + relTime(s.collected_at || store.fleet?.generated_at) }));
+  if (s.via !== 'rest') {
+    /* « Relevé il y a 42 min » appelle « et maintenant ? ». Le re-scan était
+       au fond du menu Actions ; il est ici, contre la phrase qui le motive. */
+    const rs = h('button', {
+      type: 'button', class: 'btn xs', title: 'Relire l’inventaire de ce site maintenant',
+      'aria-label': 'Re-scanner l’inventaire de ce site',
+    }, iconEl('refresh-cw', { size: 13 }));
+    rs.dataset.act = 'rescan';
+    rs.onclick = () => confirmRun(rs, 'Re-scan de l’inventaire');
+    meta.append(rs);
+  }
   meta.append(sep());
   meta.append(h('span', {
     class: 'pill mut',
@@ -998,6 +1009,18 @@ export async function lancerSur(s, btn, label) {
   }
 }
 
+/* Bouton d'action groupée pour l'en-tête d'une section. Ces gestes n'existaient
+   que dans le menu « Actions », replié : pour mettre à jour toutes les
+   extensions, il fallait savoir que le menu contenait cette ligne. Ils restent
+   dans le menu — qui garde son rôle de liste exhaustive — et apparaissent ici,
+   là où on regarde quand on veut les faire. */
+function boutonLot(s, act, libelle, titre) {
+  const b = h('button', { type: 'button', class: 'btn sm fr', title: titre || '' }, iconEl('arrow-up'), libelle);
+  b.dataset.act = act;
+  b.onclick = () => confirmRun(b, libelle);
+  return b;
+}
+
 /* ---- onglet Extensions et thèmes -------------------------------------------- */
 /* `kind` : une extension et un thème peuvent porter le MÊME slug (twentyseven,
    par exemple). Sans lui, la pastille de vulnérabilité d'un thème se serait
@@ -1146,7 +1169,11 @@ function sectionThemes(s) {
   }
   const aMaj = liste.filter(estMajTheme);
   const blocs = [h('section', { class: 'sitesec' },
-    h('h3', { text: 'Thèmes à mettre à jour (' + aMaj.length + ')' }),
+    h('h3', {}, 'Thèmes à mettre à jour (' + aMaj.length + ')',
+      aMaj.length && s.via !== 'rest'
+        ? boutonLot(s, 'themes_update_all', 'Tout mettre à jour',
+          'Met à jour les ' + aMaj.length + ' thèmes d’un coup, sans sauvegarde ni archive')
+        : null),
     aMaj.length
       ? h('table', { class: 'ptable' }, h('tbody', {}, aMaj.map(t => ligneTheme(s, t, true))))
       : h('p', { class: 'hint hint-tight', text: 'Tous les thèmes sont à jour.' }))];
@@ -1179,8 +1206,35 @@ function ongletExtensions(s) {
       ' : les mises à jour et le gel ne sont pas disponibles ici, à faire depuis wp-admin.'));
   }
 
+  if (s.core_update && s.via !== 'rest') {
+    /* Une mise à jour du CŒUR ne se voyait que dans le menu replié, alors
+       qu'elle est la plus lourde de conséquences. Elle a sa ligne, avec les
+       deux mêmes gestes que les extensions — et le même avertissement sur ce
+       que le retour arrière ne rattrape pas. */
+    const maj = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
+    maj.dataset.act = 'core_update';
+    maj.onclick = () => confirmRun(maj);
+    const sure = h('button', { type: 'button', class: 'btn sm primary',
+      title: 'Sauvegarde, archive, met à jour le cœur, contrôle le rendu' },
+      iconEl('shield-check'), 'sûre');
+    sure.dataset.core = '1';
+    sure.onclick = () => startSafeUpdate(s.srv, s.domain, sure, { core: true });
+    blocs.push(h('section', { class: 'sitesec' },
+      h('h3', { text: 'Cœur WordPress' }),
+      h('p', { class: 'hint hint-tight' },
+        'Version ', h('b', { text: s.core_version || '?' }), ' — ',
+        h('b', { text: s.core_update }), ' disponible. Le retour arrière rétablit les '
+        + 'fichiers, pas les migrations de base de données : la sauvegarde UpdraftPlus '
+        + 'est le seul recours pour elle.'),
+      h('div', { class: 'actions mt2' }, maj, sure)));
+  }
+
   blocs.push(h('section', { class: 'sitesec' },
-    h('h3', { text: 'À mettre à jour (' + aMaj.length + ')' }),
+    h('h3', {}, 'À mettre à jour (' + aMaj.length + ')',
+      aMaj.length && s.via !== 'rest'
+        ? boutonLot(s, 'plugins_update_all', 'Tout mettre à jour',
+          'Met à jour les ' + aMaj.length + ' extensions d’un coup, sans sauvegarde ni archive')
+        : null),
     /* Le bouton « MAJ » de ces lignes lance un `wp plugin update` et rien
        d'autre : ni sauvegarde UpdraftPlus, ni archive des fichiers, donc aucun
        point de rétablissement. La « MAJ sûre » du haut fait les deux. Les deux
@@ -1753,7 +1807,7 @@ async function loadSafeStatus(dom) {
    extension sans filet » et « tout le site avec filet ». */
 async function startSafeUpdate(srv, dom, btn, cible) {
   const withCore = btn.dataset.core === '1';
-  const un = cible && (cible.slug || cible.theme);
+  const un = cible && (cible.slug || cible.theme || (cible.core ? 'le cœur WordPress' : ''));
   await ensureSettings();
   let msg = un
     ? `Mise à jour sûre de <b>${H(un)}</b> sur <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ${cible.theme ? 'ce thème' : 'cette extension'} → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.<br><br>Rien d'autre ne sera mis à jour.`
@@ -1784,6 +1838,7 @@ async function startSafeUpdate(srv, dom, btn, cible) {
   // Un seul thème : `slugs: []` ne dirait pas « aucune extension » (une liste
   // vide est fausse, donc indistincte de « toutes ») — d'où `with_plugins`.
   if (cible && cible.theme) { corpsReq.themes = [cible.theme]; corpsReq.with_plugins = false; }
+  if (cible && cible.core) { corpsReq.core = true; corpsReq.with_plugins = false; corpsReq.with_themes = false; }
   try { r = await api('/api/actions/safe_update', corpsReq); }
   catch (e) { r = { error: 'lancement impossible : ' + e }; }
   if (!r || r.error) {
