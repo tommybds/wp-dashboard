@@ -88,8 +88,16 @@ def faux_site(i, srv, rng):
     plugins = [{"name": f"plugin-{k}", "version": f"1.{k}.0", "status": "active",
                 "update": "available" if k < maj else "none",
                 "to": f"1.{k}.1"} for k in range(rng.randint(6, 22))]
+    # Les CINQ états de VizProof, et pas seulement « relié » : c'est la
+    # variété qui permet de voir que l'écran dit des choses différentes selon
+    # le cas — un site en v1.0.3 (sans « wp vizproof ») ou une extension
+    # désactivée existent bel et bien dans le parc.
     if i % 4 == 0:
         plugins.append({"name": "vizproof-timeline", "version": "1.4.2", "status": "active", "update": "none"})
+    elif i % 4 == 1:
+        plugins.append({"name": "vizproof-timeline", "version": "1.0.3", "status": "active", "update": "available", "to": "1.3.9"})
+    elif i % 4 == 2:
+        plugins.append({"name": "vizproof-timeline", "version": "1.3.9", "status": "inactive", "update": "none"})
     s = {
         "domain": dom, "kuma": dom, "kuma_group": rng.choice(["Sumotori", "Client A", "Client B"]),
         "blogname": f"Site {i}", "siteurl": f"https://{dom}",
@@ -113,6 +121,21 @@ def faux_site(i, srv, rng):
             "last_run": {"at": now(2), "anomalies": 2 if SCENARIO == "anomalie" else 0,
                          "status": "ok", "url": "https://vizproof.example/r/1"},
         }
+    elif i % 4 == 1:
+        # v1.0.3 : installée, mais trop ancienne pour exposer « wp vizproof ».
+        s["vizproof"] = {"connected": False, "configured": False, "version": "1.0.3",
+                         "has_cli": False, "pages": 0}
+    elif i % 4 == 2:
+        # Présente et à jour, mais désactivée.
+        s["vizproof"] = {"connected": False, "configured": False, "version": "1.3.9",
+                         "has_cli": True, "pages": 0, "active": False}
+    elif i % 8 == 3:
+        # Installée et active, jamais reliée à VizProof.
+        plugins.append({"name": "vizproof-timeline", "version": "1.3.9",
+                        "status": "active", "update": "none"})
+        s["plugins_total"] = len(plugins)
+        s["vizproof"] = {"connected": False, "configured": False, "version": "1.3.9",
+                         "has_cli": True, "pages": 0}
     if i % 7 == 0:
         s["via"] = "rest"
     # Quelques installs SANS moniteur Kuma : c'est le cas qui fait apparaître
@@ -158,7 +181,11 @@ def faux_site(i, srv, rng):
     s["label"] = s.get("kuma") or ov.get("label") or dom
     s["client"] = s.get("kuma_group") or ov.get("client") or None
     s["plugins_list"] = plugins
-    s["plugins_updates_list"] = [p["name"] for p in plugins if p.get("update") == "available"]
+    # Même forme que collect.py : {name, from, to}. La page bouchonnée émettait
+    # de simples chaînes, ce qui masquait tout code lisant `.to` ou `.from` —
+    # il marchait en production et ne rendait rien ici.
+    s["plugins_updates_list"] = [{"name": p["name"], "from": p.get("version"), "to": p.get("to")}
+                                 for p in plugins if p.get("update") == "available"]
     themes, _ = faux_themes(i)
     # `None` est une VALEUR ici, pas une absence : la page site doit distinguer
     # « aucun thème » de « ce site ne remonte pas ses thèmes ».

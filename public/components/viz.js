@@ -35,8 +35,8 @@ const VIZ = 'vizproof-timeline';
 export function vizOf(s) { return (s.plugins_list || []).find(p => p.name === VIZ) || null; }
 export function vizInfo(s) { const v = s && s.vizproof; return (v && typeof v === 'object') ? v : null; }
 export function vizConnected(s) { const v = vizInfo(s); return !!(v && v.connected); }
-function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
-function vizAnom(s) {
+export function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
+export function vizAnom(s) {
   const r = vizRun(s);
   if (!r) return false;
   return (Number(r.anomalies) > 0) || /anomal/i.test(String(r.status ?? ''));
@@ -275,7 +275,12 @@ function vizLastRunEl(s) {
     lienEl(r.url, 'voir le rapport'));
 }
 
-export function vizBlocEl(s) {
+/**
+ * Bloc d'état VizProof, commun à la page site et à la modale de liaison.
+ * `titre:false` retire l'étiquette « VizProof » quand l'appelant en pose déjà
+ * une — sur son propre onglet, la lire deux fois de suite ne dit rien de plus.
+ */
+export function vizBlocEl(s, { titre = true } = {}) {
   const t = vizEtatTexte(s), e = t.etat;
   if (e === 'nodata') return null;
   const ver = vizVersion(s), rest = s.via === 'rest';
@@ -297,8 +302,8 @@ export function vizBlocEl(s) {
     txt.append('Extension présente en v' + ver + ' mais ', h('b', { text: 'désactivée' }), ' — à activer depuis wp-admin.');
   } else if (e === 'nocli') {
     txt.append('Extension en v' + ver + ' : cette version n’expose pas la commande ',
-      h('code', { text: 'wp vizproof' }),
-      '. Mettez-la à jour (bouton de MAJ de l’extension) pour pouvoir la connecter d’ici.');
+      h('code', { text: 'wp vizproof' }), ', nécessaire pour la relier d’ici. '
+      + 'Une mise à jour de l’extension suffit.');
   } else if (e === 'nonconnecte') {
     txt.append('Extension en v' + ver + ' installée, mais ', h('b', { text: 'pas encore reliée' }), ' à VizProof.');
     if (rest) txt.append(' Ce site est géré sans SSH : la connexion se fait depuis wp-admin.');
@@ -328,7 +333,7 @@ export function vizBlocEl(s) {
   if (e === 'connecte') { const p = vizRunBadgeEl(s); if (p) txt.append(' ', p); }
 
   return h('div', { class: 'agroup' },
-    h('span', { class: 'glbl', text: 'VizProof' }),
+    titre ? h('span', { class: 'glbl', text: 'VizProof' }) : null,
     txt,
     e === 'connecte' ? vizLastRunEl(s) : null,
     // Réceptacle du résumé du dernier rapport : rempli APRÈS coup par

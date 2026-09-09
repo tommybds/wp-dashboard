@@ -98,12 +98,27 @@
    des ONGLETS (`.tabs` / `.tab`), et il n'y en a qu'à deux endroits — les cinq
    onglets de la page site (`role="tablist"`, un volet à la fois sur un même
    objet) et le filtre de sa chronologie (un groupe de bascules). */
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 var(--s-16)}
-.tab{padding:4px 11px;border:1px solid var(--line);background:var(--surface);
+/* Les onglets de la page site commandent tout le contenu qui suit : à 12 px
+   dans 4 px de haut, ils se lisaient comme des filtres secondaires et on ne
+   pensait pas à les ouvrir. Ils passent donc à la taille d'un vrai contrôle
+   de navigation — texte à 13 px, hauteur doublée, et un onglet actif qui se
+   voit d'un bout à l'autre de la page. */
+.tabs{display:flex;gap:var(--s-8);flex-wrap:wrap;margin:0 0 var(--s-16)}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;
+  border:1px solid var(--line);background:var(--surface);
   color:var(--muted);border-radius:var(--r-pill);cursor:pointer;
-  font-family:var(--f-display);font-size:var(--t-12);font-weight:500;white-space:nowrap}
+  font-family:var(--f-display);font-size:var(--t-13);font-weight:500;white-space:nowrap;
+  transition:background .12s ease,border-color .12s ease,color .12s ease}
 .tab:hover{border-color:var(--accent);color:var(--ink)}
-.tab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.tab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent);
+  font-weight:600}
+/* Pastille d'état d'un onglet (VizProof) : elle doit se lire sur le fond de
+   l'onglet ACTIF comme sur celui des autres, d'où la couleur portée par le
+   texte et non par le fond seul. */
+.tab-p{padding:1px 7px;border-radius:var(--r-pill);font-size:var(--t-12);
+  font-weight:600;line-height:1.5}
+.tab-p.warn{background:var(--warn-bg);color:var(--warn)}
+.tab-p.err{background:var(--err-bg);color:var(--err)}
 
 /* ---- écran vide (Incidents, phase 3) -------------------------------------- */
 .empty{display:flex;flex-direction:column;align-items:center;gap:var(--s-8);

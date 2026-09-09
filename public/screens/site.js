@@ -37,7 +37,8 @@ import { NOTIF } from '../components/toast.js';
 import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
-  VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml} from '../components/viz.js';
+  VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
+  vizRun, vizAnom, vizInfo} from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -51,6 +52,11 @@ const ONGLETS = [
      thèmes. Seul le libellé change. */
   ['extensions', 'Extensions et thèmes'],
   ['securite', 'Sécurité'],
+  /* VizProof a sa place ici, et pas au fond de l'Aperçu : c'est le seul volet
+     qui dit à quoi le site RESSEMBLE, et il porte trois actions (relier,
+     choisir les pages, scanner) qu'on ne trouvait qu'en dépliant le menu. La
+     pastille de l'onglet dit son état sans qu'on l'ouvre. */
+  ['vizproof', 'VizProof', vizPastilleOnglet],
   ['sauvegardes', 'Sauvegardes'],
   ['historique', 'Historique'],
 ];
@@ -633,16 +639,32 @@ function renderVulnsSite() {
 
    En étroit, la liste défile horizontalement : c'est `initDebordement()` qui
    pose l'ombre de débordement quand il y a de quoi défiler. */
+/* Pastille de l'onglet VizProof : l'état tient en un mot, et c'est celui qui
+   décide si on a besoin d'ouvrir. Un site sans inventaire n'en porte aucune —
+   « inconnu » sur un onglet n'apprend rien et fait du bruit. */
+function vizPastilleOnglet(s) {
+  const t = vizEtatTexte(s);
+  if (!t || t.etat === 'nodata') return null;
+  if (t.etat === 'connecte') {
+    const n = Number((vizRun(s) || {}).anomalies) || 0;
+    return vizAnom(s) ? { texte: String(n || '!'), ton: 'err' } : null;
+  }
+  return { texte: t.etat === 'absent' ? 'absent' : 'à faire', ton: 'warn' };
+}
+
 function ongletsNav() {
   const nav = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Sections du site' });
-  ONGLETS.forEach(([slug, label]) => {
+  ONGLETS.forEach(([slug, label, pastille]) => {
     const actif = slug === ONGLET;
     const b = h('button', {
       type: 'button', class: 'tab' + (actif ? ' active' : ''),
       role: 'tab', id: 'sitetab-' + slug, 'aria-controls': 'site-tab',
       'aria-selected': actif ? 'true' : 'false', tabindex: actif ? '0' : '-1',
-      text: label,
-    });
+    }, h('span', { text: label }));
+    const p = (pastille && CUR) ? pastille(CUR) : null;
+    // La pastille est décorative : son sens est déjà dans le libellé du volet,
+    // et un lecteur d'écran qui annoncerait « VizProof 3 » ne dirait pas quoi.
+    if (p) b.append(h('span', { class: 'tab-p ' + p.ton, 'aria-hidden': 'true', text: p.texte }));
     b.onclick = () => allerOnglet(slug);
     b.onkeydown = e => {
       const pas = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -673,6 +695,7 @@ function dessinerOnglet() {
   if (!cible) return;
   if (ONGLET === 'extensions') mount(cible, ongletExtensions(s));
   else if (ONGLET === 'securite') mount(cible, ongletSecurite(s));
+  else if (ONGLET === 'vizproof') mount(cible, ongletVizproof(s));
   else if (ONGLET === 'sauvegardes') mount(cible, ongletSauvegardes(s));
   else if (ONGLET === 'historique') mount(cible, ongletHistorique(s));
   else mount(cible, ongletApercu(s));
@@ -681,6 +704,85 @@ function dessinerOnglet() {
   if (ONGLET === 'apercu' && s.via === 'rest') loadWpCred(s.srv, s.domain);
   if (ONGLET === 'securite') { chargerAdmins(); chargerChecksums(); chargerPhpErrors(); }
   if (ONGLET === 'historique') loadTimeline(s.srv, s.domain);
+  if (ONGLET === 'vizproof') brancherViz();
+}
+
+/* ---- onglet VizProof ------------------------------------------------------
+   VizProof répond à une question qu'aucun autre volet ne pose : est-ce que le
+   site RESSEMBLE toujours à ce qu'il était ? Une mise à jour peut réussir,
+   n'écrire aucune erreur dans les journaux, et casser une page.
+
+   Le bloc d'état vient de components/viz.js — c'est le même que celui de la
+   modale de liaison, et il traite déjà les cinq états (absent, inactif, trop
+   ancienne, non reliée, reliée). Ce que le volet ajoute, c'est ce qui manquait :
+   les deux actions de contrôle visuel, jusque-là enterrées dans le menu
+   Actions, et une phrase qui dit à quoi tout cela sert. */
+function ongletVizproof(s) {
+  const blocs = [];
+  const viz = vizBlocEl(s, { titre: false });
+
+  blocs.push(h('section', { class: 'sitesec', id: 'site-vizbloc' },
+    h('h3', { text: 'Contrôle visuel' }),
+    viz || h('p', { class: 'hint hint-tight',
+      text: 'État inconnu : aucun inventaire d’extensions pour ce site.' })));
+
+  const t = vizEtatTexte(s);
+  const relie = t && t.etat === 'connecte';
+  const rest = s.via === 'rest';
+
+  /* Une extension trop ancienne pour être pilotée, alors que la mise à jour
+     est disponible et à un clic dans l'onglet d'à côté : le volet doit porter
+     ce clic. Sans ça, la phrase « mettez-la à jour » envoie chercher ailleurs
+     un bouton qui existe déjà. */
+  const majViz = (s.plugins_updates_list || []).find(x => x && x.name === 'vizproof-timeline');
+  if (t && (t.etat === 'nocli' || t.etat === 'nonconnecte') && majViz && !rest) {
+    const b = h('button', { type: 'button', class: 'btn primary' },
+      iconEl('arrow-up'), 'Mettre à jour vizproof-timeline vers ' + (majViz.to || '?'));
+    b.dataset.act = 'plugin_update';
+    b.dataset.arg = 'vizproof-timeline';
+    blocs.push(h('section', { class: 'sitesec' },
+      h('h3', { text: 'Débloquer' }),
+      h('p', { class: 'hint hint-tight' },
+        'La version installée (', h('code', { text: majViz.from || t.etat }),
+        ') n’expose pas la commande que le dashboard utilise. La mise à jour vers ',
+        h('b', { text: majViz.to || '?' }), ' suffit à rendre la liaison possible.'),
+      h('div', { class: 'actions mt2' }, b)));
+  }
+
+  if (relie && !rest) {
+    const base = h('button', { type: 'button', class: 'btn' }, iconEl('scan-eye'), 'Capturer une baseline');
+    base.dataset.act = 'viz_baseline';
+    const scan = h('button', { type: 'button', class: 'btn primary' }, iconEl('scan-eye'), 'Lancer un scan visuel');
+    scan.dataset.act = 'viz_scan';
+    blocs.push(h('section', { class: 'sitesec', id: 'site-vizact' },
+      h('h3', { text: 'Contrôler maintenant' }),
+      h('p', { class: 'hint hint-tight' },
+        'La ', h('b', { text: 'baseline' }), ' fige l’apparence de référence ; le ',
+        h('b', { text: 'scan' }), ' compare le rendu actuel à cette référence et signale ce qui a bougé. '
+        + 'C’est ce que fait la MAJ sûre avant et après une mise à jour.'),
+      h('div', { class: 'actions mt2' }, base, scan)));
+  }
+
+  blocs.push(h('section', { class: 'sitesec' },
+    h('h3', { text: 'À quoi ça sert' }),
+    h('p', { class: 'hint hint-loose' },
+      'Les autres volets disent ce que le site ', h('b', { text: 'contient' }),
+      ' — versions, failles, sauvegardes, erreurs PHP. Aucun ne dit ce qu’un visiteur ',
+      h('b', { text: 'voit' }), '. Une mise à jour peut réussir sans une ligne d’erreur et '
+      + 'vider une page de son contenu : c’est exactement ce que le contrôle visuel rattrape.')));
+
+  return blocs;
+}
+
+/* Branchements du volet VizProof : les boutons `data-act` passent par la
+   confirmation commune, et le résumé du dernier rapport arrive après coup —
+   une requête en tâche de fond dont l'échec ne se voit pas. */
+function brancherViz() {
+  const s = CUR;
+  if (!s) return;
+  document.querySelectorAll('#site-tab [data-act]').forEach(b => { b.onclick = () => confirmRun(b); });
+  const slot = document.querySelector('#site-tab .vzr-slot');
+  if (slot) chargerVizRapport(s, slot).catch(() => {});
 }
 
 /* ---- onglet Aperçu -------------------------------------------------------- */
@@ -690,16 +792,6 @@ function ongletApercu(s) {
   blocs.push(h('section', { class: 'sitesec', id: 'site-incidents' },
     h('h3', { text: 'À traiter sur ce site' }),
     incidentsEl()));
-
-  const viz = vizBlocEl(s);
-  if (viz) {
-    blocs.push(h('section', { class: 'sitesec' }, viz));
-    viz.querySelectorAll('[data-act]').forEach(b => { b.onclick = () => confirmRun(b); });
-    /* Le détail du dernier rapport arrive APRÈS le rendu : une requête, en
-       tâche de fond, dont l'échec ne se voit pas (le bloc reste tel quel). */
-    const slot = viz.querySelector('.vzr-slot');
-    if (slot) chargerVizRapport(s, slot).catch(() => {});
-  }
 
   if (s.via === 'rest') {
     blocs.push(h('section', { class: 'sitesec' },
