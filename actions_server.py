@@ -2474,10 +2474,14 @@ def viz_report_read(server_name, domain, run=""):
 
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
                     with_core=False, dry_run=False, viz_rollback=None,
-                    themes=None, with_themes=True):
+                    themes=None, with_themes=True, with_plugins=True):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
+    `with_plugins=False` les laisse entièrement de côté — le pendant de
+    `with_themes`, indispensable pour une MAJ sûre visant UN SEUL thème (une
+    liste vide de slugs ne peut pas dire « aucune extension » : elle est fausse,
+    donc indistincte de « toutes »).
     `themes` None = tous les thèmes ayant une mise à jour en attente ; une liste
     restreint à ces slugs ; `with_themes=False` les laisse entièrement de côté.
     Les thèmes suivent exactement le même parcours que les extensions :
@@ -2536,7 +2540,9 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
             return
         pending = [l.strip() for l in (out or "").splitlines()
                    if l.strip() and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", l.strip())]
-        if slugs:
+        if not with_plugins:
+            pending = []
+        elif slugs:
             pending = [p for p in pending if p in slugs]
         gelees, gelees_th = _frozen_lists(domain)
         if gelees:
@@ -7585,7 +7591,8 @@ class Handler(BaseHTTPRequestHandler):
                                    bool(body.get("viz", True)), bool(body.get("core", False)),
                                    bool(body.get("dry_run", False)),
                                    None if vrb is None else bool(vrb),
-                                   themes, bool(body.get("with_themes", True))),
+                                   themes, bool(body.get("with_themes", True)),
+                                   bool(body.get("with_plugins", True))),
                              daemon=True).start()
             return self._send(200, {"ok": True, "running": True})
 

@@ -1027,11 +1027,17 @@ function ligneExtension(s, p, maj) {
     h('td', { class: 'pcell' }));
   const cell = tr.lastElementChild;
   if (maj) {
-    const b = h('button', { type: 'button', class: 'btn sm', text: 'MAJ' });
+    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
     b.dataset.act = 'plugin_update';
     b.dataset.arg = p.name;
     b.onclick = () => confirmRun(b);
-    cell.append(b);
+    /* Le même geste, avec le filet : sauvegarde, archive de cette seule
+       extension, contrôle visuel, et un point de rétablissement à la clé. */
+    const sb = h('button', { type: 'button', class: 'btn sm',
+      title: 'Sauvegarde, archive cette extension, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
+      iconEl('shield-check'), 'sûre');
+    sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { slug: p.name });
+    cell.append(b, sb);
   }
   const gel = h('button', {
     type: 'button', class: 'btn sm pfreeze',
@@ -1088,11 +1094,15 @@ function ligneTheme(s, t, maj) {
     h('td', { class: 'pcell' }));
   const cell = tr.lastElementChild;
   if (maj) {
-    const b = h('button', { type: 'button', class: 'btn sm', text: 'MAJ' });
+    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
     b.dataset.act = 'theme_update';
     b.dataset.arg = t.name;
     b.onclick = () => confirmRun(b);
-    cell.append(b);
+    const sb = h('button', { type: 'button', class: 'btn sm',
+      title: 'Sauvegarde, archive ce thème, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
+      iconEl('shield-check'), 'sûre');
+    sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { theme: t.name });
+    cell.append(b, sb);
   }
   const gel = h('button', {
     type: 'button', class: 'btn sm pfreeze',
@@ -1165,10 +1175,10 @@ function ongletExtensions(s) {
        boutons se ressemblent trop pour que la différence aille sans dire. */
     aMaj.length
       ? h('p', { class: 'hint hint-tight' },
-        'Ces boutons mettent à jour ', h('b', { text: 'sans sauvegarde' }),
-        ' — rien à rétablir si le site casse. La ',
-        h('b', { text: 'MAJ sûre' }), ' en haut de page sauvegarde, archive les fichiers '
-        + 'et sait revenir en arrière.')
+        h('b', { text: 'MAJ' }), ' met à jour tout de suite, ',
+        h('b', { text: 'sans sauvegarde' }), ' — rien à rétablir si le site casse. ',
+        h('b', { text: 'sûre' }), ' sauvegarde, archive ce seul composant, contrôle le rendu '
+        + 'et laisse un point de rétablissement ; comptez une à deux minutes.')
       : null,
     aMaj.length
       ? h('table', { class: 'ptable' }, h('tbody', {}, aMaj.map(p => ligneExtension(s, p, true))))
@@ -1725,10 +1735,17 @@ async function loadSafeStatus(dom) {
   }
 }
 
-async function startSafeUpdate(srv, dom, btn) {
+/* `cible` : `{slug}` pour une seule extension, `{theme}` pour un seul thème,
+   rien pour tout ce qui attend. Le backend sait viser depuis toujours — c'est
+   l'interface qui ne demandait jamais, et laissait donc le choix entre « une
+   extension sans filet » et « tout le site avec filet ». */
+async function startSafeUpdate(srv, dom, btn, cible) {
   const withCore = btn.dataset.core === '1';
+  const un = cible && (cible.slug || cible.theme);
   await ensureSettings();
-  let msg = `Mise à jour sûre de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
+  let msg = un
+    ? `Mise à jour sûre de <b>${H(un)}</b> sur <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ${cible.theme ? 'ce thème' : 'cette extension'} → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.<br><br>Rien d'autre ne sera mis à jour.`
+    : `Mise à jour sûre de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
   if (withCore) msg += `<br><br>${icon('triangle-alert')} Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
   msg += `<br><br>L'opération peut durer plusieurs minutes.`;
   // La case est pré-remplie avec le réglage, mais reste modifiable POUR CETTE
@@ -1750,7 +1767,12 @@ async function startSafeUpdate(srv, dom, btn) {
   btn.disabled = true;
   btn.textContent = 'en cours…';
   let r;
-  try { r = await api('/api/actions/safe_update', { server: srv, domain: dom, backup: true, viz: true, core: withCore, viz_rollback: rep.rb }); }
+  const corpsReq = { server: srv, domain: dom, backup: true, viz: true, core: withCore, viz_rollback: rep.rb };
+  if (cible && cible.slug) { corpsReq.slugs = [cible.slug]; corpsReq.with_themes = false; }
+  // Un seul thème : `slugs: []` ne dirait pas « aucune extension » (une liste
+  // vide est fausse, donc indistincte de « toutes ») — d'où `with_plugins`.
+  if (cible && cible.theme) { corpsReq.themes = [cible.theme]; corpsReq.with_plugins = false; }
+  try { r = await api('/api/actions/safe_update', corpsReq); }
   catch (e) { r = { error: 'lancement impossible : ' + e }; }
   if (!r || r.error) {
     askInfo('Mise à jour sûre impossible', H((r && r.error) || 'réponse vide'));

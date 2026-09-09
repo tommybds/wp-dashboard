@@ -3793,3 +3793,48 @@ class TestAgentRestRoutes(AgentRestBase):
                                                           "keep_plugin": False})
         self.assertEqual(st, 200)
         self.assertTrue(j["ok"])
+
+
+class MajSureCiblee(unittest.TestCase):
+    """MAJ sûre visant UN seul composant.
+
+    Le backend savait viser depuis toujours (`slugs`, `themes`) ; l'interface ne
+    demandait jamais, et laissait donc le choix entre « une extension sans
+    filet » et « tout le site avec filet ». Un cas ne s'exprimait pas du tout :
+    un seul THÈME, parce qu'une liste de slugs vide est fausse et donc
+    indistincte de « toutes les extensions » — d'où `with_plugins`.
+    """
+
+    PENDING = ["akismet", "jetpack", "wordfence"]
+
+    def _pending(self, slugs=None, with_plugins=True):
+        """Reproduit le filtrage de safe_update_run sur les extensions."""
+        pending = list(self.PENDING)
+        if not with_plugins:
+            pending = []
+        elif slugs:
+            pending = [p for p in pending if p in slugs]
+        return pending
+
+    def test_sans_precision_tout_passe(self):
+        self.assertEqual(self._pending(), self.PENDING)
+
+    def test_une_seule_extension(self):
+        self.assertEqual(self._pending(slugs=["jetpack"]), ["jetpack"])
+
+    def test_liste_vide_ne_veut_pas_dire_aucune(self):
+        """Le piège : `[]` est faux, donc il ne peut pas exprimer « aucune »."""
+        self.assertEqual(self._pending(slugs=[]), self.PENDING)
+
+    def test_with_plugins_faux_exclut_tout(self):
+        self.assertEqual(self._pending(with_plugins=False), [])
+        self.assertEqual(self._pending(slugs=["jetpack"], with_plugins=False), [])
+
+    def test_signature_expose_with_plugins(self):
+        """La route doit pouvoir le transmettre : sans le paramètre, viser un
+        seul thème resterait impossible."""
+        import inspect
+        p = inspect.signature(A.safe_update_run).parameters
+        self.assertIn("with_plugins", p)
+        self.assertIs(p["with_plugins"].default, True)
+        self.assertIn("with_themes", p)
