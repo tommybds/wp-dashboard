@@ -283,12 +283,28 @@ function vzPct(v) {
    seul changement qui mérite une décision tombait en bas du tableau. */
 function vzPoidsCause(x) { return String(x.cause || '').includes('seo') ? 0 : 1; }
 
+/* Les deux écrans d'une même page se retrouvent CÔTE À CÔTE : un tri purement
+   par gravité les séparait (« accueil mobile », « candidats mobile », « accueil
+   desktop »…), alors que la question qu'on se pose est « qu'est-ce qui a bougé
+   sur CETTE page ». Les groupes, eux, restent classés par gravité : la page la
+   plus atteinte en premier. */
 function vizReportLignes(rep) {
   const it = (Array.isArray(rep && rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
-  return it.slice().sort((a, b) =>
-    ((VZ_ORDRE[a.status] ?? 9) - (VZ_ORDRE[b.status] ?? 9))
-    || (vzPoidsCause(a) - vzPoidsCause(b))
-    || (Number(b.diff_percent) || 0) - (Number(a.diff_percent) || 0));
+  const rang = x => [(VZ_ORDRE[x.status] ?? 9), vzPoidsCause(x), -(Number(x.diff_percent) || 0)];
+  const groupes = new Map();
+  it.forEach(x => {
+    const cle = String(x.page || x.url || '');
+    if (!groupes.has(cle)) groupes.set(cle, []);
+    groupes.get(cle).push(x);
+  });
+  const cmp = (a, b) => { const ra = rang(a), rb = rang(b);
+    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] - rb[i];
+    return 0; };
+  const lots = [...groupes.values()];
+  lots.forEach(l => l.sort(cmp));
+  // Une page vaut le rang de sa ligne la plus grave.
+  lots.sort((a, b) => cmp(a[0], b[0]));
+  return lots.flat();
 }
 
 /* `cause` (vizproof-timeline 1.3.10) : « pixel », « seo », « a11y », ou une
@@ -317,12 +333,14 @@ function vzSeoHtml(x) {
     + ` → <b>${H(String(c.after ?? '—') || '(vide)')}</b></div>`).join('') + '</td></tr>';
 }
 
-function vzLigneHtml(x) {
+function vzLigneHtml(x, suite) {
   const [c, l] = VZ_ST[x.status] || ['mut', String(x.status || '?')];
   const u = safeUrl(x.url), nom = String(x.page || '') || u || '—';
-  const page = u ? `<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(nom)}</a>` : H(nom);
+  // `suite` : deuxième écran de la même page — la cellule reste vide, le
+  // groupe se lit d'un coup d'œil au lieu de répéter le titre.
+  const page = suite ? '' : (u ? `<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(nom)}</a>` : H(nom));
   const lib = String(x.label || '');
-  return `<tr><td>${page}</td><td>${H(x.viewport || '—')}</td>`
+  return `<tr${suite ? ' class="vzr-suite"' : ''}><td>${page}</td><td>${H(x.viewport || '—')}</td>`
     + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
     + `<td><span class="pill ${c}">${H(l)}</span>`
     + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '')
@@ -390,7 +408,9 @@ export function vizReportHtml(rep, opts) {
   const top = String((rep.summary || {}).top_page || '');
   const tab = '<div class="vzr-w"><table class="vzr-t">'
     + '<thead><tr><th>Page</th><th>Écran</th><th>Écart</th><th>Statut</th></tr></thead>'
-    + '<tbody>' + lignes.map(vzLigneHtml).join('') + '</tbody></table></div>'
+    + '<tbody>' + lignes.map((x, i) => vzLigneHtml(
+      x, i > 0 && String(lignes[i - 1].page || '') === String(x.page || ''))).join('')
+    + '</tbody></table></div>'
     + (rep.has_more ? `<div class="vzr-s muted">liste tronquée — ${H(String(vzNb(rep.total_items)))} lignes au total, voir le rapport.</div>` : '')
     + (top ? `<div class="vzr-s muted">Page la plus impactée : <b>${H(top)}</b></div>` : '');
   if (!o.replie && lignes.length <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
