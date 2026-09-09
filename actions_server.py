@@ -4470,12 +4470,20 @@ def inc_php_fatal(index, now):
             except (TypeError, ValueError):
                 n = 1
             trace = [str(c) for c in (g.get("trace") or []) if str(c or "").strip()]
+            # Une fatale déclenchée par un robot qui appelle un fichier du cœur
+            # en direct, ou qui sonde /batch/v1, n'est pas un défaut du site : la
+            # page publique n'a jamais été touchée et rien n'est à corriger. Elle
+            # DESCEND en « à planifier » plutôt que de disparaître — le volume
+            # dit quelque chose du bruit que le site encaisse — mais elle cesse
+            # d'occuper la file des urgences, où elle ne pouvait qu'user.
+            famille = str(g.get("famille") or "")
             out.append(make_incident(
-                "php_fatal", "critical", dom,
+                "php_fatal", "warning" if famille else "critical", dom,
                 f"{g.get('severity') or 'Fatal error'} sur {dom}",
                 f"{g.get('message') or 'erreur sans message'} — {ou} (×{n})",
                 site=dom, server=server, arg=ou,
                 since=parse_ts(g.get("first")), now=now,
+                bucket="plan" if famille else "now",
                 link={"tab": "securite", "sub": "phperrors"},
                 extra={"trace": trace,
                        "trace_truncated": bool(g.get("trace_truncated")),
@@ -4484,6 +4492,10 @@ def inc_php_fatal(index, now):
                        # qui entre dans l'empreinte d'acquittement, et le
                        # compteur ne doit PAS en faire partie.
                        "message": str(g.get("message") or ""),
+                       # La famille voyage jusqu'à l'écran : c'est elle qui
+                       # décide du « Que faire », lequel accusait une extension
+                       # là où le fautif est un robot.
+                       "famille": famille,
                        "count": n, "first": g.get("first") or "",
                        "last": g.get("last") or "",
                        "file": str(g.get("short") or g.get("file") or ""),

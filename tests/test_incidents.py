@@ -23,7 +23,8 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 
-import actions_server as A            # noqa: E402
+import actions_server as A
+import phperrors            # noqa: E402
 
 HEURE = 3600.0
 
@@ -1671,3 +1672,70 @@ class VulnCritiqueSansCorrectif(unittest.TestCase):
         for i in self._incidents():
             self.assertEqual(i["severity"], "critical")
             self.assertEqual(i["kind"], "vuln_critical_unfixed")
+
+
+class FatalesDeclencheesDeLExterieur(unittest.TestCase):
+    """Une fatale provoquée par un robot n'est pas un défaut du site.
+
+    Un appel direct à /wp-includes/blocks/index.php exécute un fichier du cœur
+    hors de WordPress : ABSPATH n'existe pas, PHP s'arrête. La page publique n'a
+    jamais été touchée et rien n'est à corriger — mais la file affichait quatre
+    « critiques » de cette nature sur dix, et le « Que faire » accusait une
+    extension.
+    """
+
+    def _famille(self, fichier, message, trace=()):
+        return phperrors.famille_bruit({"file": fichier, "message": message, "trace": list(trace)})
+
+    def test_fichier_du_coeur_sans_appelant(self):
+        self.assertEqual(self._famille(
+            "/x/wp-settings.php", 'Uncaught Error: Undefined constant "ABSPATH"', ["#0 {main}"]),
+            "acces_direct")
+
+    def test_constantes_non_resolues(self):
+        """« ABSPATHWPINC » : deux constantes vides collées, signature d'un
+        fichier du cœur appelé seul — même sans pile d'appels."""
+        self.assertEqual(self._famille(
+            "/x/wp-includes/blocks/index.php",
+            "require(): Failed opening required 'ABSPATHWPINC/blocks/legacy-widget.php'"),
+            "acces_direct")
+
+    def test_route_batch_sondee(self):
+        self.assertEqual(self._famille(
+            "/x/wp-includes/rest-api/class-wp-rest-server.php",
+            "Call to undefined method WP_Error::set_url_params()",
+            ["#0 /x/class-wp-rest-server.php(1298): WP_REST_Server->serve_batch_request_v1()"]),
+            "rest_batch")
+
+    def test_vrai_defaut_du_site_intact(self):
+        """Le fichier appartient à une extension : rien à déclasser."""
+        self.assertEqual(self._famille(
+            "/x/wp-content/plugins/divi-builder/core/components/PageResource.php",
+            "Maximum execution time of 30 seconds exceeded"), "")
+
+    def test_coeur_avec_un_appelant_reste_un_defaut(self):
+        """Une extension figure dans la pile : l'erreur part bien du site."""
+        self.assertEqual(self._famille(
+            "/x/wp-includes/class-wp-hook.php", "Uncaught TypeError: foo()",
+            ["#0 /x/wp-content/plugins/truc/a.php(12): foo()", "#1 {main}"]), "")
+
+    def test_incident_declasse_mais_conserve(self):
+        """Déclassée, pas supprimée : le volume dit quelque chose du bruit
+        encaissé, mais il quitte la file des urgences."""
+        errs = {"sites": [{"domain": "a.fr", "groups": [
+            {"severity": "Fatal error", "message": 'Undefined constant "ABSPATH"',
+             "file": "/x/wp-settings.php", "short": "wp-settings.php", "line": 34,
+             "count": 1, "first": "2026-09-09 05:47", "trace": ["#0 {main}"],
+             "famille": "acces_direct"},
+            {"severity": "Fatal error", "message": "Maximum execution time exceeded",
+             "file": "/x/wp-content/plugins/divi/a.php", "short": "a.php", "line": 9,
+             "count": 1, "first": "2026-09-09 07:07", "trace": []},
+        ]}]}
+        index = {"a.fr": ("srv1", {"domain": "a.fr", "via": "ssh"})}
+        with mock.patch.object(A, "incident_json", return_value=errs):
+            out = A.inc_php_fatal(index, time.time())
+        par = {i["extra"]["famille"]: i for i in out}
+        self.assertEqual(len(out), 2)
+        self.assertEqual((par["acces_direct"]["severity"], par["acces_direct"]["bucket"]),
+                         ("warning", "plan"))
+        self.assertEqual((par[""]["severity"], par[""]["bucket"]), ("critical", "now"))

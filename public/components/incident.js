@@ -119,7 +119,29 @@ function queFaire(kind, d) {
   }[kind] || '';
 }
 
+/* Familles calculées par le collecteur (phperrors.famille_bruit) : une fatale
+   déclenchée de l'extérieur, qui ne dit rien de l'état du site. Le texte par
+   défaut accusait « une extension ou un thème » — faux, et coûteux : on cherche
+   un coupable qui n'existe pas. */
+const PHP_BRUIT = {
+  acces_direct:
+    "Personne n'a cassé quoi que ce soit : un robot a demandé ce fichier du cœur "
+    + "DIRECTEMENT, sans passer par WordPress. Hors de son contexte, ABSPATH n'existe "
+    + "pas, aucune fonction n'est chargée, et PHP s'arrête — la page publique, elle, "
+    + "n'a jamais été touchée. Rien à corriger dans le site. Pour faire taire le bruit, "
+    + "refusez l'accès direct aux fichiers du cœur au niveau du serveur web "
+    + "(wp-includes/ et wp-admin/includes/ n'ont aucune raison d'être appelés depuis "
+    + "l'extérieur).",
+  rest_batch:
+    "Un robot sonde la route REST /batch/v1. Le cœur lui renvoie une erreur, puis la "
+    + "traite comme une requête — d'où la fatale. Elle vient de l'extérieur : le site "
+    + "n'a rien à corriger. Si le volume gêne, fermez /wp-json/batch/v1 aux visiteurs "
+    + "non connectés ; aucune extension courante n'en a besoin.",
+};
+
 function queFairePhp(kind, d) {
+  const bruit = PHP_BRUIT[String((d.extra || {}).famille || '')];
+  if (bruit) return bruit;
   const o = origine(d.file);
   if (kind === 'php_warning') {
     return "Un avertissement n'interrompt pas la page, mais il remplit les journaux et "
@@ -523,7 +545,7 @@ export function erreurPhpEl(g, chips) {
     kind: fatale ? 'php_fatal' : 'php_warning', message: String(g.message || ''),
     file: ou, line: g.line || 0, count: g.count || 0,
     first: g.first || '', last: g.last || '',
-    trace: g.trace, tronquee: !!g.trace_truncated, extra: {},
+    trace: g.trace, tronquee: !!g.trace_truncated, extra: { famille: g.famille || '' },
   });
   const resume = [
     h('div', { class: 'inc-m' },

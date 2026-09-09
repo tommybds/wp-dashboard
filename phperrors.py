@@ -432,6 +432,53 @@ def remote_scan(server, domains, hours):
     return lignes, message_illisibles(illisibles, lus), tronques
 
 
+# ---------------------------------------------------------------------------
+#  Familles d'erreurs qui ne disent RIEN du site
+#
+#  Un robot qui demande directement /wp-includes/blocks/index.php ou
+#  /wp-admin/includes/admin.php exécute un fichier du cœur hors de WordPress :
+#  ABSPATH n'est pas défini, aucune fonction n'est chargée, PHP s'arrête. La
+#  fatale est réelle, la faute n'est pas au site — et la page publique n'a
+#  jamais été touchée. Les signes, tous nécessaires : un fichier du cœur, et une
+#  pile d'appels vide ou réduite à « #0 {main} », c'est-à-dire aucun appelant.
+#
+#  Deuxième famille, même nature : la route REST /batch/v1 sondée par un robot.
+#  Le cœur renvoie un WP_Error, puis l'appelle comme une requête.
+#
+#  Les laisser en « critique » remplit la file d'alertes que personne ne peut
+#  corriger, et le « Que faire » accuse une extension à tort.
+# ---------------------------------------------------------------------------
+RE_CŒUR = re.compile(r"(^|/)(wp-includes|wp-admin)/|/wp-[a-z-]+\.php$")
+RE_MAIN = re.compile(r"^#0\s*\{main\}$")
+RE_BATCH = re.compile(r"serve_batch_request_v1|/batch/v1", re.I)
+RE_HORS_WP = re.compile(
+    r"Undefined constant\s+\"?ABSPATH"          # wp-settings.php appelé seul
+    r"|ABSPATHWPINC"                            # ABSPATH . WPINC non résolus
+    r"|Failed opening required\s+'ABSPATH", re.I)
+
+
+def famille_bruit(groupe):
+    """Famille d'une erreur qui ne relève pas du site → identifiant, ou ''.
+
+    `acces_direct` : fichier du cœur exécuté sans WordPress autour.
+    `rest_batch`   : la route REST /batch/v1 sondée de l'extérieur.
+    """
+    fichier = str(groupe.get("file") or "")
+    message = str(groupe.get("message") or "")
+    trace = [str(c).strip() for c in (groupe.get("trace") or []) if str(c or "").strip()]
+    cadres = [c for c in trace if not c.startswith(("Stack trace", "thrown in"))]
+
+    if RE_BATCH.search(message) or any(RE_BATCH.search(c) for c in cadres):
+        return "rest_batch"
+    if not RE_CŒUR.search(fichier):
+        return ""
+    # Aucun appelant : la requête n'est pas passée par index.php.
+    if not cadres or all(RE_MAIN.match(c) for c in cadres):
+        return "acces_direct"
+    # Le message seul suffit quand il nomme une constante du cœur non définie.
+    return "acces_direct" if RE_HORS_WP.search(message) else ""
+
+
 def agrege(lignes):
     """Regroupe par (site, fichier, ligne, message) avec compteur et bornes.
 
@@ -461,6 +508,10 @@ def agrege(lignes):
     for dom, groupes in par_site.items():
         lst = sorted(groupes.values(),
                      key=lambda g: (-SEV_RANK.get(g["severity"], 0), -g["count"]))
+        for g in lst:
+            f = famille_bruit(g)
+            if f:
+                g["famille"] = f
         sites.append({
             "domain": dom, "total": sum(g["count"] for g in lst),
             "groups": lst[:MAX_PER_SITE],
