@@ -822,7 +822,7 @@ export async function openVizPages(s) {
   if (!s) return;
   PG.site = s;
   PG.pages = []; PG.sel = new Set(); PG.scope = 'selected_pages';
-  PG.limit = 20; PG.source = ''; PG.enr = false;
+  PG.limit = 20; PG.source = '';
   pgEl('vz-title').textContent = 'Pages surveillées · ' + (kName(s) || s.domain);
   montrerEtape('pages');
   pgEl('vz-pg-intro').textContent = 'Chargement des pages publiées du site…';
@@ -968,18 +968,25 @@ async function enregistrerPages() {
   catch (e) { j = { ok: false, error: String(e) }; }
   setIdle(b, 'Enregistrer');
   if (!j.ok) { pgDire('err', String(j.error || 'échec').slice(-200)); return; }
-  PG.enr = true;
-  if (Array.isArray(j.pages) && j.pages.length) PG.pages = j.pages;
-  PG.sel = new Set((j.selected || []).filter(x => Number.isInteger(x) && x > 0));
-  PG.scope = j.scope === 'site' ? 'site' : 'selected_pages';
-  rendrePages();
-  pgDire('ok', 'sélection enregistrée');
-  pgEl('vz-pg-base').hidden = false;
-  pgEl('vz-pg-note').textContent += ' Étape suivante : capturer une baseline — '
-    + 'le témoin « avant » auquel les prochains scans seront comparés. Sans elle, '
-    + 'le premier contrôle n’a rien à quoi se comparer.';
+
+  /* La modale se ferme : le geste demandé est fait. Elle restait ouverte pour
+     proposer la baseline, en allongeant sa propre note d'une phrase — on lisait
+     « sélection enregistrée » devant un écran qui n'avait pas bougé, sans savoir
+     s'il restait quelque chose à faire. La baseline a désormais son bouton sur
+     l'onglet VizProof du site, qui est sa place. */
+  const n = (j.scope === 'site') ? 0 : (j.selected || []).length;
+  closeViz();
+  NOTIF.toast({
+    label: 'Pages surveillées · ' + (kName(s) || s.domain),
+    detail: (j.scope === 'site' ? 'tout le site sera photographié' : n + ' page' + (n > 1 ? 's' : '') + ' surveillée' + (n > 1 ? 's' : ''))
+      + ' — étape suivante : capturer une baseline, le témoin « avant » auquel '
+      + 'les prochains scans seront comparés.',
+  });
+
   /* Le re-scan rafraîchit `pages` dans l'inventaire : sans lui, la colonne du
-     Parc et le bloc de l'Aperçu afficheraient encore l'ancien décompte. */
+     Parc et l'onglet VizProof afficheraient encore l'ancien décompte. Il tourne
+     APRÈS la fermeture — rien n'attend son résultat pour être exact à l'écran
+     suivant, et le faire attendre retenait la modale pour rien. */
   try {
     await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'rescan', arg: null });
     await loadFleet();
