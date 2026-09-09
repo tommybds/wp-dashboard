@@ -79,6 +79,32 @@ export function vizState(s) {
   return (vizConfigured(s) && v.connected) ? 'connecte' : 'nonconnecte';
 }
 function vizVersion(s) { const v = vizInfo(s), p = vizOf(s); return (v && v.version) || (p && p.version) || '?'; }
+/* Comparaison de versions, chiffre à chiffre : « 1.3.9 » est ANTÉRIEUR à
+   « 1.3.12 », ce qu'une comparaison de chaînes affirme exactement à l'envers.
+   C'est le seul endroit du front qui en a besoin ; il n'y a pas de helper. */
+function vizVersionAvant(v, cible) {
+  const a = String(v || '').split('.').map(n => parseInt(n, 10) || 0);
+  const b = String(cible || '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+/* Avant la 1.3.12, promouvoir un scan en référence ne promouvait QUE la
+   première page : les suivantes repartaient de leur dernière capture au scan
+   d'après, donc comparaient à elles-mêmes. Un site qui surveille une seule page
+   n'est pas concerné — d'où le test sur le nombre de pages. */
+const VIZ_BASELINE_MULTIPAGE = '1.3.12';
+export function vizBaselinePartielle(s) {
+  if (vizState(s) !== 'connecte') return null;
+  const n = Number((vizInfo(s) || {}).pages) || 0;
+  if (n < 2) return null;
+  const v = vizVersion(s);
+  return vizVersionAvant(v, VIZ_BASELINE_MULTIPAGE) ? { version: v, pages: n } : null;
+}
+
 /** Connectable d'ici ? Il faut du SSH : l'agent REST est en lecture seule. */
 function vizConnectable(s) { return s.via !== 'rest' && ['nonconnecte', 'connecte'].includes(vizState(s)); }
 function vizAdminUrl(s) {
@@ -213,6 +239,14 @@ function vizReport(v) {
 /* « 2 pages scannées · 1 avec différence · 0 échec, 2 à vérifier ». Un run
    BASELINE n'a rien à comparer : le dire, plutôt qu'aligner des zéros qui se
    lisent comme « tout va bien ». */
+/* « Ce run sert de référence » s'écrit de deux façons selon son histoire :
+   `is_baseline` pour un run jamais comparé, `promoted_as_baseline` (1.3.12)
+   pour un scan promu après coup. Les distinguer à l'affichage n'apprendrait
+   rien ; les confondre dans le code, si — d'où cette lecture unique. */
+function vizEstReference(rep) {
+  return !!(rep && (rep.is_baseline || rep.promoted_as_baseline));
+}
+
 function vizReportResume(rep) {
   if (!rep) return '';
   const lignes = Array.isArray(rep.items) ? rep.items.length : 0;
@@ -221,10 +255,10 @@ function vizReportResume(rep) {
      PORTE des lignes existe (vu sur le parc : 2 lignes, totals warn = 2) — et
      l'écran affichait alors « rien à comparer » au-dessus d'un tableau qu'il
      venait de jeter. On ne masque plus des données qui sont là. */
-  if (rep.is_baseline && !lignes) return 'baseline de référence — rien à comparer';
+  if (vizEstReference(rep) && !lignes) return 'baseline de référence — rien à comparer';
   const s = rep.summary || {}, t = rep.totals || {};
   const n = vzNb(s.pages_scanned), c = vzNb(s.pages_changed);
-  return (rep.is_baseline ? 'run de référence · ' : '')
+  return (vizEstReference(rep) ? 'run de référence · ' : '')
     + [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
       c + ' avec différence',
       vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + vzNb(t.warn) + ' à vérifier',
@@ -536,10 +570,10 @@ export function vizPhraseLongue(v) {
   // témoin pris avant) : l'accoler donnait « anomalies détectées (5) · baseline
   // de référence — rien à comparer ». Avec des lignes, le résumé porte bien sur
   // ce run et vaut la peine d'être dit.
-  if (!r || (r.is_baseline && !(Array.isArray(r.items) && r.items.length))) return p;
+  if (!r || (vizEstReference(r) && !(Array.isArray(r.items) && r.items.length))) return p;
   const top = String((r.summary || {}).top_page || '');
   return p + ' · ' + vizReportResume(r)
-    + (top && !r.is_baseline ? ' · page la plus impactée : ' + top : '');
+    + (top && !vizEstReference(r) ? ' · page la plus impactée : ' + top : '');
 }
 export function vizConsoleLigne(v) {
   if (!v) return '';

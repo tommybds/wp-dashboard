@@ -38,7 +38,7 @@ import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
-  vizAnom, vizGravite} from '../components/viz.js';
+  vizAnom, vizGravite, vizBaselinePartielle} from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -755,6 +755,22 @@ function ongletVizproof(s) {
      seul — c'est la LECTURE du détail qui manque ici, parce qu'elle passe par
      `wp vizproof report`, une commande wp-cli. Sans cette phrase, l'absence de
      tableau se lit comme un scan qui n'aurait pas eu lieu. */
+  /* Avant la 1.3.12, une baseline ne promouvait que la première page : les
+     autres comparaient à leur propre dernière capture, donc ne signalaient
+     jamais rien. Le dire ici, avec le geste exact — mettre à jour PUIS refaire
+     la baseline, l'ordre compte. */
+  const bp = vizBaselinePartielle(s);
+  const notéBaseline = bp
+    ? h('div', { class: 'warnbox small mt2' }, iconEl('triangle-alert'), ' ',
+      h('b', { text: 'Baseline incomplète' }),
+      ' — l’extension est en ', h('code', { text: 'v' + bp.version }),
+      ', et avant la ', h('code', { text: '1.3.12' }), ' une baseline ne couvrait que la '
+      + 'première page. Les ' + (bp.pages - 1) + ' autre'
+      + (bp.pages > 2 ? 's' : '') + ' comparent à leur propre dernière capture : elles ne '
+      + 'signaleront jamais rien. Mettez l’extension à jour, ',
+      h('b', { text: 'puis refaites la baseline' }), ' — dans cet ordre.')
+    : null;
+
   const notéSansSsh = s.via === 'rest'
     ? h('p', { class: 'hint hint-loose' },
       h('b', { text: 'Site géré sans SSH' }),
@@ -767,6 +783,7 @@ function ongletVizproof(s) {
   blocs.push(h('section', { class: 'sitesec', id: 'site-vizbloc' },
     h('h3', { text: 'Contrôle visuel' }),
     notéSansSsh,
+    notéBaseline,
     viz || h('p', { class: 'hint hint-tight',
       text: 'État inconnu : aucun inventaire d’extensions pour ce site.' })));
 

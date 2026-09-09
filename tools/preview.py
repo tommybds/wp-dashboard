@@ -93,7 +93,11 @@ def faux_site(i, srv, rng):
     # le cas — un site en v1.0.3 (sans « wp vizproof ») ou une extension
     # désactivée existent bel et bien dans le parc.
     if i % 4 == 0:
-        plugins.append({"name": "vizproof-timeline", "version": "1.4.2", "status": "active", "update": "none"})
+        # Un site sur deux reste en 1.3.11 : avant la 1.3.12, une baseline ne
+        # promouvait que la PREMIÈRE page, et l'écran doit le signaler tant que
+        # le parc n'est pas passé.
+        vzver = "1.3.11" if i % 8 == 0 else "1.4.2"
+        plugins.append({"name": "vizproof-timeline", "version": vzver, "status": "active", "update": "none"})
     elif i % 4 == 1:
         plugins.append({"name": "vizproof-timeline", "version": "1.0.3", "status": "active", "update": "available", "to": "1.3.9"})
     elif i % 4 == 2:
@@ -116,7 +120,7 @@ def faux_site(i, srv, rng):
     }
     if i % 4 == 0:
         s["vizproof"] = {
-            "connected": True, "configured": True, "version": "1.4.2", "has_cli": True,
+            "connected": True, "configured": True, "version": vzver, "has_cli": True,
             "pages": 3, "site_id": f"site-{i:02d}",
             # `totals` accompagne `anomalies` dans l'inventaire réel : c'est lui
             # qui dit si c'est CASSÉ (fail) ou seulement à regarder (warn), donc
@@ -681,7 +685,10 @@ VIZ_REPORT_BASELINE = {
 # tableau — donc « je ne vois rien » sur un rapport qui avait deux lignes.
 VIZ_REPORT_BASELINE_AVEC_LIGNES = {
     "run_id": "run-9101", "status": "completed", "created_at": now(0),
-    "report_url": "https://vizproof.example/r/9101", "is_baseline": True,
+    "report_url": "https://vizproof.example/r/9101",
+    # Scan PROMU en référence (1.3.12) : `is_baseline` reste faux, c'est
+    # `promoted_as_baseline` qui le dit. L'écran doit lire les deux.
+    "is_baseline": False, "promoted_as_baseline": True,
     "totals": {"fail": 0, "warn": 2, "ok": 0, "other": 0}, "total_items": 2,
     "summary": {"pages_scanned": 1, "pages_changed": 1, "top_page": "Page d'accueil"},
     "items": [
