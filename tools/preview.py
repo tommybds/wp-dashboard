@@ -623,14 +623,33 @@ def safe_update_status():
 # en avertissement), un run BASELINE (rien à comparer, surtout pas des zéros
 # rassurants), et un site dont l'extension est trop ancienne pour la commande
 # (repli : compte d'anomalies + lien, comme avant).
+#
+# Le rapport détaillé mélange volontairement les DEUX générations d'extension :
+# des items 1.3.10 qui portent `cause` et `seo_changes`, et des items 1.3.9 qui
+# n'ont ni l'un ni l'autre. Le parc mettra des semaines à passer d'une version
+# à l'autre : l'écran doit rester juste avec les deux sous les yeux.
 VIZ_REPORT = {
     "run_id": "run-9182", "status": "completed", "created_at": now(0),
     "report_url": "https://vizproof.example/r/9182", "is_baseline": False,
-    "totals": {"fail": 0, "warn": 2, "ok": 2, "other": 0}, "total_items": 4,
-    "summary": {"pages_scanned": 2, "pages_changed": 1, "top_page": "Applications"},
+    "totals": {"fail": 0, "warn": 3, "ok": 2, "other": 0}, "total_items": 5,
+    "summary": {"pages_scanned": 2, "pages_changed": 2, "top_page": "Applications"},
     "items": [
+        # 1.3.10 — le cas qui n'était pas explicable avant : zéro pixel d'écart,
+        # « à vérifier » quand même, parce que la balise title a changé.
+        {"page": "Accueil", "url": "https://site-12.exemple.fr/",
+         "viewport": "Mobile", "status": "warn", "diff_percent": 0.0, "label": "À vérifier",
+         "cause": "seo",
+         "seo_changes": [{"field": "title", "before": "GEIQ Pays de la Loire — alternance",
+                          "after": "GEIQ Pays de la Loire"},
+                         {"field": "description", "before": "Trouvez votre alternance en Pays de la Loire",
+                          "after": ""}]},
+        # 1.3.10 — pixels ET SEO à la fois : la cause est composée.
         {"page": "Applications", "url": "https://site-12.exemple.fr/applications/",
-         "viewport": "Desktop", "status": "warn", "diff_percent": 0.0042, "label": "À vérifier"},
+         "viewport": "Desktop", "status": "warn", "diff_percent": 0.0042, "label": "À vérifier",
+         "cause": "pixel+seo",
+         "seo_changes": [{"field": "h1Count", "before": "1", "after": "2"}]},
+        # 1.3.9 — ni `cause` ni `seo_changes` : rien à expliquer, et surtout
+        # pas de « cause inconnue » inventée par l'écran.
         {"page": "Applications", "url": "https://site-12.exemple.fr/applications/",
          "viewport": "Mobile", "status": "warn", "diff_percent": 0.0009, "label": "Mineur"},
         {"page": "Accueil", "url": "https://site-12.exemple.fr/",

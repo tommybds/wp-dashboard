@@ -307,6 +307,12 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
   border-bottom:1px solid var(--line-2);white-space:nowrap}
 .vzr-t th{color:var(--muted);font-weight:500}
 .vzr-t td:first-child{white-space:normal;word-break:break-word;max-width:34ch}
+/* Détail SEO d'une ligne : il APPARTIENT à la ligne du dessus (même page, même
+   écran), d'où le retrait et le trait de rattachement plutôt qu'une ligne de
+   plus dans le tableau, qu'on lirait comme une page distincte. */
+.vzr-seo td{padding-top:0;padding-bottom:var(--s-8)}
+.vzr-seo td>div{margin-left:var(--s-12);padding-left:var(--s-8);
+  border-left:2px solid var(--line);white-space:normal;word-break:break-word;line-height:1.6}
 .vzr-t tr:last-child td{border-bottom:0}
 /* Repli natif (<details>) : ouverture au clavier, aucun état à tenir en JS —
    la console est réécrite à chaque tour de sondage. */

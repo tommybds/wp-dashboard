@@ -218,12 +218,46 @@ function vzPct(v) {
 }
 
 /* Trié par GRAVITÉ d'abord (échec, à vérifier, reste, inchangée), puis par
-   écart décroissant : la première ligne est celle qu'il faut regarder. */
+   CAUSE, puis par écart décroissant : la première ligne est celle qu'il faut
+   regarder.
+
+   La cause avant l'écart, et c'est délibéré : un title réécrit vaut 0,00 % de
+   pixels et compte plus qu'un déplacement de 0,0009 % — sans cette clause, le
+   seul changement qui mérite une décision tombait en bas du tableau. */
+function vzPoidsCause(x) { return String(x.cause || '').includes('seo') ? 0 : 1; }
+
 function vizReportLignes(rep) {
   const it = (Array.isArray(rep && rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
   return it.slice().sort((a, b) =>
     ((VZ_ORDRE[a.status] ?? 9) - (VZ_ORDRE[b.status] ?? 9))
+    || (vzPoidsCause(a) - vzPoidsCause(b))
     || (Number(b.diff_percent) || 0) - (Number(a.diff_percent) || 0));
+}
+
+/* `cause` (vizproof-timeline 1.3.10) : « pixel », « seo », « a11y », ou une
+   combinaison jointe par « + ». On teste donc par INCLUSION, jamais par égalité
+   — « pixel+seo » doit compter comme du SEO. Les items d'un parc encore en
+   1.3.9 n'ont pas la clé : absence = rien à expliquer, pas « aucune cause ». */
+const VZ_CAUSE = { pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
+
+function vzCauseHtml(cause) {
+  const c = String(cause || '');
+  if (!c) return '';
+  const bouts = Object.keys(VZ_CAUSE).filter(k => c.includes(k));
+  if (!bouts.length) return '';
+  return ' ' + bouts.map(k => `<span class="pill ${VZ_CAUSE[k][0]}">${H(VZ_CAUSE[k][1])}</span>`).join(' ');
+}
+
+/* Une ligne SEO par champ modifié : c'est CE qui explique un « à vérifier » à
+   0,00 % d'écart, et c'est exactement ce que le dashboard ne pouvait pas dire
+   avant la 1.3.10. Les valeurs arrivent déjà tronquées à 90 caractères. */
+function vzSeoHtml(x) {
+  const ch = Array.isArray(x.seo_changes) ? x.seo_changes.filter(c => c && c.field) : [];
+  if (!ch.length) return '';
+  return `<tr class="vzr-seo"><td colspan="4">` + ch.map(c =>
+    `<div><b>${H(String(c.field))}</b> `
+    + `<span class="muted">${H(String(c.before ?? '—') || '(vide)')}</span>`
+    + ` → <b>${H(String(c.after ?? '—') || '(vide)')}</b></div>`).join('') + '</td></tr>';
 }
 
 function vzLigneHtml(x) {
@@ -234,7 +268,9 @@ function vzLigneHtml(x) {
   return `<tr><td>${page}</td><td>${H(x.viewport || '—')}</td>`
     + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
     + `<td><span class="pill ${c}">${H(l)}</span>`
-    + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '') + '</td></tr>';
+    + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '')
+    + vzCauseHtml(x.cause) + '</td></tr>'
+    + vzSeoHtml(x);
 }
 
 /** Détail d'un rapport, en HTML. `opts.replie` force le repli (onglet Aperçu). */
