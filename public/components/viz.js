@@ -280,13 +280,54 @@ function vzLigneHtml(x) {
     + vzSeoHtml(x);
 }
 
+/* ---- verdicts par NATURE de changement ------------------------------------
+   Deux questions distinctes, deux réponses distinctes : « est-ce que ça a
+   changé d'aspect ? » et « est-ce que le référencement a changé ? ». Elles
+   n'ont ni la même gravité ni le même remède, et les mêler dans un seul
+   « à vérifier » obligeait à ouvrir le rapport pour savoir laquelle des deux
+   parlait.
+
+   Vert = rien · orange = à regarder · rouge = cassé · gris = non mesuré (le
+   parc n'est pas encore passé à l'extension qui remonte l'information).
+   `vizVerdicts` ne rend que des données, pas du HTML : le jour où le rapport
+   sera collecté et stocké, la même règle pourra alimenter une alerte sans être
+   réécrite. Elle n'est pas exportée tant que rien ne l'importe — les alertes
+   se décident côté serveur, et le rapport n'y est pas encore conservé. */
+function vizVerdicts(rep) {
+  if (!rep) return null;
+  const it = Array.isArray(rep.items) ? rep.items : [];
+  const t = rep.totals || {};
+  const visuel = vzNb(t.fail) ? ['err', 'visuel : cassé']
+    : (vzNb(t.warn) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']);
+  // `cause` n'existe qu'à partir de vizproof-timeline 1.3.10 : sans elle on ne
+  // sait RIEN du SEO, ce qui n'est pas la même chose que « rien n'a changé ».
+  const mesure = it.some(x => x && x.cause);
+  const seo = !mesure ? ['mut', 'SEO : non mesuré']
+    : (it.some(x => String(x.cause || '').includes('seo')) ? ['warn', 'SEO : modifié'] : ['ok', 'SEO : inchangé']);
+  const a11y = !mesure ? null
+    : (it.some(x => String(x.cause || '').includes('a11y')) ? ['warn', 'structure : modifiée'] : null);
+  return [visuel, seo].concat(a11y ? [a11y] : []);
+}
+
+function vizVerdictsHtml(rep) {
+  const v = vizVerdicts(rep);
+  if (!v) return '';
+  const tip = {
+    mut: "l'extension VizProof de ce site est antérieure à la 1.3.10 : elle ne "
+       + "remonte pas ce qui a changé, seulement de combien l'image diffère",
+  };
+  return '<span class="vzr-v">' + v.map(([c, txt]) =>
+    `<span class="pill ${c}"${tip[c] ? ` title="${H(tip[c])}"` : ''}>${H(txt)}</span>`).join(' ') + '</span>';
+}
+
 /** Détail d'un rapport, en HTML. `opts.replie` force le repli (onglet Aperçu). */
 export function vizReportHtml(rep, opts) {
   if (!rep) return '';
   const o = opts || {};
   const u = safeUrl(rep.report_url);
   const lien = u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>` : '';
-  const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`;
+  const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`
+    + vizVerdictsHtml(rep);
   const lignes = vizReportLignes(rep);
   // Sans ligne, le tableau n'aurait rien à dire — quelle que soit la nature du
   // run. Avec des lignes, on les montre, baseline ou pas.

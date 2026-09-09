@@ -663,6 +663,11 @@ function ongletsNav() {
       'aria-selected': actif ? 'true' : 'false', tabindex: actif ? '0' : '-1',
     }, h('span', { text: label }));
     const p = (pastille && CUR) ? pastille(CUR) : null;
+    /* Une pastille qui dit « à voir » sans dire pourquoi oblige à ouvrir pour
+       le savoir. L'état complet tient dans l'infobulle — et il vaut la peine
+       d'être là même sans pastille : « reliée · 3 pages · dernier scan il y a
+       2 h » répond à la question avant qu'on la pose. */
+    if (CUR && slug === 'vizproof') b.title = vizEtatTexte(CUR).long;
     // La pastille est décorative : son sens est déjà dans le libellé du volet,
     // et un lecteur d'écran qui annoncerait « VizProof 3 » ne dirait pas quoi.
     if (p) b.append(h('span', { class: 'tab-p ' + p.ton, 'aria-hidden': 'true', text: p.texte }));
@@ -989,10 +994,21 @@ function cveChip(nom, kind) {
   if (!g.length) return null;
   let worst = '';
   g.forEach(v => { if ((SEVRANK[v.severity] || 0) > (SEVRANK[worst] || 0)) worst = v.severity; });
-  const el = h('span', {});
+  /* La pastille disait « élevée » et rien d'autre : ni de quoi il s'agit, ni où
+     le lire. Elle devient un LIEN vers la section qui le dit — celle-là seule
+     porte le titre de la faille, sa description et son lien CVE — et son
+     infobulle donne le titre, pas seulement un identifiant CVE que personne ne
+     reconnaît. */
+  const titres = g.map(v => v.title || v.cve).filter(Boolean);
+  const el = h('a', {
+    class: 'sevlink',
+    href: '#site/' + encodeURIComponent(CLE) + '/securite',
+    title: g.length + (g.length > 1 ? ' vulnérabilités connues' : ' vulnérabilité connue') + ' : '
+      + titres.slice(0, 3).join(' · ') + (titres.length > 3 ? ` (+${titres.length - 3})` : '')
+      + ' — cliquer pour le détail',
+  });
   el.innerHTML = sevPill(worst);
-  const p = el.firstElementChild;
-  if (p) p.title = g.length + ' vulnérabilité(s) connue(s) : ' + g.map(v => v.cve || v.title).filter(Boolean).slice(0, 4).join(', ');
+  el.onclick = e => e.stopPropagation();
   return el;
 }
 

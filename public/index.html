@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-09-1657">
-<link rel="stylesheet" href="css/base.css?v=2026-09-09-1657">
-<link rel="stylesheet" href="css/components.css?v=2026-09-09-1657">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-09-1657">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-09-1702">
+<link rel="stylesheet" href="css/base.css?v=2026-09-09-1702">
+<link rel="stylesheet" href="css/components.css?v=2026-09-09-1702">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-09-1702">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,37 +21,37 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-09-1657",
-    "./lib/api.js": "./lib/api.js?v=2026-09-09-1657",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-09-1657",
-    "./lib/format.js": "./lib/format.js?v=2026-09-09-1657",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-09-1657",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-09-1657",
-    "./lib/state.js": "./lib/state.js?v=2026-09-09-1657",
-    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-09-1657",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-09-1657",
-    "./components/button.js": "./components/button.js?v=2026-09-09-1657",
-    "./components/chip.js": "./components/chip.js?v=2026-09-09-1657",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-09-1657",
-    "./components/incident.js": "./components/incident.js?v=2026-09-09-1657",
-    "./components/job.js": "./components/job.js?v=2026-09-09-1657",
-    "./components/log.js": "./components/log.js?v=2026-09-09-1657",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-09-1657",
-    "./components/search.js": "./components/search.js?v=2026-09-09-1657",
-    "./components/sheet.js": "./components/sheet.js?v=2026-09-09-1657",
-    "./components/shell.js": "./components/shell.js?v=2026-09-09-1657",
-    "./components/table.js": "./components/table.js?v=2026-09-09-1657",
-    "./components/tip.js": "./components/tip.js?v=2026-09-09-1657",
-    "./components/toast.js": "./components/toast.js?v=2026-09-09-1657",
-    "./components/viz.js": "./components/viz.js?v=2026-09-09-1657",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-09-1657",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-09-1657",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-09-1657",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-09-1657",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-09-1657",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-09-1657",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-09-1657",
-    "./screens/site.js": "./screens/site.js?v=2026-09-09-1657"
+    "./version.js": "./version.js?v=2026-09-09-1702",
+    "./lib/api.js": "./lib/api.js?v=2026-09-09-1702",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-09-1702",
+    "./lib/format.js": "./lib/format.js?v=2026-09-09-1702",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-09-1702",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-09-1702",
+    "./lib/state.js": "./lib/state.js?v=2026-09-09-1702",
+    "./components/actions-menu.js": "./components/actions-menu.js?v=2026-09-09-1702",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-09-1702",
+    "./components/button.js": "./components/button.js?v=2026-09-09-1702",
+    "./components/chip.js": "./components/chip.js?v=2026-09-09-1702",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-09-1702",
+    "./components/incident.js": "./components/incident.js?v=2026-09-09-1702",
+    "./components/job.js": "./components/job.js?v=2026-09-09-1702",
+    "./components/log.js": "./components/log.js?v=2026-09-09-1702",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-09-1702",
+    "./components/search.js": "./components/search.js?v=2026-09-09-1702",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-09-1702",
+    "./components/shell.js": "./components/shell.js?v=2026-09-09-1702",
+    "./components/table.js": "./components/table.js?v=2026-09-09-1702",
+    "./components/tip.js": "./components/tip.js?v=2026-09-09-1702",
+    "./components/toast.js": "./components/toast.js?v=2026-09-09-1702",
+    "./components/viz.js": "./components/viz.js?v=2026-09-09-1702",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-09-1702",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-09-1702",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-09-1702",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-09-1702",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-09-1702",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-09-1702",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-09-1702",
+    "./screens/site.js": "./screens/site.js?v=2026-09-09-1702"
   }
 }
 </script>
@@ -357,6 +357,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-09-1657"></script>
+<script type="module" src="app.js?v=2026-09-09-1702"></script>
 </body>
 </html>

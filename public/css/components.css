@@ -310,6 +310,18 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 /* Détail SEO d'une ligne : il APPARTIENT à la ligne du dessus (même page, même
    écran), d'où le retrait et le trait de rattachement plutôt qu'une ligne de
    plus dans le tableau, qu'on lirait comme une page distincte. */
+/* Pastille de gravité rendue cliquable : elle mène à la section qui dit DE QUOI
+   il s'agit. Le lien ne doit pas se souligner ni se colorer — c'est la pastille
+   qu'on voit, le lien n'est que son comportement. */
+/* Les verdicts par nature (visuel, SEO, structure) : une ligne de pastilles
+   sous le résumé, avant le tableau. Ils répondent d'un coup d'œil à « qu'est-ce
+   qui a bougé ? » sans qu'on ait à lire les lignes. */
+.vzr-v{display:flex;flex-wrap:wrap;gap:var(--s-8);margin:var(--s-8) 0 4px}
+
+.sevlink{display:inline-flex;text-decoration:none;color:inherit;border-radius:var(--r-pill)}
+.sevlink:hover{text-decoration:none;filter:brightness(1.12)}
+.sevlink:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
 .vzr-seo td{padding-top:0;padding-bottom:var(--s-8)}
 .vzr-seo td>div{margin-left:var(--s-12);padding-left:var(--s-8);
   border-left:2px solid var(--line);white-space:normal;word-break:break-word;line-height:1.6}
