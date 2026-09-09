@@ -726,7 +726,7 @@ function dessinerOnglet() {
   if (ONGLET === 'extensions') mount(cible, ongletExtensions(s));
   else if (ONGLET === 'securite') mount(cible, ongletSecurite(s));
   else if (ONGLET === 'vizproof') mount(cible, ongletVizproof(s));
-  else if (ONGLET === 'sauvegardes') mount(cible, ongletSauvegardes(s));
+  else if (ONGLET === 'sauvegardes') { mount(cible, ongletSauvegardes(s)); bloquerRetablissementSansSsh(s); }
   else if (ONGLET === 'historique') mount(cible, ongletHistorique(s));
   else mount(cible, ongletApercu(s));
   renderPolicy();
@@ -923,7 +923,7 @@ function incidentsEl() {
       return h('p', { class: 'hint hint-tight', text: 'Rien à traiter sur ce site.' });
     }
     const p = h('p', { class: 'hint hint-tight' },
-      'Aucune alerte en attente. Restent, sans caractère d’urgence : ');
+      'Aucune alerte en attente. Ce site porte par ailleurs : ');
     reste.forEach(([txt, onglet], i) => {
       if (i) p.append(', ');
       p.append(h('a', { href: '#site/' + encodeURIComponent(CLE) + '/' + onglet, text: txt }));
@@ -1014,6 +1014,16 @@ export async function lancerSur(s, btn, label) {
    extensions, il fallait savoir que le menu contenait cette ligne. Ils restent
    dans le menu — qui garde son rôle de liste exhaustive — et apparaissent ici,
    là où on regarde quand on veut les faire. */
+/* Aucune commande wp-cli sur un site géré par l'agent : les boutons d'action
+   étaient tous actifs SOUS la phrase qui annonce l'inverse. On les désactive
+   plutôt que de les cacher — une ligne amputée de ses boutons ne dit pas
+   pourquoi, un bouton grisé qui porte sa raison le dit. */
+const SANS_SSH = "site géré sans SSH : à faire depuis wp-admin";
+function siSansSsh(s, ...boutons) {
+  if (s.via !== 'rest') return;
+  boutons.filter(Boolean).forEach(b => { b.disabled = true; b.title = SANS_SSH; });
+}
+
 function boutonLot(s, act, libelle, titre) {
   const b = h('button', { type: 'button', class: 'btn sm fr', title: titre || '' }, iconEl('arrow-up'), libelle);
   b.dataset.act = act;
@@ -1068,10 +1078,11 @@ function ligneExtension(s, p, maj) {
     b.onclick = () => confirmRun(b);
     /* Le même geste, avec le filet : sauvegarde, archive de cette seule
        extension, contrôle visuel, et un point de rétablissement à la clé. */
-    const sb = h('button', { type: 'button', class: 'btn sm',
+    const sb = h('button', { type: 'button', class: 'btn sm psafe',
       title: 'Sauvegarde, archive cette extension, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
       iconEl('shield-check'), 'sûre');
     sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { slug: p.name });
+    siSansSsh(s, b, sb);
     cell.append(b, sb);
   }
   const gel = h('button', {
@@ -1083,6 +1094,7 @@ function ligneExtension(s, p, maj) {
   const reb = h('button', { type: 'button', class: 'btn sm prb', title: 'Revenir à une version antérieure' }, iconEl('rotate-ccw'), 'Rétablir');
   reb.dataset.slug = p.name;
   reb.onclick = () => askVersion(p.name, reb, { srv: s.srv, dom: s.domain }, () => loadFleet().then(refreshSite).catch(() => {}), 'plugin');
+  siSansSsh(s, gel, reb);
   cell.append(gel, reb);
   return tr;
 }
@@ -1133,10 +1145,11 @@ function ligneTheme(s, t, maj) {
     b.dataset.act = 'theme_update';
     b.dataset.arg = t.name;
     b.onclick = () => confirmRun(b);
-    const sb = h('button', { type: 'button', class: 'btn sm',
+    const sb = h('button', { type: 'button', class: 'btn sm psafe',
       title: 'Sauvegarde, archive ce thème, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
       iconEl('shield-check'), 'sûre');
     sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { theme: t.name });
+    siSansSsh(s, b, sb);
     cell.append(b, sb);
   }
   const gel = h('button', {
@@ -1148,6 +1161,7 @@ function ligneTheme(s, t, maj) {
   const reb = h('button', { type: 'button', class: 'btn sm prb', title: 'Revenir à une version antérieure' }, iconEl('rotate-ccw'), 'Rétablir');
   reb.dataset.slug = t.name;
   reb.onclick = () => askVersion(t.name, reb, { srv: s.srv, dom: s.domain }, () => loadFleet().then(refreshSite).catch(() => {}), 'theme');
+  siSansSsh(s, gel, reb);
   cell.append(gel, reb);
   return tr;
 }
@@ -1239,7 +1253,7 @@ function ongletExtensions(s) {
        d'autre : ni sauvegarde UpdraftPlus, ni archive des fichiers, donc aucun
        point de rétablissement. La « MAJ sûre » du haut fait les deux. Les deux
        boutons se ressemblent trop pour que la différence aille sans dire. */
-    aMaj.length
+    aMaj.length && s.via !== 'rest'
       ? h('p', { class: 'hint hint-tight' },
         h('b', { text: 'MAJ' }), ' met à jour tout de suite, ',
         h('b', { text: 'sans sauvegarde' }), ' — rien à rétablir si le site casse. ',
@@ -1330,7 +1344,18 @@ function refletGel(tr, slug, type) {
   const b = tr.querySelector('.pfreeze');
   const maj = tr.querySelector(type === 'theme' ? '[data-act="theme_update"]' : '[data-act="plugin_update"]');
   if (b) { b.textContent = gel ? 'Dégeler' : 'Geler'; b.classList.toggle('primary', gel); }
-  if (maj) maj.disabled = gel;
+  // Le gel n'est pas la seule raison de griser : un site sans SSH n'exécute
+  // rien. Sans ce `||`, cette fonction rallumait le bouton après coup.
+  const sansSsh = CUR ? CUR.via === 'rest' : false;
+  if (maj) maj.disabled = gel || sansSsh;
+  /* La MAJ sûre saute elle aussi une extension gelée — le serveur l'écarte et
+     le journalise. Laisser le bouton actif lancerait tout le cycle (sauvegarde,
+     archive, contrôle) pour ne rien mettre à jour. */
+  const sure = tr.querySelector('.psafe');
+  if (sure) {
+    sure.disabled = gel || sansSsh;
+    if (gel) sure.title = 'Extension gelée : la mise à jour sûre l’écarterait aussi';
+  }
   tr.classList.toggle('row-frozen', gel);
 }
 
@@ -1532,6 +1557,18 @@ function ongletSauvegardes(s) {
       '. Si l’extension ou le cœur a migré ses tables, la ',
       h('b', { text: 'base de données' }), ' reste dans son nouvel état : la sauvegarde UpdraftPlus est le seul recours pour elle.'),
   ];
+}
+
+/* Les pastilles de rétablissement sont cliquables : sans SSH, elles promettent
+   ce qu'elles ne peuvent pas tenir. Elles se désactivent après coup, la liste
+   étant construite par un composant partagé avec la modale. */
+function bloquerRetablissementSansSsh(s) {
+  if (!s || s.via !== 'rest') return;
+  document.querySelectorAll('#site-rblist button, #site-rblist [role="button"]').forEach(b => {
+    b.disabled = true;
+    b.title = SANS_SSH;
+    b.setAttribute('aria-disabled', 'true');
+  });
 }
 
 /* ---- onglet Historique ------------------------------------------------------ */
