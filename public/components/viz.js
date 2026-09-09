@@ -35,7 +35,7 @@ const VIZ = 'vizproof-timeline';
 export function vizOf(s) { return (s.plugins_list || []).find(p => p.name === VIZ) || null; }
 export function vizInfo(s) { const v = s && s.vizproof; return (v && typeof v === 'object') ? v : null; }
 export function vizConnected(s) { const v = vizInfo(s); return !!(v && v.connected); }
-export function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
+function vizRun(s) { const v = vizInfo(s); const r = v && v.last_run; return (r && typeof r === 'object') ? r : null; }
 export function vizAnom(s) {
   const r = vizRun(s);
   if (!r) return false;
@@ -260,9 +260,18 @@ export function vizReportHtml(rep, opts) {
 }
 
 /* ---- bloc VizProof de la page site --------------------------------------- */
-function vizLastRunEl(s) {
+function vizLastRunEl(s, compact) {
   const r = vizRun(s);
   if (!r) return h('p', { class: 'hint hint-tight', text: 'Aucun scan visuel enregistré pour l’instant.' });
+  /* Le compte d'anomalies de l'inventaire et celui du rapport ne disent pas la
+     même chose du MÊME run : sur lesgeiq, 4 côté extension pour 2 lignes « à
+     vérifier » côté rapport. Afficher les deux à trois lignes d'écart est ce
+     qui rendait l'onglet illisible. En compact on ne garde que la date, et le
+     rapport — chiffres exacts, même run — donne le verdict juste en dessous. */
+  if (compact) {
+    return h('p', { class: 'hint hint-tight' }, 'Dernier scan ',
+      h('span', { title: absTime(r.at), text: relTime(r.at) }), '.');
+  }
   const bad = vizAnom(s), an = Number(r.anomalies) || 0;
   const stt = String(r.status || '').toLowerCase();
   const casse = /err|échec|echec|fail/.test(stt);
@@ -280,7 +289,7 @@ function vizLastRunEl(s) {
  * `titre:false` retire l'étiquette « VizProof » quand l'appelant en pose déjà
  * une — sur son propre onglet, la lire deux fois de suite ne dit rien de plus.
  */
-export function vizBlocEl(s, { titre = true } = {}) {
+export function vizBlocEl(s, { titre = true, compact = false } = {}) {
   const t = vizEtatTexte(s), e = t.etat;
   if (e === 'nodata') return null;
   const ver = vizVersion(s), rest = s.via === 'rest';
@@ -314,7 +323,10 @@ export function vizBlocEl(s, { titre = true } = {}) {
     }
   } else {
     txt.append('Reliée à VizProof · ', h('b', { text: n + ' page' + (n > 1 ? 's' : '') }), ' surveillée' + (n > 1 ? 's' : ''));
-    if (sid) txt.append(' · identifiant ', h('code', { text: String(sid) }));
+    // L'identifiant VizProof est une chaîne de 25 caractères illisible qui ne
+    // sert qu'à un support : en info-bulle plutôt qu'au milieu de la phrase.
+    if (sid && compact) txt.title = 'identifiant VizProof : ' + String(sid);
+    else if (sid) txt.append(' · identifiant ', h('code', { text: String(sid) }));
     txt.append('.');
     if (!rest) {
       /* Le choix des pages est la suite naturelle de la connexion : c'est ici
@@ -330,12 +342,14 @@ export function vizBlocEl(s, { titre = true } = {}) {
   }
   const a = lienEl(vizAdminUrl(s), 'ouvrir dans wp-admin');
   if (a) txt.append(' ', a);
-  if (e === 'connecte') { const p = vizRunBadgeEl(s); if (p) txt.append(' ', p); }
+  // La pastille répète le compte que la ligne suivante donne en toutes lettres,
+  // et qu'un troisième endroit (l'onglet) signale déjà. Une fois suffit.
+  if (e === 'connecte' && !compact) { const p = vizRunBadgeEl(s); if (p) txt.append(' ', p); }
 
   return h('div', { class: 'agroup' },
     titre ? h('span', { class: 'glbl', text: 'VizProof' }) : null,
     txt,
-    e === 'connecte' ? vizLastRunEl(s) : null,
+    e === 'connecte' ? vizLastRunEl(s, compact) : null,
     // Réceptacle du résumé du dernier rapport : rempli APRÈS coup par
     // `chargerVizRapport`, pour que le bloc s'affiche sans attendre le réseau.
     e === 'connecte' ? h('div', { class: 'vzr-slot' }) : null,
@@ -346,7 +360,7 @@ export function vizBlocEl(s, { titre = true } = {}) {
    l'ouverture de l'onglet, EN TÂCHE DE FOND et en une seule requête : le bloc
    est déjà à l'écran quand la réponse arrive. Un échec ne dit rien — le compte
    d'anomalies et le lien restent la vérité affichée. */
-export async function chargerVizRapport(s, slot) {
+export async function chargerVizRapport(s, slot, opts) {
   if (!slot || !s || s.via === 'rest' || vizState(s) !== 'connecte') return;
   // Le réceptacle de la modale, lui, SURVIT à sa fermeture : sans ce marquage,
   // la réponse d'un site rouvert sur un autre s'y afficherait quand même.
@@ -357,7 +371,9 @@ export async function chargerVizRapport(s, slot) {
       + '&domain=' + encodeURIComponent(s.domain));
   } catch (e) { return; }                 // site injoignable : on n'affiche rien de plus
   if (!slot.isConnected || slot.dataset.domain !== s.domain || !j || !j.report) return;
-  slot.innerHTML = vizReportHtml(j.report, { replie: true });
+  // `replie` par défaut : dans une modale ou un aperçu, le tableau attend qu'on
+  // le demande. Sur l'onglet VizProof, il EST ce qu'on est venu voir.
+  slot.innerHTML = vizReportHtml(j.report, { replie: (opts || {}).replie !== false });
 }
 
 /* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ----
@@ -399,7 +415,7 @@ export function vizEtat(v) {
    place mais « 2 pages scannées · 1 avec différence » y tient. */
 export function vizPhraseLongue(v) {
   const p = vizPhrase(v), r = vizReport(v);
-  if (!r) return p;
+  if (!r || r.is_baseline) return p;
   const top = String((r.summary || {}).top_page || '');
   return p + ' · ' + vizReportResume(r)
     + (top && !r.is_baseline ? ' · page la plus impactée : ' + top : '');

@@ -38,7 +38,7 @@ import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
-  vizRun, vizAnom, vizInfo} from '../components/viz.js';
+  vizAnom} from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -645,10 +645,7 @@ function renderVulnsSite() {
 function vizPastilleOnglet(s) {
   const t = vizEtatTexte(s);
   if (!t || t.etat === 'nodata') return null;
-  if (t.etat === 'connecte') {
-    const n = Number((vizRun(s) || {}).anomalies) || 0;
-    return vizAnom(s) ? { texte: String(n || '!'), ton: 'err' } : null;
-  }
+  if (t.etat === 'connecte') return vizAnom(s) ? { texte: 'à voir', ton: 'err' } : null;
   return { texte: t.etat === 'absent' ? 'absent' : 'à faire', ton: 'warn' };
 }
 
@@ -719,7 +716,7 @@ function dessinerOnglet() {
    Actions, et une phrase qui dit à quoi tout cela sert. */
 function ongletVizproof(s) {
   const blocs = [];
-  const viz = vizBlocEl(s, { titre: false });
+  const viz = vizBlocEl(s, { titre: false, compact: true });
 
   blocs.push(h('section', { class: 'sitesec', id: 'site-vizbloc' },
     h('h3', { text: 'Contrôle visuel' }),
@@ -782,7 +779,7 @@ function brancherViz() {
   if (!s) return;
   document.querySelectorAll('#site-tab [data-act]').forEach(b => { b.onclick = () => confirmRun(b); });
   const slot = document.querySelector('#site-tab .vzr-slot');
-  if (slot) chargerVizRapport(s, slot).catch(() => {});
+  if (slot) chargerVizRapport(s, slot, { replie: false }).catch(() => {});
 }
 
 /* ---- onglet Aperçu -------------------------------------------------------- */
@@ -1782,7 +1779,15 @@ function suivreVizUp(srv, dom, nid) {
     }
     const v = (job.result && job.result.viz) || null, f = vizupFin(job);
     NOTIF.update(nid, { progress: 1 });
-    NOTIF.done(nid, { ok: f !== 'err', warn: f === 'warn', message: vizupVerdict(job) + (v ? ' · ' + vizPhraseLongue(v) : '') });
+    /* « Terminée avec avertissement · anomalies détectées » disait deux fois la
+       même chose, et laissait croire que la mise à jour elle-même avait mal
+       tourné. Quand l'avertissement vient du contrôle visuel, on sépare les
+       deux faits : la mise à jour est passée, et il y a quelque chose à
+       regarder. */
+    const visuel = f === 'warn' && v && v.anomalies;
+    const verdict = visuel ? 'mise à jour appliquée' : vizupVerdict(job);
+    NOTIF.done(nid, { ok: f !== 'err', warn: f === 'warn',
+                      message: verdict + (v ? ' · ' + vizPhraseLongue(v) : '') });
     // L'inventaire a été re-scanné côté serveur : on recharge, puis on remet la
     // console du job (le rendu la réinitialise).
     loadFleet().then(() => { if (CUR && CUR.domain === dom) { refreshSite(); renderVizUp(job, dom); } }).catch(() => {});
