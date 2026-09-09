@@ -4509,6 +4509,66 @@ def inc_vulns(index, rules, now):
     return out
 
 
+def inc_vulns_unfixed(index, now):
+    """Vulnérabilité CRITIQUE sans correctif publié.
+
+    `inc_vulns` ne remonte que ce qui se corrige d'un bouton — un choix juste
+    pour une file d'actions, mais qui laissait dans l'ombre la classe la plus
+    dangereuse : une faille critique sur une extension ACTIVE que personne ne
+    corrigera. Le parc en compte, et la page du site affichait « rien à
+    traiter » au-dessus de trois failles critiques.
+
+    Il n'y a pas de bouton à proposer ici, et c'est le sujet : la décision est
+    de désactiver, de remplacer, ou d'accepter le risque en connaissance de
+    cause. Une extension INACTIVE va dans « à planifier » — le risque existe
+    (les fichiers sont là) mais il n'est pas servi aux visiteurs.
+    """
+    res = incident_json(VULNS_FOUND_PATH, {})
+    out = []
+    for s_ in (res.get("sites") or []):
+        cle = s_.get("domain") or ""
+        if cle not in index:
+            continue
+        server, _site = index[cle]
+        # Un composant, une ligne : une extension cumule souvent plusieurs CVE.
+        par_comp = {}
+        for v in (s_.get("findings") or []):
+            if str(v.get("severity") or "").lower() != "critical":
+                continue
+            if str(v.get("update_to") or "").strip():
+                continue                  # corrigeable : c'est l'autre source
+            genre = str(v.get("kind") or "plugin")
+            comp = str(v.get("component") or "?")
+            e = par_comp.setdefault((genre, comp), {
+                "cves": [], "version": str(v.get("version") or ""),
+                "actif": str(v.get("status") or "") == "active", "n": 0})
+            e["n"] += 1
+            if v.get("cve") and str(v["cve"]) not in e["cves"]:
+                e["cves"].append(str(v["cve"]))
+            if str(v.get("status") or "") == "active":
+                e["actif"] = True
+        for (genre, comp), e in par_comp.items():
+            quoi = "thème " if genre == "theme" else ""
+            titre = (f"{quoi}{comp} {e['version']} · {e['n']} faille"
+                     f"{'s' if e['n'] > 1 else ''} critique"
+                     f"{'s' if e['n'] > 1 else ''} sans correctif")
+            detail = ("extension active : la faille est exposée"
+                      if e["actif"] else "composant inactif : présent sur le disque, non servi")
+            if e["cves"]:
+                detail += " — " + ", ".join(e["cves"][:4])
+            out.append(make_incident(
+                "vuln_critical_unfixed", "critical", cle, " ".join(titre.split()), detail,
+                site=cle, server=server,
+                arg=(f"theme:{comp}" if genre == "theme" else comp), now=now,
+                # Aucune action proposée : aucune mise à jour ne corrige ceci.
+                action=None,
+                link={"tab": "securite", "sub": "vulns"},
+                bucket="now" if e["actif"] else "plan",
+                extra={"cve": e["cves"][:20], "slug": comp, "kind": genre,
+                       "version": e["version"]}))
+    return out
+
+
 def inc_checksums(index, now):
     """Dernier `verify_checksums` en échec : des fichiers du cœur ont été modifiés."""
     store = incident_json(CHECKSUMS_PATH, {})
@@ -4781,6 +4841,7 @@ def incidents_snapshot(now=None):
     source("disponibilite", lambda: inc_down(sites, now))
     source("php_errors", lambda: inc_php_fatal(index, now))
     source("vulns", lambda: inc_vulns(index, rules, now))
+    source("vulns_sans_correctif", lambda: inc_vulns_unfixed(index, now))
     source("checksums", lambda: inc_checksums(index, now))
     source("scan", lambda: inc_scan(index, now))
     source("admins", lambda: inc_admins(sites, now))

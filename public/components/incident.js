@@ -33,6 +33,7 @@ const KINDS = {
   down: 'site injoignable',
   php_fatal: 'erreur PHP fatale',
   vuln_critical_fixable: 'vulnérabilité critique corrigeable',
+  vuln_critical_unfixed: 'vulnérabilité critique sans correctif',
   checksums_modified: 'checksums modifiés',
   admin_unknown: 'administrateur inconnu',
   server_stale: 'serveur injoignable',
@@ -74,6 +75,13 @@ function queFaire(kind, d) {
       + "sur cette ligne. Si le site est délicat (extension modifiée à la main, "
       + "personnalisations lourdes), passez par « MAJ sûre » depuis la page du site, "
       + "qui sauvegarde et sait revenir en arrière.",
+    vuln_critical_unfixed: "Une faille critique est publiée et AUCUNE version "
+      + "corrigée n'existe : la mise à jour ne réglera rien. Trois issues, dans cet "
+      + "ordre de préférence — désactiver le composant s'il n'est pas indispensable, "
+      + "le remplacer par un équivalent maintenu, ou le garder en connaissance de "
+      + "cause après avoir lu la faille (elle est souvent conditionnée à un rôle "
+      + "précis, ou à une fonction que vous n'utilisez pas). Dans le doute, "
+      + "désactiver coûte moins cher qu'une remise en état.",
     checksums_modified: "Des fichiers du cœur ne correspondent plus à la version "
       + "officielle de WordPress. C'est un signe classique de compromission, mais une "
       + "mise à jour interrompue donne exactement le même résultat : commencez par "

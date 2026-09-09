@@ -78,10 +78,14 @@ export function udHorizon(retain, interval) {
   const d = udIntervalDays(interval), n = parseInt(retain, 10);
   if (!d || !n) return null;
   const days = n * d;
-  if (days >= 365) return '≈ ' + (Math.round(days / 365 * 10) / 10 + '').replace('.0', '') + ' an(s)';
+  if (days >= 365) {
+    const a = (Math.round(days / 365 * 10) / 10 + '').replace('.0', '');
+    return '≈ ' + a + (Number(a) > 1 ? ' ans' : ' an');
+  }
   if (days >= 60) return '≈ ' + Math.round(days / 30) + ' mois';
   if (days >= 14) return '≈ ' + Math.round(days / 7) + ' semaines';
-  return '≈ ' + Math.round(days) + ' jour(s)';
+  const j = Math.round(days);
+  return '≈ ' + j + (j > 1 ? ' jours' : ' jour');
 }
 function udPeriod(n, s) {
   if (s === 604800) return n + ' sem';

@@ -1612,3 +1612,62 @@ class TestDownSonde(IncidentsBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VulnCritiqueSansCorrectif(unittest.TestCase):
+    """Une faille critique SANS version corrigée doit remonter.
+
+    `inc_vulns` ne signale que ce qui se répare d'un bouton — juste pour une
+    file d'actions, mais la classe la plus dangereuse (critique, active, aucun
+    correctif publié) restait muette : le parc en comptait six, sur deux sites
+    clients, et la page de ces sites affichait « rien à traiter ».
+    """
+
+    SITES = {"sites": [{"domain": "a.fr", "findings": [
+        # Corrigeable : c'est l'AUTRE source qui la porte, pas celle-ci.
+        {"severity": "critical", "kind": "plugin", "component": "corrigeable",
+         "version": "1.0", "update_to": "1.1", "cve": "CVE-1", "status": "active"},
+        # Deux CVE sur le MÊME composant : une seule ligne attendue.
+        {"severity": "critical", "kind": "plugin", "component": "mec",
+         "version": "6.8", "update_to": "", "cve": "CVE-2", "status": "active"},
+        {"severity": "critical", "kind": "plugin", "component": "mec",
+         "version": "6.8", "update_to": None, "cve": "CVE-3", "status": "active"},
+        # Inactive : le risque existe, l'urgence non.
+        {"severity": "critical", "kind": "plugin", "component": "mec-lite",
+         "version": "6.8", "update_to": "", "cve": "CVE-4", "status": "inactive"},
+        # Élevée, pas critique : hors de cette source.
+        {"severity": "high", "kind": "plugin", "component": "autre",
+         "version": "2.0", "update_to": "", "cve": "CVE-5", "status": "active"},
+    ]}]}
+
+    def _incidents(self):
+        index = {"a.fr": ("srv1", {"domain": "a.fr", "via": "ssh"})}
+        with mock.patch.object(A, "incident_json", return_value=self.SITES):
+            return A.inc_vulns_unfixed(index, datetime.datetime(2026, 9, 9, 12, 0))
+
+    def test_une_ligne_par_composant(self):
+        out = self._incidents()
+        self.assertEqual(sorted(i["extra"]["slug"] for i in out), ["mec", "mec-lite"])
+
+    def test_le_corrigeable_est_laisse_a_l_autre_source(self):
+        self.assertNotIn("corrigeable", [i["extra"]["slug"] for i in self._incidents()])
+
+    def test_les_cve_sont_rassemblees(self):
+        mec = [i for i in self._incidents() if i["extra"]["slug"] == "mec"][0]
+        self.assertEqual(sorted(mec["extra"]["cve"]), ["CVE-2", "CVE-3"])
+        self.assertIn("2 failles critiques", mec["title"])
+
+    def test_actif_urgent_inactif_a_planifier(self):
+        par = {i["extra"]["slug"]: i for i in self._incidents()}
+        self.assertEqual(par["mec"]["bucket"], "now")
+        self.assertEqual(par["mec-lite"]["bucket"], "plan")
+
+    def test_aucune_action_proposee(self):
+        """Aucune mise à jour ne corrige ceci : proposer un bouton mentirait."""
+        for i in self._incidents():
+            self.assertIsNone(i.get("action"))
+
+    def test_severite_et_type(self):
+        for i in self._incidents():
+            self.assertEqual(i["severity"], "critical")
+            self.assertEqual(i["kind"], "vuln_critical_unfixed")

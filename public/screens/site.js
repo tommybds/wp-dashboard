@@ -69,7 +69,7 @@ let CLE = '';            // clé d'URL du site affiché
 let VULNS = null;        // dernier croisement pour CE site
 let FROZEN = [];         // extensions gelées
 let FROZEN_TH = [];      // thèmes gelés
-let INCIDENTS = [];      // incidents de CE site
+let INCIDENTS = null;    // incidents de CE site — null tant qu'ils ne sont pas chargés
 let FOCUS_ONGLET = false;   // rendre le focus à l'onglet après une flèche
 
 /** Site du parc derrière une clé d'URL (nom Kuma, sinon vhost). */
@@ -149,6 +149,10 @@ export function renderSite(cle, onglet) {
   if (change) {
     PAGESEQ++;
     stopPoll('safe');
+    /* `null` = pas encore chargé, `[]` = chargé et vide. Sans cette distinction,
+       la page d'un site affichait « Rien à traiter » — ou pire, les incidents
+       du site PRÉCÉDENT — pendant toute la durée de la requête. */
+    INCIDENTS = null;
     VULNS = null;
     FROZEN = [];
     FROZEN_TH = [];
@@ -779,7 +783,14 @@ function brancherViz() {
   if (!s) return;
   document.querySelectorAll('#site-tab [data-act]').forEach(b => { b.onclick = () => confirmRun(b); });
   const slot = document.querySelector('#site-tab .vzr-slot');
-  if (slot) chargerVizRapport(s, slot, { replie: false }).catch(() => {});
+  if (slot) {
+    // La requête passe par SSH jusqu'au site : plusieurs secondes, parfois.
+    // Toutes les autres zones asynchrones de cette page disent « chargement… ».
+    slot.innerHTML = '<span class="muted small">chargement du dernier rapport…</span>';
+    chargerVizRapport(s, slot, { replie: false })
+      .catch(() => {})
+      .finally(() => { if (slot.textContent.trim() === 'chargement du dernier rapport…') slot.innerHTML = ''; });
+  }
 }
 
 /* ---- onglet Aperçu -------------------------------------------------------- */
@@ -818,17 +829,11 @@ function ongletApercu(s) {
       h('span', { class: 'k', text: 'URL' }),
       h('span', {}, u ? h('a', { href: u, target: '_blank', rel: 'noopener noreferrer', text: s.siteurl || u })
         : h('span', { class: 'muted', text: s.siteurl || '—' })),
-      h('span', { class: 'k', text: 'Serveur' }), h('span', {}, srvCellEl(s)),
-      ...(s.path ? [h('span', { class: 'k', text: 'Chemin' }), h('span', {}, h('code', { class: 'small', text: s.path }))] : []),
-      h('span', { class: 'k', text: 'Client' }), h('span', { text: clientDe(s) || '—' }),
-      h('span', { class: 'k', text: 'Disponibilité' }),
-      h('span', {}, chipEtat(etatSite(s)), ' ',
-        h('span', { class: 'muted small', text: etatSite(s).tip })),
-      h('span', { class: 'k', text: 'Administrateurs' }), adm,
-      h('span', { class: 'k', text: 'Collecté' }),
-      h('span', { class: 'muted', text: s.collected_at || store.fleet?.generated_at || '—' }))));
-
-  blocs.push(h('section', { class: 'sitesec' }, h('h3', { text: 'Sauvegardes' }), updraftKv(s)));
+      /* Serveur, chemin, client, disponibilité et date de collecte vivent déjà
+         dans l'en-tête, à trois centimètres au-dessus. Les répéter ici donnait
+         une fiche dont cinq lignes sur huit n'apprenaient rien. Ne restent que
+         les trois qui ne sont nulle part ailleurs. */
+      h('span', { class: 'k', text: 'Administrateurs' }), adm)));
 
   const errs = Object.keys(s.errors || {});
   if (errs.length) {
@@ -837,12 +842,6 @@ function ongletApercu(s) {
       h('div', { class: 'errbox', text: Object.entries(s.errors).map(([k, v]) => k + ': ' + v).join('\n\n') })));
   }
   return blocs;
-}
-
-function srvCellEl(s) {
-  return s.via === 'rest'
-    ? h('span', { class: 'pill mut', title: "inventaire via l'agent, sans SSH" + (s.srv ? ' · ' + s.srv : ''), text: 'REST' })
-    : h('span', { class: 'pill mut', text: s.srv || '—' });
 }
 
 function updraftKv(s) {
@@ -854,11 +853,11 @@ function updraftKv(s) {
   return h('div', { class: 'kv' },
     h('span', { class: 'k', text: 'Fichiers' }),
     h('span', {}, udIntervalFr(ud.interval), ' · ', h('b', { text: (ud.retain || '?') + ' jeux' }),
-      hF ? h('span', { class: 'muted small', text: ' ≈ ' + hF }) : null,
+      hF ? h('span', { class: 'muted small', text: ' ' + hF }) : null,
       rF ? h('div', { class: 'muted small', text: 'puis ' + rF }) : null),
     h('span', { class: 'k', text: 'Base de données' }),
     h('span', {}, udIntervalFr(ud.interval_db), ' · ', h('b', { text: (ud.retain_db || '?') + ' jeux' }),
-      hD ? h('span', { class: 'muted small', text: ' ≈ ' + hD }) : null,
+      hD ? h('span', { class: 'muted small', text: ' ' + hD }) : null,
       rD ? h('div', { class: 'muted small', text: 'puis ' + rD }) : null),
     h('span', { class: 'k', text: 'Destination' }), h('span', { text: ud.service || '?' }),
     h('span', { class: 'k', text: 'Dernière' }),
@@ -867,9 +866,39 @@ function updraftKv(s) {
 }
 
 /* ---- incidents de ce site -------------------------------------------------- */
+/* Ce qui attend sur ce site sans être un incident : des mises à jour
+   disponibles. Elles ne remontent pas dans la file du parc — cinquante sites
+   qui ont des mises à jour ne font pas cinquante urgences — mais écrire « rien
+   à traiter » juste au-dessus d'un bouton « MAJ sûre — 6 ext. » était faux. */
+function resteAFaire(s) {
+  const out = [];
+  const p = Number(s.plugins_updates) || 0;
+  const t = Number(s.themes_updates) || 0;
+  if (s.core_update) out.push(['WordPress ' + s.core_update + ' disponible', 'extensions']);
+  if (p) out.push([p + ' extension' + (p > 1 ? 's' : '') + ' à mettre à jour', 'extensions']);
+  if (t) out.push([t + ' thème' + (t > 1 ? 's' : '') + ' à mettre à jour', 'extensions']);
+  const nv = (VULNS && Array.isArray(VULNS.findings)) ? VULNS.findings.length : 0;
+  if (nv) out.push([nv + ' vulnérabilité' + (nv > 1 ? 's' : '') + ' connue' + (nv > 1 ? 's' : ''), 'securite']);
+  return out;
+}
+
 function incidentsEl() {
+  if (INCIDENTS === null) {
+    return h('p', { class: 'hint hint-tight' }, h('span', { class: 'muted small', text: 'chargement…' }));
+  }
   if (!INCIDENTS.length) {
-    return h('p', { class: 'hint hint-tight', text: 'Rien à traiter sur ce site.' });
+    const reste = resteAFaire(CUR || {});
+    if (!reste.length) {
+      return h('p', { class: 'hint hint-tight', text: 'Rien à traiter sur ce site.' });
+    }
+    const p = h('p', { class: 'hint hint-tight' },
+      'Aucune alerte en attente. Restent, sans caractère d’urgence : ');
+    reste.forEach(([txt, onglet], i) => {
+      if (i) p.append(', ');
+      p.append(h('a', { href: '#site/' + encodeURIComponent(CLE) + '/' + onglet, text: txt }));
+    });
+    p.append('.');
+    return p;
   }
   const box = h('div', { class: 'inclist' });
   INCIDENTS.forEach(i => box.append(incidentLigne(i, false, chargerIncidents)));
