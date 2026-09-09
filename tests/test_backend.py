@@ -1808,6 +1808,23 @@ REPORT_JSON = {
 REPORT_VIEUX_PLUGIN = "Error: 'report' is not a registered subcommand of 'vizproof'."
 
 
+def preview_sample(name):
+    """Un échantillon de `tools/preview.py`, tel que l'interface le rejoue.
+
+    Le module est chargé par son chemin et non importé : `tools/` n'est pas un
+    paquet, et le charger n'exécute rien, sa boucle de service est sous
+    `__main__`. Le test reprend donc EXACTEMENT ce que la maquette montre, au
+    lieu d'en recopier une version qui finirait par diverger.
+    """
+    import importlib.util
+    chemin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "tools", "preview.py")
+    spec = importlib.util.spec_from_file_location("wp_dashboard_preview", chemin)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return json.loads(json.dumps(getattr(module, name)))
+
+
 # --------------------------------------------------------------------------- #
 #  Contrôle visuel automatique après une mise à jour unitaire                   #
 #                                                                              #
@@ -3355,6 +3372,65 @@ class TestVizReportLecture(VizPagesBase):
         _rc, j = A.viz_report_read("s1", "a.fr")
         self.assertTrue(j["report"]["is_baseline"])
         self.assertEqual(j["report"]["items"], [])
+
+
+# --------------------------------------------------------------------------- #
+#  viz_report_payload : ce que la 1.3.10 et la 1.3.12 ajoutent survit au       #
+#  passage par le serveur                                                      #
+#                                                                             #
+#  Le brief 1.3.13 accusait le plugin d'égarer `cause` et `seo_changes` dans   #
+#  le rapport agrégé. Vérifié sur la chaîne complète : la 1.3.12 les rend sur  #
+#  chaque item, et c'est `viz_report_item` qui n'en recopiait que six clés.    #
+#  L'échantillon rejoué est celui de la maquette, pas une copie.               #
+# --------------------------------------------------------------------------- #
+class TestVizReportPayload(unittest.TestCase):
+
+    def test_cause_et_seo_changes_survivent_a_l_echantillon_1310(self):
+        rep = A.viz_report_payload(preview_sample("VIZ_REPORT"))
+        accueil_mobile, applications_desktop, applications_mobile = rep["items"][:3]
+        self.assertEqual(accueil_mobile["cause"], "seo")
+        self.assertEqual(accueil_mobile["seo_changes"], [
+            {"field": "title", "before": "GEIQ Pays de la Loire — alternance",
+             "after": "GEIQ Pays de la Loire"},
+            {"field": "description", "before": "Trouvez votre alternance en Pays de la Loire",
+             "after": ""},
+        ])
+        self.assertEqual(applications_desktop["cause"], "pixel+seo")
+        self.assertEqual(applications_desktop["seo_changes"],
+                         [{"field": "h1Count", "before": "1", "after": "2"}])
+        # Un item 1.3.9 n'a ni l'une ni l'autre : absence, pas « cause vide ».
+        self.assertNotIn("cause", applications_mobile)
+        self.assertNotIn("seo_changes", applications_mobile)
+
+    def test_promu_en_reference_et_runs_agreges_au_sommet(self):
+        brut = preview_sample("VIZ_REPORT_BASELINE_AVEC_LIGNES")
+        brut["run_ids"] = ["cmtu7yck601s", "cmtu7ycn901s", "", None]
+        rep = A.viz_report_payload(brut)
+        self.assertFalse(rep["is_baseline"])
+        self.assertTrue(rep["promoted_as_baseline"])
+        self.assertEqual(rep["run_ids"], ["cmtu7yck601s", "cmtu7ycn901s"])
+        # Un rapport 1.3.9 : la clé est là, fausse, et la liste vide.
+        ancien = A.viz_report_payload(REPORT_JSON)
+        self.assertFalse(ancien["promoted_as_baseline"])
+        self.assertEqual(ancien["run_ids"], [])
+
+    def test_textes_bornes_et_formes_illisibles_ecartees(self):
+        item = A.viz_report_item({
+            "page": "P", "url": "https://a.fr/", "viewport": "Mobile", "status": "warn",
+            "diff_percent": 0, "label": "À vérifier", "cause": "x" * 100,
+            "seo_changes": [{"field": "t" * 100, "before": "b" * 500, "after": None},
+                            {"field": "", "before": "sans champ"}, "pas un objet",
+                            {"before": "sans champ non plus"}],
+        })
+        self.assertEqual(len(item["cause"]), 40)
+        self.assertEqual(len(item["seo_changes"]), 1)
+        self.assertEqual(len(item["seo_changes"][0]["field"]), 40)
+        self.assertEqual(len(item["seo_changes"][0]["before"]), 200)
+        self.assertEqual(item["seo_changes"][0]["after"], "")
+        # `seo_changes` qui n'est pas une liste, ou vide : la clé n'est pas posée.
+        for sale in ("title", {}, [], [{"field": ""}]):
+            self.assertNotIn("seo_changes", A.viz_report_item(
+                {"page": "P", "status": "ok", "cause": "", "seo_changes": sale}))
 
 
 class TestVizReportRoute(BaseTmp):

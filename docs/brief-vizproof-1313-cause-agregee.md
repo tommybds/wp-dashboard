@@ -101,3 +101,17 @@ HTML du corps, ni compte de mots, ni empreinte. Le seul HTML persisté est
 l'`outerHTML` des sélecteurs critiques déclarés à la main. Un contrôle « le
 contenu a-t-il changé ? » demande donc une capture nouvelle, un champ nouveau
 en base et un diff nouveau — c'est un chantier à part entière, pas une 1.3.13.
+
+## Résolution, le 9 septembre 2026 : pas de 1.3.13
+
+Vérifié sur la chaîne complète du plugin : la 1.3.12 rend `cause` et
+`seo_changes` sur chaque item du rapport agrégé, à l'identique du run seul, et
+`promoted_as_baseline` et `run_ids` au sommet. La perte était dans le dashboard,
+dans `actions_server.py` : `viz_report_item` ne recopiait que six clés, et
+`viz_report_payload` ne recopiait ni `promoted_as_baseline` ni `run_ids`, d'où
+le `promoted_as_baseline: None` du constat.
+
+Les quatre clés sont recopiées, bornées, et absentes quand elles sont vides.
+`viz.js` les lisait déjà : les badges et la ligne `title : ancien → nouveau`
+s'allument sans autre changement. Le test rejoue l'échantillon 1.3.10 de
+`tools/preview.py` à travers `viz_report_payload`.

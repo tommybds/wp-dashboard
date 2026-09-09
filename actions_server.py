@@ -1410,8 +1410,37 @@ def viz_report_cmd(run=""):
             + " --format=json")
 
 
+VIZ_SEO_CHANGES_MAX = 20   # champs SEO recopiés par item : un title, une description, quelques h1
+VIZ_RUN_IDS_MAX = 50       # runs agrégés recopiés : un run par page surveillée
+
+
+def viz_seo_change(c):
+    """Un champ SEO modifié (plugin 1.3.10) : `field`, `before`, `after`. None sans champ.
+
+    `before` et `after` restent des chaînes MÊME VIDES : une description effacée
+    arrive en `after: ""`, et c'est précisément ce que l'écran doit dire
+    (« (vide) »). Les ramener à None ferait passer un effacement pour une absence.
+    """
+    if not isinstance(c, dict):
+        return None
+    field = str(c.get("field") or "").strip()[:40]
+    if not field:
+        return None
+    return {"field": field,
+            "before": str(c.get("before") if c.get("before") is not None else "")[:200],
+            "after": str(c.get("after") if c.get("after") is not None else "")[:200]}
+
+
 def viz_report_item(x):
-    """Une ligne du rapport ramenée au contrat, ou None si elle est illisible."""
+    """Une ligne du rapport ramenée au contrat, ou None si elle est illisible.
+
+    `cause` et `seo_changes` (plugin 1.3.10) sont recopiées quand elles existent,
+    et ABSENTES sinon : un item 1.3.9 n'en a pas, et l'écran distingue « rien à
+    expliquer » de « cause vide ». C'est ici, et non dans le plugin, que les
+    deux clés se perdaient : la 1.3.12 les rend sur chaque item du rapport
+    agrégé, vérifié sur la chaîne complète, et cette fonction n'en recopiait
+    que six. Le constat du brief 1.3.13 venait de là.
+    """
     if not isinstance(x, dict):
         return None
     try:
@@ -1419,12 +1448,20 @@ def viz_report_item(x):
     except (TypeError, ValueError):
         diff = 0.0
     st = str(x.get("status") or "").strip().lower()
-    return {"page": str(x.get("page") or "")[:200],
+    item = {"page": str(x.get("page") or "")[:200],
             "url": viz_http_url(x.get("url")),
             "viewport": str(x.get("viewport") or "")[:40],
             "status": st if st in VIZ_REPORT_STATUTS else "other",
             "diff_percent": diff,
             "label": str(x.get("label") or "")[:120]}
+    cause = str(x.get("cause") or "").strip()[:40]
+    if cause:
+        item["cause"] = cause
+    brut = x.get("seo_changes") if isinstance(x.get("seo_changes"), list) else []
+    changes = [y for y in (viz_seo_change(c) for c in brut[:VIZ_SEO_CHANGES_MAX]) if y]
+    if changes:
+        item["seo_changes"] = changes
+    return item
 
 
 def viz_report_payload(j):
@@ -1441,12 +1478,19 @@ def viz_report_payload(j):
     res = j.get("summary") if isinstance(j.get("summary"), dict) else {}
     brut = j.get("items") if isinstance(j.get("items"), list) else []
     items = [y for y in (viz_report_item(x) for x in brut[:VIZ_REPORT_MAX_ITEMS]) if y]
+    runs = j.get("run_ids") if isinstance(j.get("run_ids"), list) else []
     return {
         "run_id": str(j.get("run_id") or "")[:80],
         "status": str(j.get("status") or "")[:40],
         "created_at": str(j.get("created_at") or "")[:40],
         "report_url": viz_http_url(j.get("report_url")),
         "is_baseline": bool(j.get("is_baseline")),
+        # 1.3.12 : un scan PROMU en référence garde `is_baseline` faux, c'est
+        # `promoted_as_baseline` qui le dit. Sans cette recopie, le constat
+        # affichait `promoted_as_baseline: None` sur un rapport qui le portait.
+        "promoted_as_baseline": bool(j.get("promoted_as_baseline")),
+        # 1.3.11 : les runs agrégés, un par page surveillée. Vide avant.
+        "run_ids": [str(r)[:80] for r in runs[:VIZ_RUN_IDS_MAX] if str(r or "").strip()],
         "totals": {k: viz_int(tot.get(k)) for k in ("fail", "warn", "ok", "other")},
         "total_items": viz_int(j.get("total_items")) or len(items),
         "summary": {"pages_scanned": viz_int(res.get("pages_scanned")),
