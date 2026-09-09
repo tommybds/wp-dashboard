@@ -1156,6 +1156,17 @@ function ongletExtensions(s) {
 
   blocs.push(h('section', { class: 'sitesec' },
     h('h3', { text: 'À mettre à jour (' + aMaj.length + ')' }),
+    /* Le bouton « MAJ » de ces lignes lance un `wp plugin update` et rien
+       d'autre : ni sauvegarde UpdraftPlus, ni archive des fichiers, donc aucun
+       point de rétablissement. La « MAJ sûre » du haut fait les deux. Les deux
+       boutons se ressemblent trop pour que la différence aille sans dire. */
+    aMaj.length
+      ? h('p', { class: 'hint hint-tight' },
+        'Ces boutons mettent à jour ', h('b', { text: 'sans sauvegarde' }),
+        ' — rien à rétablir si le site casse. La ',
+        h('b', { text: 'MAJ sûre' }), ' en haut de page sauvegarde, archive les fichiers '
+        + 'et sait revenir en arrière.')
+      : null,
     aMaj.length
       ? h('table', { class: 'ptable' }, h('tbody', {}, aMaj.map(p => ligneExtension(s, p, true))))
       : h('p', { class: 'hint hint-tight', text: 'Toutes les extensions sont à jour.' })));
