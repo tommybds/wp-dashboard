@@ -1816,6 +1816,8 @@ function suivreVizUp(srv, dom, nid) {
     const visuel = f === 'warn' && v && v.anomalies;
     const verdict = visuel ? 'mise à jour appliquée' : vizupVerdict(job);
     NOTIF.done(nid, { ok: f !== 'err', warn: f === 'warn',
+                      // Le clic mène là où se lit le verdict, pas à l'Aperçu.
+                      onglet: v ? 'vizproof' : '',
                       message: verdict + (v ? ' · ' + vizPhraseLongue(v) : '') });
     // L'inventaire a été re-scanné côté serveur : on recharge, puis on remet la
     // console du job (le rendu la réinitialise).
@@ -1911,6 +1913,9 @@ async function runAction(btn) {
     else {
       NOTIF.done(nid, {
         ok: !!(j.ok || anom), warn: anom || !!refus || (v ? vizEtat(v) === 'warn' : false),
+        // Dès qu'un verdict visuel accompagne l'action, le clic sur la ligne
+        // mène au volet qui le détaille — c'est la seule page qui répond.
+        onglet: (v || anom) ? 'vizproof' : '',
         message: anom ? 'anomalies visuelles détectées'
           : refus || (j.ok ? (v ? 'contrôle visuel : ' + vizPhraseLongue(v) : '')
             : stripPhpNoise(String(j.output || j.error || '')).slice(-160) || ('rc ' + (j.rc ?? '?'))),

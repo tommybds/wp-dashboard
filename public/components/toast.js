@@ -49,7 +49,9 @@ export const NOTIF = (() => {
   function ouvrir(n) {
     try {
       if (n.kind === 'bulk') { if (OUVREURS.bulk) OUVREURS.bulk(); return; }
-      if (n.site && n.site.domain && OUVREURS.site) OUVREURS.site(n.site.srv, n.site.domain);
+      if (n.site && n.site.domain && OUVREURS.site) {
+        OUVREURS.site(n.site.srv, n.site.domain, n.site.onglet || '');
+      }
     } catch (e) { /* un ouvreur cassé ne doit pas figer la barre */ }
   }
   function noeud(n) {
@@ -153,6 +155,9 @@ export const NOTIF = (() => {
     // abouti), et un `ok:false` accompagné de `warn` doit rester orange.
     n.etat = o.warn ? 'warn' : ((o.ok === false) ? 'err' : 'ok');
     if (o.label != null) n.label = String(o.label);
+    // La destination peut se préciser à l'arrivée : au démarrage, on ignore
+    // encore si l'action produira un verdict de contrôle visuel.
+    if (o.onglet != null && n.site) n.site = Object.assign({}, n.site, { onglet: String(o.onglet) });
     n.detail = String(o.message || '').replace(/\s+/g, ' ').trim().slice(0, 180);
     peindre(n);
     battre();

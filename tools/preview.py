@@ -666,6 +666,22 @@ VIZ_REPORT_BASELINE = {
     "summary": {"pages_scanned": 4, "pages_changed": 0, "top_page": ""},
     "items": [], "has_more": False, "message": "run de référence",
 }
+# Vu sur le parc, et contre-intuitif : un run marqué `is_baseline` QUI PORTE des
+# lignes (totals warn = 2). L'écran affichait « rien à comparer » et jetait le
+# tableau — donc « je ne vois rien » sur un rapport qui avait deux lignes.
+VIZ_REPORT_BASELINE_AVEC_LIGNES = {
+    "run_id": "run-9101", "status": "completed", "created_at": now(0),
+    "report_url": "https://vizproof.example/r/9101", "is_baseline": True,
+    "totals": {"fail": 0, "warn": 2, "ok": 0, "other": 0}, "total_items": 2,
+    "summary": {"pages_scanned": 1, "pages_changed": 1, "top_page": "Page d'accueil"},
+    "items": [
+        {"page": "Page d'accueil", "url": "https://site-04.exemple.fr/",
+         "viewport": "mobile", "status": "warn", "diff_percent": 0.084, "label": "À vérifier"},
+        {"page": "Page d'accueil", "url": "https://site-04.exemple.fr/",
+         "viewport": "desktop", "status": "warn", "diff_percent": 0.042, "label": "À vérifier"},
+    ],
+    "has_more": False, "message": "",
+}
 # Verdict complet, tel que le rend /api/actions/viz_last une fois le scan fini.
 VIZ_VERDICT = {
     "ran": True, "pending": False, "source": "plugin", "run_id": "run-9182", "rc": 2,
@@ -682,9 +698,10 @@ def copie(x):
 def viz_report_etat(domain=""):
     """GET /api/actions/viz_report — le détail, la baseline, ou le repli.
 
-    site-08 rend un run BASELINE (rien à comparer), site-16 un plugin trop
-    ancien (repli : compte d'anomalies + lien), tout autre site relié le
-    rapport détaillé. Un site sans SSH répond rc 97, comme en vrai.
+    site-08 rend un run BASELINE vide (rien à comparer), site-04 un run marqué
+    baseline QUI PORTE des lignes (le cas qui faisait disparaître le tableau),
+    site-16 un plugin trop ancien (repli : compte d'anomalies + lien), tout
+    autre site relié le rapport détaillé. Un site sans SSH répond rc 97, comme en vrai.
     """
     if any(x["domain"] == domain for x in REST_SITES):
         return {"ok": False, "rc": 97, "source": "indisponible", "report": None,
@@ -692,6 +709,9 @@ def viz_report_etat(domain=""):
     if domain == "site-08.exemple.fr":
         return {"ok": True, "rc": 0, "source": "plugin", "message": "",
                 "report": copie(VIZ_REPORT_BASELINE)}
+    if domain == "site-04.exemple.fr":
+        return {"ok": True, "rc": 0, "source": "plugin", "message": "",
+                "report": copie(VIZ_REPORT_BASELINE_AVEC_LIGNES)}
     if domain == "site-16.exemple.fr":
         return {"ok": False, "rc": 99, "source": "indisponible", "report": None,
                 "message": "extension VizProof trop ancienne pour détailler les "

@@ -391,9 +391,13 @@ function ouvrirSite(cle, onglet) {
 
 /* La barre de notifications ne connaît qu'un couple (serveur, domaine) ; la
    clé d'URL, elle, est le nom Kuma quand il existe. */
-function ouvrirSiteParDomaine(srv, dom) {
+function ouvrirSiteParDomaine(srv, dom, onglet) {
   const s = siteParCle(dom);
-  ouvrirSite(s ? cleDeSite(s) : dom);
+  const cle = s ? cleDeSite(s) : dom;
+  // `onglet` : une notification de contrôle visuel doit tomber sur le volet
+  // VizProof, pas sur l'Aperçu — sinon le clic « n'arrive nulle part ».
+  if (onglet) { location.hash = '#site/' + encodeURIComponent(cle) + '/' + onglet; return; }
+  ouvrirSite(cle);
 }
 
 function applyHash() {

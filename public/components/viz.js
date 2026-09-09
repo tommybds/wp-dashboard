@@ -199,13 +199,20 @@ function vizReport(v) {
    lisent comme « tout va bien ». */
 function vizReportResume(rep) {
   if (!rep) return '';
-  if (rep.is_baseline) return 'baseline de référence — rien à comparer';
+  const lignes = Array.isArray(rep.items) ? rep.items.length : 0;
+  /* `is_baseline` sans aucune ligne : c'est bien un témoin de référence, il n'y
+     a rien à comparer et le dire est juste. Mais un run marqué baseline QUI
+     PORTE des lignes existe (vu sur le parc : 2 lignes, totals warn = 2) — et
+     l'écran affichait alors « rien à comparer » au-dessus d'un tableau qu'il
+     venait de jeter. On ne masque plus des données qui sont là. */
+  if (rep.is_baseline && !lignes) return 'baseline de référence — rien à comparer';
   const s = rep.summary || {}, t = rep.totals || {};
   const n = vzNb(s.pages_scanned), c = vzNb(s.pages_changed);
-  return [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
-    c + ' avec différence',
-    vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + vzNb(t.warn) + ' à vérifier',
-  ].join(' · ');
+  return (rep.is_baseline ? 'run de référence · ' : '')
+    + [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
+      c + ' avec différence',
+      vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + vzNb(t.warn) + ' à vérifier',
+    ].join(' · ');
 }
 
 /* Écart en pour cent. Quatre décimales sous le centième : c'est là que se
@@ -281,8 +288,9 @@ export function vizReportHtml(rep, opts) {
   const lien = u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>` : '';
   const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`;
   const lignes = vizReportLignes(rep);
-  // Une baseline n'a aucune ligne à comparer : le tableau n'aurait rien à dire.
-  if (rep.is_baseline || !lignes.length) return `<div class="vzr">${resume}</div>`;
+  // Sans ligne, le tableau n'aurait rien à dire — quelle que soit la nature du
+  // run. Avec des lignes, on les montre, baseline ou pas.
+  if (!lignes.length) return `<div class="vzr">${resume}</div>`;
   const top = String((rep.summary || {}).top_page || '');
   const tab = '<div class="vzr-w"><table class="vzr-t">'
     + '<thead><tr><th>Page</th><th>Écran</th><th>Écart</th><th>Statut</th></tr></thead>'
@@ -451,7 +459,11 @@ export function vizEtat(v) {
    place mais « 2 pages scannées · 1 avec différence » y tient. */
 export function vizPhraseLongue(v) {
   const p = vizPhrase(v), r = vizReport(v);
-  if (!r || r.is_baseline) return p;
+  // Une baseline SANS ligne ne décrit pas le verdict annoncé (elle décrit le
+  // témoin pris avant) : l'accoler donnait « anomalies détectées (5) · baseline
+  // de référence — rien à comparer ». Avec des lignes, le résumé porte bien sur
+  // ce run et vaut la peine d'être dit.
+  if (!r || (r.is_baseline && !(Array.isArray(r.items) && r.items.length))) return p;
   const top = String((r.summary || {}).top_page || '');
   return p + ' · ' + vizReportResume(r)
     + (top && !r.is_baseline ? ' · page la plus impactée : ' + top : '');
@@ -489,7 +501,9 @@ export function suivreVizLast(srv, dom, nid) {
       }
       return { fini: false };
     }
-    NOTIF.done(nid, { ok: vizEtat(v) !== 'err', warn: vizEtat(v) === 'warn', message: 'contrôle visuel : ' + vizPhraseLongue(v) });
+    NOTIF.done(nid, { ok: vizEtat(v) !== 'err', warn: vizEtat(v) === 'warn',
+                      onglet: 'vizproof',
+                      message: 'contrôle visuel : ' + vizPhraseLongue(v) });
     vizConsoleMaj(dom, v);
     loadFleet().catch(() => {});
     return { fini: true };
