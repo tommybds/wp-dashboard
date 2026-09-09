@@ -16,6 +16,10 @@
 .ic-14{width:14px;height:14px;vertical-align:-2px}
 .ic-ok{color:var(--ok)} .ic-warn{color:var(--warn)} .ic-err{color:var(--err)}
 .ic-spin{animation:spin 1s linear infinite;transform-origin:50% 50%}
+/* Zone en cours de chargement : la roue et le mot vont ensemble, alignés sur la
+   ligne de texte. Le gris seul se confondait avec les aides alentour — on
+   croyait la zone vide, pas en train de se remplir. */
+.chargement{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ---- boutons --------------------------------------------------------------

@@ -631,6 +631,9 @@ def safe_update_status():
 # rassurants), et un site dont l'extension est trop ancienne pour la commande
 # (repli : compte d'anomalies + lien, comme avant).
 #
+# `pages_scanned: 1` alors que le site en surveille 3 : ce n'est pas une erreur,
+# c'est la règle de VizProof — un run PAR PAGE, et le rapport rend le dernier.
+# L'écran doit le dire plutôt que de laisser croire à deux pages perdues.
 # Le rapport détaillé mélange volontairement les DEUX générations d'extension :
 # des items 1.3.10 qui portent `cause` et `seo_changes`, et des items 1.3.9 qui
 # n'ont ni l'un ni l'autre. Le parc mettra des semaines à passer d'une version
@@ -639,7 +642,7 @@ VIZ_REPORT = {
     "run_id": "run-9182", "status": "completed", "created_at": now(0),
     "report_url": "https://vizproof.example/r/9182", "is_baseline": False,
     "totals": {"fail": 0, "warn": 3, "ok": 2, "other": 0}, "total_items": 5,
-    "summary": {"pages_scanned": 2, "pages_changed": 2, "top_page": "Applications"},
+    "summary": {"pages_scanned": 1, "pages_changed": 1, "top_page": "Applications"},
     "items": [
         # 1.3.10 — le cas qui n'était pas explicable avant : zéro pixel d'écart,
         # « à vérifier » quand même, parce que la balise title a changé.

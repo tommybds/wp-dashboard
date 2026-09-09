@@ -212,6 +212,16 @@ function dessiner() {
   }
 }
 
+/* Attente visible. Le « chargement… » gris se confondait avec les textes d'aide
+   qui l'entourent, au point qu'on croyait la zone vide plutôt qu'en train de se
+   remplir. Une roue qui tourne dit la différence sans un mot de plus, et le mot
+   reste pour les lecteurs d'écran (`role=status`). */
+function attente(texte) {
+  return h('span', { class: 'chargement small', role: 'status' },
+    iconEl('loader-circle', { size: 14, cls: 'ic-spin' }),
+    h('span', { text: texte || 'chargement…' }));
+}
+
 /* ---- en-tête -------------------------------------------------------------- */
 function entete(s) {
   const e = etatSite(s);
@@ -794,10 +804,12 @@ function brancherViz() {
   if (slot) {
     // La requête passe par SSH jusqu'au site : plusieurs secondes, parfois.
     // Toutes les autres zones asynchrones de cette page disent « chargement… ».
-    slot.innerHTML = '<span class="muted small">chargement du dernier rapport…</span>';
-    chargerVizRapport(s, slot, { replie: false })
+    slot.innerHTML = '<span class="chargement small" role="status">'
+      + icon('loader-circle', { size: 14, cls: 'ic-spin' })
+      + '<span>lecture du dernier rapport sur le site…</span></span>';
+    chargerVizRapport(s, slot, { replie: false, site: s })
       .catch(() => {})
-      .finally(() => { if (slot.textContent.trim() === 'chargement du dernier rapport…') slot.innerHTML = ''; });
+      .finally(() => { if (slot.querySelector('.ic-spin')) slot.innerHTML = ''; });
   }
 }
 
@@ -812,7 +824,7 @@ function ongletApercu(s) {
   if (s.via === 'rest') {
     blocs.push(h('section', { class: 'sitesec' },
       h('h3', { text: 'Identifiants WordPress' }),
-      h('div', { id: 'wpcred' }, h('span', { class: 'muted small', text: 'chargement…' })),
+      h('div', { id: 'wpcred' }, attente()),
       h('div', { class: 'actions mt2', id: 'rest-vizslot' }),
       h('p', { class: 'hint hint-loose', id: 'rest-note' })));
   }
@@ -892,7 +904,7 @@ function resteAFaire(s) {
 
 function incidentsEl() {
   if (INCIDENTS === null) {
-    return h('p', { class: 'hint hint-tight' }, h('span', { class: 'muted small', text: 'chargement…' }));
+    return h('p', { class: 'hint hint-tight' }, attente('recherche des alertes de ce site…'));
   }
   if (!INCIDENTS.length) {
     const reste = resteAFaire(CUR || {});
@@ -1309,15 +1321,15 @@ function ongletSecurite(s) {
     h('section', { class: 'sitesec' },
       h('h3', { text: 'Comptes administrateurs' }),
       h('p', { class: 'hint', text: "Un compte absent de la référence est signalé : c'est le signal n°1 d'une compromission." }),
-      h('div', { id: 'site-admins', class: 'small' }, h('span', { class: 'muted small', text: 'chargement…' }))),
+      h('div', { id: 'site-admins', class: 'small' }, attente())),
     h('section', { class: 'sitesec' },
       h('h3', { text: 'Intégrité du cœur (checksums)' }),
       h('p', { class: 'hint' }, 'Lance ', h('code', { text: 'wp core verify-checksums' }), ' et compare au cœur officiel.'),
-      h('div', { id: 'site-checksums', class: 'small' }, h('span', { class: 'muted small', text: 'chargement…' }))),
+      h('div', { id: 'site-checksums', class: 'small' }, attente())),
     h('section', { class: 'sitesec' },
       h('h3', { text: 'Erreurs PHP' }),
       h('p', { class: 'hint', text: 'Lecture des journaux que le serveur écrit déjà, regroupées par message et par fichier.' }),
-      h('div', { id: 'site-phperr', class: 'small' }, h('span', { class: 'muted small', text: 'chargement…' }))),
+      h('div', { id: 'site-phperr', class: 'small' }, attente())),
   ];
 }
 
@@ -1488,7 +1500,7 @@ function ongletHistorique() {
   });
   return h('section', { class: 'sitesec' },
     h('h3', { text: 'Historique du site' }), barre,
-    h('div', { id: 'site-timeline' }, h('span', { class: 'muted small', text: 'chargement…' })));
+    h('div', { id: 'site-timeline' }, attente()));
 }
 
 async function loadTimeline(srv, dom) {

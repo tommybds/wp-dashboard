@@ -336,14 +336,19 @@ function vizVerdictsHtml(rep) {
     `<span class="pill ${c}"${tip[c] ? ` title="${H(tip[c])}"` : ''}>${H(txt)}</span>`).join(' ') + '</span>';
 }
 
-/** Détail d'un rapport, en HTML. `opts.replie` force le repli (onglet Aperçu). */
+/** Détail d'un rapport, en HTML. `opts.replie` force le repli (onglet Aperçu).
+ *  `opts.site` permet de dire que le rapport ne couvre qu'une partie des pages. */
 export function vizReportHtml(rep, opts) {
   if (!rep) return '';
   const o = opts || {};
   const u = safeUrl(rep.report_url);
   const lien = u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>` : '';
+  const part = o.site ? vizPartiel(o.site, rep) : null;
   const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`
-    + vizVerdictsHtml(rep);
+    + vizVerdictsHtml(rep)
+    + (part ? `<div class="vzr-s muted">Ce rapport ne couvre qu'<b>une page sur `
+      + `${H(String(part.surveillees))}</b> : VizProof enregistre un rapport par page, `
+      + `et celui-ci est le dernier. Les autres se lisent dans VizProof.</div>` : '');
   const lignes = vizReportLignes(rep);
   // Sans ligne, le tableau n'aurait rien à dire — quelle que soit la nature du
   // run. Avec des lignes, on les montre, baseline ou pas.
@@ -390,6 +395,16 @@ function vizLastRunEl(s, compact) {
  * `titre:false` retire l'étiquette « VizProof » quand l'appelant en pose déjà
  * une — sur son propre onglet, la lire deux fois de suite ne dit rien de plus.
  */
+/* Nombre de pages surveillées vs pages réellement couvertes par le rapport
+   affiché. VizProof crée un run PAR PAGE ; `wp vizproof report` rend le
+   dernier. Sur un site à trois pages, le tableau n'en montre donc qu'une, et
+   rien ne le disait — on croyait deux pages perdues. */
+function vizPartiel(s, rep) {
+  const n = Number((vizInfo(s) || {}).pages) || 0;
+  const vues = Number(((rep || {}).summary || {}).pages_scanned) || 0;
+  return (n > 1 && vues > 0 && vues < n) ? { surveillees: n, vues } : null;
+}
+
 export function vizBlocEl(s, { titre = true, compact = false } = {}) {
   const t = vizEtatTexte(s), e = t.etat;
   if (e === 'nodata') return null;
@@ -474,7 +489,8 @@ export async function chargerVizRapport(s, slot, opts) {
   if (!slot.isConnected || slot.dataset.domain !== s.domain || !j || !j.report) return;
   // `replie` par défaut : dans une modale ou un aperçu, le tableau attend qu'on
   // le demande. Sur l'onglet VizProof, il EST ce qu'on est venu voir.
-  slot.innerHTML = vizReportHtml(j.report, { replie: (opts || {}).replie !== false });
+  const o = opts || {};
+  slot.innerHTML = vizReportHtml(j.report, { replie: o.replie !== false, site: o.site || s });
 }
 
 /* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ----
