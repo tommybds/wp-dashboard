@@ -1353,7 +1353,7 @@ function renderMoniteurs() {
       h('td', {}, mon.active ? chipEl('actif', 'ok') : chipEl('en pause', 'mut')),
       h('td', {}, etatKuma === undefined
         ? h('span', { class: 'muted small', text: '—' })
-        : chipEl(etatKuma === 1 ? 'en ligne' : etatKuma === 0 ? 'down' : 'en attente',
+        : chipEl(etatKuma === 1 ? 'en ligne' : etatKuma === 0 ? 'injoignable' : 'en attente',
           etatKuma === 1 ? 'ok' : etatKuma === 0 ? 'err' : 'warn')),
       h('td', {}, pause, ' ', del));
   }) : h('tr', {}, h('td', { colspan: '5' }, h('span', { class: 'muted small', text: 'aucun moniteur' }))));

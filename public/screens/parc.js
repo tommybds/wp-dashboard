@@ -10,7 +10,7 @@
 
 import { api } from '../lib/api.js';
 import { esc as H, h, mount, activeAuClavier, occupe } from '../lib/dom.js';
-import { debounce } from '../lib/format.js';
+import { debounce, udIntervalFr } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import {
   store, allSites, etatSite, bkAge, attn, key, kName, nomDeSite, clientDe,
@@ -23,6 +23,9 @@ import { demarrerJob } from '../components/job.js';
 import { NOTIF } from '../components/toast.js';
 import { bindSortable, setDensity, colonnesMasquees, enregistrerColonnes } from '../components/table.js';
 import { setIncidentCount } from '../components/shell.js';
+// Les gravités du flux public sont en anglais : la table de traduction vit
+// dans l'écran Sécurité, qui les affiche déjà partout ailleurs.
+import { SEVLABEL } from './securite.js';
 import { ouvrirFeuille, boutonFeuille } from '../components/sheet.js';
 import { openVizConnect, vizCellEl, vizInfo, vizOf, vizVal } from '../components/viz.js';
 import { estNow } from '../components/incident.js';
@@ -117,8 +120,11 @@ function barreFiltres() {
   const fst = h('select', { id: 'fst', 'aria-label': 'Statut' },
     h('option', { value: '', text: 'Tous statuts' }),
     h('option', { value: 'up', text: 'En ligne' }),
-    h('option', { value: 'down', text: 'Down' }),
-    h('option', { value: 'none', text: 'Sans monitoring' }));
+    h('option', { value: 'down', text: 'Injoignable' }),
+    /* « Sans monitoring » se lisait comme « sans Uptime Kuma » — vrai pour le
+       parc entier quand Kuma n'est pas branché, alors que ce filtre retient les
+       sites dont AUCUNE des deux sources n'a donné d'état. */
+    h('option', { value: 'none', text: 'État inconnu' }));
   fsrv.onchange = e => { store.filt.srv = e.target.value; render(); };
   fgrp.onchange = e => { store.filt.grp = e.target.value; render(); };
   fst.onchange = e => { store.filt.st = e.target.value; render(); };
@@ -390,7 +396,7 @@ function compteurs() {
   const defs = [
     ['', 'sites', S.length, ''],
     ['up', 'en ligne', up, 'ok'],
-    ['down', 'down', down, down ? 'err' : 'ok'],
+    ['down', 'injoignables', down, down ? 'err' : 'ok'],
     ['core', 'MAJ cœur', core, core ? 'warn' : 'ok'],
     ['plug', 'MAJ extensions', plug, plug ? 'warn' : 'ok'],
     ['bk', 'sauvegarde > ' + seuil + ' h', bk, bk ? 'warn' : 'ok'],
@@ -519,7 +525,15 @@ function celluleCore(s) {
 
 function cellulePlugins(s) {
   if (s.plugins_total == null) return h('td', {}, chipEl('—', 'mut'));
-  const td = h('td', {}, h('span', { class: 'num', text: s.plugins_active + '/' + s.plugins_total }), ' ');
+  const n = Number(s.plugins_updates) || 0;
+  const td = h('td', {
+    // « 7/7 » ne se devine pas : c'est la seule colonne chiffrée qui n'expliquait
+    // aucun de ses deux nombres.
+    title: s.plugins_active + ' extension' + (s.plugins_active > 1 ? 's' : '') + ' active'
+      + (s.plugins_active > 1 ? 's' : '') + ' sur ' + s.plugins_total + ' installée'
+      + (s.plugins_total > 1 ? 's' : '')
+      + (n ? ' · ' + n + ' mise' + (n > 1 ? 's' : '') + ' à jour en attente' : ' · toutes à jour'),
+  }, h('span', { class: 'num', text: s.plugins_active + '/' + s.plugins_total }), ' ');
   td.append(s.plugins_updates ? chipEl(s.plugins_updates + ' MAJ', 'warn') : chipEl('ok', 'ok'));
   return td;
 }
@@ -531,8 +545,8 @@ function celluleBackup(s) {
   const txt = age >= seuil ? 'il y a ' + (age / 24).toFixed(1) + ' j' : 'il y a ' + Math.round(age) + ' h';
   const ud = s.updraft;
   return h('td', {
-    title: 'fichiers : ' + (ud.interval || '?') + ' × ' + (ud.retain || '?') + ' jeux · base : '
-      + (ud.interval_db || '?') + ' × ' + (ud.retain_db || '?') + ' jeux',
+    title: 'fichiers : ' + udIntervalFr(ud.interval) + ' × ' + (ud.retain || '?') + ' jeux · base : '
+      + udIntervalFr(ud.interval_db) + ' × ' + (ud.retain_db || '?') + ' jeux',
   }, chipEl(txt, age >= seuil ? 'warn' : 'ok'));
 }
 
@@ -567,7 +581,7 @@ function celluleVuln(s) {
   if (!v.count) return h('td', {}, chipEl('0', 'ok'));
   return h('td', {}, chipEl(String(v.count), v.fixcrit ? 'err' : 'warn', {
     title: v.fixcrit ? 'au moins une vulnérabilité critique corrigeable par une mise à jour'
-      : 'vulnérabilités connues — gravité maximale : ' + (v.worst || '?'),
+      : 'vulnérabilités connues — gravité maximale : ' + (SEVLABEL[v.worst] || v.worst || 'inconnue'),
   }));
 }
 

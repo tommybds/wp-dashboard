@@ -205,6 +205,8 @@ function st(d) { const n = kName(d); return n ? store.status[n] : undefined; }
    passent tous par là, donc ils ne peuvent pas diverger.
 
      v      1 en ligne · 0 injoignable · 2 en attente · undefined inconnu
+            (le MOT est le même quelle que soit la source : « down » d'un côté
+             et « injoignable » de l'autre décrivaient le même fait)
      source 'kuma' | 'probe' | ''    (pour un affichage discret, pas pour trier)
      tip    d'où vient ce verdict, et quand — la phrase de l'infobulle
 
@@ -216,7 +218,7 @@ export function etatSite(d) {
   if (v !== undefined) {
     return {
       v,
-      txt: v === 1 ? 'en ligne' : v === 0 ? 'down' : v === 2 ? 'en attente' : 'inconnu',
+      txt: v === 1 ? 'en ligne' : v === 0 ? 'injoignable' : v === 2 ? 'en attente' : 'inconnu',
       niv: v === 1 ? 'ok' : v === 0 ? 'err' : v === 2 ? 'warn' : 'mut',
       source: 'kuma',
       tip: "d'après Uptime Kuma",
