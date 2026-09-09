@@ -751,8 +751,22 @@ function ongletVizproof(s) {
   const blocs = [];
   const viz = vizBlocEl(s, { titre: false, compact: true });
 
+  /* Site géré par l'agent : VizProof continue de scanner et d'archiver tout
+     seul — c'est la LECTURE du détail qui manque ici, parce qu'elle passe par
+     `wp vizproof report`, une commande wp-cli. Sans cette phrase, l'absence de
+     tableau se lit comme un scan qui n'aurait pas eu lieu. */
+  const notéSansSsh = s.via === 'rest'
+    ? h('p', { class: 'hint hint-loose' },
+      h('b', { text: 'Site géré sans SSH' }),
+      ' : VizProof surveille ce site et enregistre ses scans normalement, mais le '
+      + 'dashboard ne peut pas en lire le détail — il passe par une commande wp-cli. '
+      + 'L’état et la date ci-dessus viennent de l’agent ; le tableau des écarts se '
+      + 'consulte dans VizProof ou dans wp-admin.')
+    : null;
+
   blocs.push(h('section', { class: 'sitesec', id: 'site-vizbloc' },
     h('h3', { text: 'Contrôle visuel' }),
+    notéSansSsh,
     viz || h('p', { class: 'hint hint-tight',
       text: 'État inconnu : aucun inventaire d’extensions pour ce site.' })));
 
