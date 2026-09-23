@@ -105,6 +105,7 @@ VIZ_SRC_DASHBOARD = "dashboard"  # …ou, en repli, par nous
 VIZ_PHASE_WAIT = "attente du scan du plugin"
 VIZ_PHASE_RUNNING = "scan en cours"
 VIZ_PHASE_DASHBOARD = "scan dashboard"
+VIZ_PHASE_CAPTURES = "captures en cours"
 # Connexion d'un site à VizProof (`wp vizproof connect`, plugin ≥ 1.3.6).
 VIZ_SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # Jeton de compte : jeu de caractères des jetons porteurs usuels, sur UNE ligne.
@@ -1980,6 +1981,53 @@ def viz_plugin_autoscan(srv, site):
     return viz_truthy(d.get(VIZ_AUTOSCAN_KEY))
 
 
+def viz_wait_scan_complete(server, domain, srv, site, on_phase=None):
+    """Attend que TOUTES les pages du scan soient photographiées → rapport agrégé.
+
+    `status.last_run` du plugin passe à « terminé » quand les runs sont LANCÉS
+    chez VizProof, pas quand les captures sont finies — et un scan en pages
+    choisies ouvre un run par page. Constaté sur le banc le 23/09 : verdict
+    rendu à 18:40:29 alors que VizProof n'avait photographié que deux pages sur
+    cinq ; le compte d'anomalies ne couvrait que celles-là. `wp vizproof report`
+    sans `--run` agrège au contraire tous les runs du dernier scan et reste
+    `running` tant qu'il en reste un en cours : c'est lui qu'on attend.
+
+    → rapport agrégé terminé, ou None (illisible ou toujours en cours au bout
+    du budget : on retombe alors sur le verdict du premier run, comme avant).
+    """
+    poll = max(1, int(VIZ_POLL_S))
+    for _ in range(max(1, int(VIZ_WAIT_DONE_S) // poll)):
+        try:
+            rc, out = remote_bash(srv, site, viz_report_cmd(""),
+                                  timeout=VIZ_REPORT_TIMEOUT, max_out=None)
+        except Exception:
+            return None
+        rep = viz_report_payload(viz_json_tail(out)) if rc in (0, VIZ_ANOMALY_RC) else None
+        if rep is not None:
+            st = str(rep.get("status") or "").strip().lower()
+            if st not in VIZ_RUN_PENDING:
+                return rep
+        if on_phase:
+            on_phase(VIZ_PHASE_CAPTURES)
+        _viz_sleep(poll)
+    return None
+
+
+def viz_verdict_from_scan(verdict, rep):
+    """Verdict recalculé sur le rapport AGRÉGÉ du scan : toutes les pages, tous
+    les écrans. Un écart `fail` ou `warn` est une anomalie, comme dans le
+    compte du plugin ; `totals` suit, pour que la décision dispose de la même
+    gravité que la MAJ sûre."""
+    tot = rep.get("totals") if isinstance(rep.get("totals"), dict) else {}
+    try:
+        n = int(tot.get("fail") or 0) + int(tot.get("warn") or 0)
+    except (TypeError, ValueError):
+        return dict(verdict, report=rep)
+    return dict(verdict, report=rep, totals=tot, anomalies_count=n, anomalies=n > 0,
+                rc=VIZ_ANOMALY_RC if n else 0, status="anomalies" if n else "ok",
+                message=(VIZ_AFTER_MSG["anomalies"] + " (%d)" % n) if n else VIZ_AFTER_MSG["ok"])
+
+
 def viz_verdict_from_run(run):
     """Verdict d'un run du plugin (déjà terminé, ou rendu tel quel à l'expiration)."""
     n = viz_anomalies_count(run)
@@ -2029,7 +2077,12 @@ def viz_verdict_after_update(server, domain, srv, site, t0, prev_id, on_phase=No
     """
     run = viz_wait_plugin_run(srv, site, prev_id, t0, on_phase=on_phase)
     if run:
-        return viz_report_attach(server, domain, srv, site, viz_verdict_from_run(run))
+        verdict = viz_verdict_from_run(run)
+        if verdict.get("rc") in (0, VIZ_ANOMALY_RC):
+            complet = viz_wait_scan_complete(server, domain, srv, site, on_phase=on_phase)
+            if complet is not None:
+                return viz_verdict_from_scan(verdict, complet)
+        return viz_report_attach(server, domain, srv, site, verdict)
     if viz_plugin_autoscan(srv, site):
         # Le plugin DEVAIT scanner et n'a rien lancé : le site n'était pas
         # éligible (aucune page suivie, scan désactivé pour ce site…). Lancer

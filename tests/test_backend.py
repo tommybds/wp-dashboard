@@ -1953,6 +1953,7 @@ class TestVizAfterUpdate(BaseTmp):
         self.option_rc = 0
         self.actions = []          # (action, source) réellement exécutées
         self.rapports = []         # corps des `wp vizproof report` envoyés
+        self.dernier_run = None    # dernier `last_run` servi par la doublure
         self.alertes = []
         self.phases = []           # phases publiées pendant l'attente
         for cible, valeur in (
@@ -1989,10 +1990,20 @@ class TestVizAfterUpdate(BaseTmp):
     def _remote(self, srv, site, body, timeout=300, max_out=6000):
         if "vizproof report" in body:
             self.rapports.append(body)
+            # Rapport AGRÉGÉ (sans --run) : ses totaux suivent le run du plugin
+            # qu'on vient de servir — c'est le même scan, vu en entier. Un
+            # rapport figé contredisait le scénario (3 anomalies côté run, 2
+            # côté rapport) depuis que le verdict se lit sur le scan entier.
+            if "--run=" not in body and self.rc_report == 0 and self.dernier_run:
+                j = json.loads(self.sortie_report)
+                j["totals"] = dict(j.get("totals") or {}, fail=0,
+                                   warn=int(self.dernier_run.get("anomalies") or 0))
+                return 0, json.dumps(j)
             return self.rc_report, self.sortie_report
         if "vizproof status" in body:
             self.phases.append(A.viz_last_get("a.fr").get("phase"))
             st = self.statuts.pop(0) if len(self.statuts) > 1 else (self.statuts or [None])[0]
+            self.dernier_run = st
             corps = {"configured": True}
             if st:
                 corps["last_run"] = st
@@ -2076,10 +2087,36 @@ class TestVizAfterUpdate(BaseTmp):
         self.assertEqual(rep["items"][0]["viewport"], "Desktop")
         self.assertAlmostEqual(rep["items"][0]["diff_percent"], 0.0042)
         self.assertFalse(rep["is_baseline"])
-        # le rapport est demandé UNE seule fois, et sur le run qu'on vient d'attendre
+        # le rapport est demandé UNE seule fois, AGRÉGÉ (sans --run) : un scan en
+        # pages choisies ouvre un run par page, et c'est le scan entier qu'on juge
         self.assertEqual(len(self.rapports), 1)
-        self.assertIn("--run=run-neuf", self.rapports[0])
+        self.assertNotIn("--run=", self.rapports[0])
         self.assertEqual(self.journal("viz_report"), [])     # succès : rien à journaliser
+
+    def test_le_verdict_attend_toutes_les_pages_du_scan(self):
+        """Banc, 23/09 : le plugin déclare son scan terminé quand les runs sont
+        LANCÉS ; le dashboard concluait alors sur 2 pages photographiées sur 5.
+        Le rapport agrégé reste `running` tant qu'une page manque : on l'attend."""
+        self.statuts = [self.run_neuf(anomalies=2)]
+        partiel = dict(REPORT_JSON, status="running",
+                       totals={"fail": 0, "warn": 2, "ok": 0, "other": 0})
+        complet = dict(REPORT_JSON, status="completed",
+                       totals={"fail": 1, "warn": 4, "ok": 5, "other": 0})
+        suite = [partiel, partiel, complet]
+
+        def remote(srv, site, body, timeout=300, max_out=6000):
+            if "vizproof report" in body:
+                self.rapports.append(body)
+                return 0, json.dumps(suite.pop(0) if len(suite) > 1 else suite[0])
+            return self._remote(srv, site, body, timeout, max_out)
+
+        with mock.patch.object(A, "remote_bash", remote):
+            A.viz_after_update("s1", "a.fr", "plugin_update", 0, time.time())
+        fin = A.viz_last_get("a.fr")
+        self.assertEqual(fin["anomalies_count"], 5, "fail + warn du scan ENTIER")
+        self.assertEqual(fin["report"]["status"], "completed")
+        self.assertEqual(fin["totals"]["fail"], 1)
+        self.assertEqual(len(self.rapports), 3, "deux lectures en cours, une terminée")
 
     def test_report_null_quand_la_commande_echoue(self):
         """Un rapport indisponible ne change RIEN au verdict : compte + lien."""
