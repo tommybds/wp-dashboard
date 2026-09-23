@@ -274,19 +274,27 @@ function marquerPeriode() {
   });
 }
 
-// Rééchantillonnage à ECH points : l'animation interpole deux séries de même longueur.
-function echantillonner(pts) {
-  if (!pts.length) return new Array(ECH).fill(0);
-  if (pts.length === 1) return new Array(ECH).fill(pts[0]);
-  return Array.from({ length: ECH }, (_, j) => {
-    const p = j * (pts.length - 1) / (ECH - 1), i = Math.floor(p), f = p - i;
-    return i + 1 < pts.length ? pts[i] + (pts[i + 1] - pts[i]) * f : pts[i];
-  });
-}
-
-const px = j => PAD + j * (W - 2 * PAD) / (ECH - 1);
+/* Abscisse = TEMPS, pas rang du point : le serveur garde les extrêmes de chaque
+   tranche (nombre de points variable), et la collecte a pu s'interrompre.
+   Pendant l'animation seulement, les courbes sont rééchantillonnées sur une
+   grille commune de ECH colonnes ; la dernière image trace les vrais points. */
+let T0 = 0, T1 = 1;
+const fx = t => (t - T0) / ((T1 - T0) || 1);
+const vx = t => PAD + fx(t) * (W - 2 * PAD);
 const pctX = f => (PAD + f * (W - 2 * PAD)) / W * 100;
 const py = (v, mn, mx) => HT - PAD - ((v - mn) / ((mx - mn) || 1)) * (HT - 2 * PAD);
+
+// Valeur tenue à l'instant t (dernier relevé ≤ t) sur chaque colonne de la grille.
+function grille(ts, vals) {
+  const out = new Array(ECH);
+  let i = 0;
+  for (let j = 0; j < ECH; j++) {
+    const t = T0 + j * (T1 - T0) / (ECH - 1);
+    while (i + 1 < ts.length && ts[i + 1] <= t) i++;
+    out[j] = vals[i] ?? 0;
+  }
+  return out;
+}
 
 function svgEl(tag, attrs) {
   const el = document.createElementNS(SVGNS, tag);
@@ -314,22 +322,36 @@ function creerCourbe(m) {
     h('div', { class: 'charttop' }, h('b', { text: m.lbl }), legende),
     h('div', { class: 'chartbody' }, h('div', { class: 'yaxis' }, ys), plot),
     h('div', { class: 'chartaxis' }, axe));
-  plot.onpointermove = e => survoler((e.clientX - plot.getBoundingClientRect().left) / plot.clientWidth);
+  plot.onpointermove = e => {
+    const r = plot.getBoundingClientRect();
+    survoler(((e.clientX - r.left) / r.width * W - PAD) / (W - 2 * PAD));
+  };
   plot.onpointerdown = plot.onpointermove;
   plot.onpointerleave = () => survoler(null);
   return { m, noeud, aire, trait, ys, fin, curseur, point, legende, valeur, axe,
     ech: null, mn: 0, mx: 1, anim: 0 };
 }
 
-function dessiner(c, ech, mn, mx) {
-  const d = ech.map((v, j) => `${j ? 'L' : 'M'}${px(j).toFixed(1)},${py(v, mn, mx).toFixed(1)}`).join('');
+function tracer(c, d, xFin, xDeb, vFin, mn, mx) {
   c.trait.setAttribute('d', d);
-  c.aire.setAttribute('d', `${d}L${px(ECH - 1)},${HT - PAD}L${px(0)},${HT - PAD}Z`);
+  c.aire.setAttribute('d', `${d}L${xFin.toFixed(1)},${HT - PAD}L${xDeb.toFixed(1)},${HT - PAD}Z`);
   const entiers = Number.isInteger(c.cibleMn) && Number.isInteger(c.cibleMx);
   const fmt = v => String(entiers ? Math.round(v) : Math.round(v * 10) / 10);
   [mx, (mn + mx) / 2, mn].forEach((v, i) => { c.ys[i].textContent = fmt(v); });
-  c.fin.style.left = pctX(1) + '%';
-  c.fin.style.top = (py(ech[ECH - 1], mn, mx) / HT * 100) + '%';
+  c.fin.style.left = (xFin / W * 100) + '%';
+  c.fin.style.top = (py(vFin, mn, mx) / HT * 100) + '%';
+}
+
+function tracerGrille(c, ech, mn, mx) {
+  const x = j => PAD + j * (W - 2 * PAD) / (ECH - 1);
+  const d = ech.map((v, j) => `${j ? 'L' : 'M'}${x(j).toFixed(1)},${py(v, mn, mx).toFixed(1)}`).join('');
+  tracer(c, d, x(ECH - 1), x(0), ech[ECH - 1], mn, mx);
+}
+
+function tracerExact(c) {
+  const { ts, vals, cibleMn: mn, cibleMx: mx } = c;
+  const d = vals.map((v, i) => `${i ? 'L' : 'M'}${vx(ts[i]).toFixed(1)},${py(v, mn, mx).toFixed(1)}`).join('');
+  tracer(c, d, vx(ts[ts.length - 1]), vx(ts[0]), vals[vals.length - 1], mn, mx);
 }
 
 const lisse = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -337,53 +359,56 @@ const sansAnim = () => { try { return matchMedia('(prefers-reduced-motion: reduc
 
 // Morphing : on part de la courbe affichée (ou d'une ligne plate au premier
 // rendu) et l'échelle glisse en même temps que les valeurs.
-function animer(c, pts) {
-  const cible = echantillonner(pts);
-  const mn = Math.min(...pts), mx = Math.max(...pts);
-  c.cibleMn = mn; c.cibleMx = mx;
+function animer(c, ts, vals) {
+  const cible = grille(ts, vals);
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  c.ts = ts; c.vals = vals; c.cibleMn = mn; c.cibleMx = mx;
   const depart = c.ech || new Array(ECH).fill(mn);
   const mn0 = c.ech ? c.mn : mn, mx0 = c.ech ? c.mx : mx;
   cancelAnimationFrame(c.anim);
   const duree = sansAnim() ? 0 : 650, t0 = performance.now();
   const pas = now => {
     const t = duree ? Math.min(1, (now - t0) / duree) : 1, k = lisse(t);
-    const ech = depart.map((v, j) => v + (cible[j] - v) * k);
+    c.ech = depart.map((v, j) => v + (cible[j] - v) * k);
     c.mn = mn0 + (mn - mn0) * k; c.mx = mx0 + (mx - mx0) * k;
-    c.ech = ech;
-    dessiner(c, ech, c.mn, c.mx);
-    if (t < 1) c.anim = requestAnimationFrame(pas);
+    if (t < 1) { tracerGrille(c, c.ech, c.mn, c.mx); c.anim = requestAnimationFrame(pas); }
+    else tracerExact(c);
   };
   c.anim = requestAnimationFrame(pas);
 }
 
-function fmtTs(ts, court) {
-  const s = String(ts || '');
-  const [d, hm] = [s.slice(0, 10), s.slice(11, 16)];
-  const [a, mo, j] = d.split('-');
-  if (!j) return s;
-  if (PERIODE === 'annee') return `${j}/${mo}/${a.slice(2)}`;
-  if (PERIODE === 'mois' && court) return `${j}/${mo}`;
-  return `${j}/${mo} ${hm.replace(':', 'h')}`;
+function fmtMs(ms, court) {
+  const d = new Date(ms), z = n => String(n).padStart(2, '0');
+  const jm = `${z(d.getDate())}/${z(d.getMonth() + 1)}`;
+  if (PERIODE === 'annee') return `${jm}/${String(d.getFullYear()).slice(2)}`;
+  if (PERIODE === 'mois' && court) return jm;
+  return `${jm} ${z(d.getHours())}h${z(d.getMinutes())}`;
 }
 
 // Curseur partagé : les quatre courbes montrent le même instant.
 function survoler(frac) {
   const n = HIST.length;
+  let i = -1;
+  if (frac !== null && n >= 2) {
+    const t = T0 + Math.max(0, Math.min(1, frac)) * (T1 - T0);
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (HIST_MS[mid] <= t) lo = mid; else hi = mid - 1; }
+    i = lo + 1 < n && HIST_MS[lo + 1] - t < t - HIST_MS[lo] ? lo + 1 : lo;
+  }
   Object.values(COURBES).forEach(c => {
-    if (frac === null || n < 2 || !c.ech) {
+    if (i < 0 || !c.ech) {
       c.curseur.hidden = true; c.point.hidden = true;
       c.legende.firstChild.textContent = 'actuel : ';
-      c.valeur.textContent = String(HIST.length ? (HIST[n - 1][c.m.k] ?? '?') : '?');
+      c.valeur.textContent = String(n ? (HIST[n - 1][c.m.k] ?? '?') : '?');
       return;
     }
-    const i = Math.round(Math.max(0, Math.min(1, frac)) * (n - 1));
     const v = HIST[i][c.m.k] ?? 0;
-    const x = pctX(i / (n - 1));
+    const x = pctX(fx(HIST_MS[i]));
     c.curseur.hidden = false; c.point.hidden = false;
     c.curseur.style.left = x + '%';
     c.point.style.left = x + '%';
     c.point.style.top = (py(v, c.cibleMn, c.cibleMx) / HT * 100) + '%';
-    c.legende.firstChild.textContent = fmtTs(HIST[i].ts) + ' : ';
+    c.legende.firstChild.textContent = fmtMs(HIST_MS[i]) + ' : ';
     c.valeur.textContent = String(v);
   });
 }
@@ -404,36 +429,44 @@ const MESURES = [
   { k: 'sites', lbl: 'Installations', c: 'var(--ok)', inv: false },
 ];
 
-function renderTendance(hist, ref) {
+let HIST_MS = [];
+
+function renderTendance(hist) {
   const charts = document.getElementById('hist-charts');
   if (!charts) return;
+  hist = hist.filter(x => tsMs(x.ts));
   HIST = hist;
+  HIST_MS = hist.map(x => tsMs(x.ts));
   if (!hist.length) {
     Object.keys(COURBES).forEach(k => delete COURBES[k]);
     mount(charts, h('span', { class: 'muted', text: 'aucun relevé.' }));
     return;
   }
-  const der = hist[hist.length - 1];
+  const der = hist[hist.length - 1], prem = hist[0];
   const jours = { semaine: 7, mois: 30, annee: 365 }[PERIODE];
-  const debut = tsMs(hist[0].ts), finMs = tsMs(der.ts);
+  T1 = HIST_MS[HIST_MS.length - 1];
+  T0 = Math.max(HIST_MS[0], T1 - jours * 86400000);
+  if (T1 <= T0) T0 = T1 - 1;
   // Moins d'historique que la période demandée : on le dit, sinon on croirait à un trou.
-  const court = debut && finMs && (finMs - debut) < (jours - 1) * 86400000;
-  mount('hist-sum', chipEl((court ? 'historique depuis le ' : 'depuis le ') + fmtTs(hist[0].ts, true), 'mut'));
+  const court = (T1 - HIST_MS[0]) < (jours - 1) * 86400000;
+  const depuis = 'depuis le ' + fmtMs(HIST_MS[0], true);
+  mount('hist-sum', chipEl((court ? 'historique ' : '') + depuis, 'mut'));
+  // Les tuiles comparent au début de la période affichée, comme les courbes.
+  const sur = court ? depuis : { semaine: 'sur 7 jours', mois: 'sur 30 jours', annee: 'sur 1 an' }[PERIODE];
   mount('hist-tiles', MESURES.map(m => h('div', { class: 'dstat' },
     h('div', { class: 'lbl', text: m.lbl }),
     h('div', { class: 'val', text: String(der[m.k] ?? '?') }),
-    h('div', { class: 'sub' }, deltaPill(der[m.k] ?? 0, ref ? ref[m.k] : null, m.inv), ' sur 24 h'))));
+    h('div', { class: 'sub' }, deltaPill(der[m.k] ?? 0, prem[m.k], m.inv), ' ' + sur))));
   // Deux colonnes fixes : quatre courbes pleine largeur donnent des rapports
   // hauteur/largeur absurdes sur un grand écran.
   if (!charts.querySelector('.histgrid')) {
     MESURES.forEach(m => { COURBES[m.k] = creerCourbe(m); });
     mount(charts, h('div', { class: 'histgrid' }, MESURES.map(m => COURBES[m.k].noeud)));
   }
-  const mi = hist[Math.floor((hist.length - 1) / 2)];
   MESURES.forEach(m => {
     const c = COURBES[m.k];
-    animer(c, hist.map(x => x[m.k] ?? 0));
-    [hist[0], mi, der].forEach((x, i) => { c.axe[i].textContent = fmtTs(x.ts, true); });
+    animer(c, HIST_MS, hist.map(x => x[m.k] ?? 0));
+    [T0, (T0 + T1) / 2, T1].forEach((t, i) => { c.axe[i].textContent = fmtMs(t, true); });
   });
   survoler(null);
 }
@@ -444,8 +477,7 @@ async function chargerTendance() {
   try {
     const j = await api('/api/actions/collect_history?periode=' + PERIODE);
     if (seq !== SEQ_TENDANCE) return;
-    renderTendance((j.history || []).filter(x => x && typeof x === 'object'),
-      j.ref24 && typeof j.ref24 === 'object' ? j.ref24 : null);
+    renderTendance((j.history || []).filter(x => x && typeof x === 'object'));
   } catch (e) {
     if (seq !== SEQ_TENDANCE) return;
     cacheVider('hist');

@@ -1054,6 +1054,7 @@ def read_jsonl_tail(path, n):
 
 
 HIST_PERIODES = {"semaine": (7, 168), "mois": (30, 180), "annee": (365, 365)}
+HIST_MESURES = ("plugin_updates", "core_updates", "errors", "sites")
 
 
 def collect_history_window(path, periode):
@@ -1075,16 +1076,23 @@ def collect_history_window(path, periode):
     fin = pts[-1][0]
     debut = fin - datetime.timedelta(days=jours)
     pas = jours * 86400 / cible
-    tranches, premier = {}, None
-    for t, o in pts:
+    # Par tranche : premier, dernier, et les extrêmes de CHAQUE mesure. Garder
+    # un seul relevé effaçait les pics — la vue Semaine montrait un 49 que le
+    # Mois ignorait.
+    tranches = {}
+    for rang, (t, o) in enumerate(pts):
         if t >= debut:
-            premier = premier or o
-            tranches[int((t - debut).total_seconds() // pas)] = o
-    hist = [tranches[k] for k in sorted(tranches)]
-    if hist[0] is not premier:
-        hist.insert(0, premier)
-    if hist[-1] is not pts[-1][1]:
-        hist.append(pts[-1][1])
+            tranches.setdefault(int((t - debut).total_seconds() // pas), []).append((rang, o))
+    garde = {}
+    for lot in tranches.values():
+        choix = [lot[0], lot[-1]]
+        for k in HIST_MESURES:
+            vals = [(x[1].get(k), x) for x in lot if isinstance(x[1].get(k), (int, float))]
+            if vals:
+                choix += [min(vals, key=lambda v: v[0])[1], max(vals, key=lambda v: v[0])[1]]
+        for rang, o in choix:
+            garde[rang] = o
+    hist = [garde[r] for r in sorted(garde)]
     ref = next((o for t, o in reversed(pts) if t <= fin - datetime.timedelta(hours=24)), None)
     return {"history": hist, "ref24": ref, "periode": periode}
 

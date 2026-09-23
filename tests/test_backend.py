@@ -4373,7 +4373,7 @@ class TestCollectHistoryWindow(unittest.TestCase):
 
     def test_semaine_bornee_et_reechantillonnee(self):
         r = A.collect_history_window(self.ecrire(48 * 20, 30), "semaine")
-        self.assertLessEqual(len(r["history"]), 170)
+        self.assertLessEqual(len(r["history"]), 168 * 4)
         self.assertEqual(r["history"][-1]["sites"], 48 * 20 - 1)   # dernier relevé toujours présent
         self.assertEqual(r["ref24"]["sites"], 48 * 20 - 1 - 48)
 
@@ -4381,6 +4381,14 @@ class TestCollectHistoryWindow(unittest.TestCase):
         r = A.collect_history_window(self.ecrire(48 * 40, 30), "annee")
         self.assertEqual(r["history"][0]["sites"], 0)
         self.assertLessEqual(len(r["history"]), 366)
+
+    def test_un_pic_isole_survit_a_la_vue_annee(self):
+        chemin = self.ecrire(48 * 40, 30)
+        with open(chemin, "a") as fh:
+            fh.write(json.dumps({"ts": "2026-02-10 00:05", "sites": 9999}) + "\n")
+            fh.write(json.dumps({"ts": "2026-02-10 00:10", "sites": 5}) + "\n")
+        r = A.collect_history_window(chemin, "annee")
+        self.assertIn(9999, [x["sites"] for x in r["history"]])
 
     def test_periode_inconnue_et_fichier_absent(self):
         self.assertEqual(A.collect_history_window("/nexiste/pas", "zzz"),
