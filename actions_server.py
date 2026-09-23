@@ -1660,6 +1660,13 @@ def viz_report_item(x):
     changes = [y for y in (viz_seo_change(c) for c in brut[:VIZ_SEO_CHANGES_MAX]) if y]
     if changes:
         item["seo_changes"] = changes
+    # Code HTTP de la capture (plugin 1.3.14) : présent seulement quand l'API
+    # l'a relevé. Une page qui répond 404 ou 500 n'est pas un rendu comme un
+    # autre, et VizProof la photographiait, la comparait et la promouvait en
+    # référence sans rien en dire. Absent (et non 0) quand il est inconnu.
+    hs = x.get("http_status")
+    if isinstance(hs, int) and not isinstance(hs, bool) and 100 <= hs <= 599:
+        item["http_status"] = hs
     return item
 
 

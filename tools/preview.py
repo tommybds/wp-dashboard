@@ -645,9 +645,17 @@ def safe_update_status():
 VIZ_REPORT = {
     "run_id": "run-9182", "status": "completed", "created_at": now(0),
     "report_url": "https://vizproof.example/r/9182", "is_baseline": False,
-    "totals": {"fail": 0, "warn": 3, "ok": 2, "other": 0}, "total_items": 5,
-    "summary": {"pages_scanned": 1, "pages_changed": 1, "top_page": "Applications"},
+    "totals": {"fail": 2, "warn": 3, "ok": 2, "other": 0}, "total_items": 7,
+    "summary": {"pages_scanned": 1, "pages_changed": 2, "top_page": "Contact"},
     "items": [
+        # 1.3.14 — la page répond 404 : ce n'est pas un rendu qui a bougé, c'est
+        # une page cassée. Elle doit passer devant tout le reste.
+        {"page": "Contact", "url": "https://site-12.exemple.fr/contact/",
+         "viewport": "Desktop", "status": "fail", "diff_percent": 0.31, "label": "Critique",
+         "http_status": 404, "cause": "http+pixel"},
+        {"page": "Contact", "url": "https://site-12.exemple.fr/contact/",
+         "viewport": "Mobile", "status": "fail", "diff_percent": 0.0, "label": "Critique",
+         "http_status": 404, "cause": "http"},
         # 1.3.10 — le cas qui n'était pas explicable avant : zéro pixel d'écart,
         # « à vérifier » quand même, parce que la balise title a changé.
         {"page": "Accueil", "url": "https://site-12.exemple.fr/",

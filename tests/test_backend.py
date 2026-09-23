@@ -4740,3 +4740,27 @@ class TestVizScanAfterSupported(unittest.TestCase):
     def test_inventaire_sans_bloc_vizproof(self):
         self.assertFalse(A.viz_scan_after_supported({}))
         self.assertFalse(A.viz_scan_after_supported({"vizproof": "?"}))
+
+
+class TestVizReportHttpStatus(unittest.TestCase):
+    """Code HTTP de la capture (plugin 1.3.14) : recopié quand il existe, absent
+    sinon — inconnu n'est ni « sain » ni « cassé »."""
+
+    def item(self, **kw):
+        base = {"page": "Contact", "url": "https://a.fr/contact/", "viewport": "mobile",
+                "status": "fail", "diff_percent": 0.0, "label": "Critique"}
+        base.update(kw)
+        return A.viz_report_item(base)
+
+    def test_recopie(self):
+        self.assertEqual(self.item(http_status=404, cause="http")["http_status"], 404)
+        self.assertEqual(self.item(http_status=200)["http_status"], 200)
+
+    def test_absent_quand_inconnu(self):
+        self.assertNotIn("http_status", self.item())
+        for bancal in ("404", 0, 42, 700, True, None, 404.5):
+            with self.subTest(v=bancal):
+                self.assertNotIn("http_status", self.item(http_status=bancal))
+
+    def test_la_cause_http_passe(self):
+        self.assertEqual(self.item(http_status=500, cause="http+pixel")["cause"], "http+pixel")

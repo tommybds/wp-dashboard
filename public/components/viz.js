@@ -281,7 +281,19 @@ function vzPct(v) {
    La cause avant l'écart, et c'est délibéré : un title réécrit vaut 0,00 % de
    pixels et compte plus qu'un déplacement de 0,0009 % — sans cette clause, le
    seul changement qui mérite une décision tombait en bas du tableau. */
-function vzPoidsCause(x) { return String(x.cause || '').includes('seo') ? 0 : 1; }
+function vzPoidsCause(x) {
+  // Une page en erreur (404, 500…) passe avant tout : ce n'est pas un rendu
+  // qui a bougé, c'est une page qui n'existe plus ou ne répond plus.
+  if (vzHttpErreur(x)) return -1;
+  return String(x.cause || '').includes('seo') ? 0 : 1;
+}
+
+/* Code HTTP de la capture (vizproof-timeline 1.3.14) : absent quand l'API ne
+   l'a pas relevé — inconnu, jamais « sain » ni « cassé ». */
+function vzHttpErreur(x) {
+  const n = Number(x && x.http_status);
+  return Number.isInteger(n) && n >= 400;
+}
 
 /* Les deux écrans d'une même page se retrouvent CÔTE À CÔTE : un tri purement
    par gravité les séparait (« accueil mobile », « candidats mobile », « accueil
@@ -312,6 +324,7 @@ function vizReportLignes(rep) {
    — « pixel+seo » doit compter comme du SEO. Les items d'un parc encore en
    1.3.9 n'ont pas la clé : absence = rien à expliquer, pas « aucune cause ». */
 const VZ_CAUSE = { pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
+// `http` n'a pas de pastille ici : la ligne porte déjà « HTTP 404 », avec le code.
 
 function vzCauseHtml(cause) {
   const c = String(cause || '');
@@ -344,6 +357,7 @@ function vzLigneHtml(x, suite) {
     + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
     + `<td><span class="pill ${c}">${H(l)}</span>`
     + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '')
+    + (vzHttpErreur(x) ? ` <span class="pill err" title="la page a répondu une erreur HTTP à la capture">HTTP ${H(String(x.http_status))}</span>` : '')
     + vzCauseHtml(x.cause) + '</td></tr>'
     + vzSeoHtml(x);
 }
@@ -374,7 +388,12 @@ function vizVerdicts(rep) {
     : (it.some(x => String(x.cause || '').includes('seo')) ? ['warn', 'SEO : modifié'] : ['ok', 'SEO : inchangé']);
   const a11y = !mesure ? null
     : (it.some(x => String(x.cause || '').includes('a11y')) ? ['warn', 'structure : modifiée'] : null);
-  return [visuel, seo].concat(a11y ? [a11y] : []);
+  // Pages en erreur : en tête, c'est le verdict le plus grave. Comptées par
+  // PAGE (le bureau et le mobile d'une même page ne font qu'une).
+  const enErreur = new Set(it.filter(vzHttpErreur).map(x => String(x.page || x.url || '')));
+  const http = enErreur.size
+    ? [['err', enErreur.size === 1 ? '1 page en erreur' : enErreur.size + ' pages en erreur']] : [];
+  return http.concat([visuel, seo]).concat(a11y ? [a11y] : []);
 }
 
 function vizVerdictsHtml(rep) {
