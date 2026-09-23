@@ -1034,6 +1034,11 @@ INCIDENT_RULES_DEFAULTS = {
     "backup_max_age_h": 48,
     # Certificat TLS signalé en dessous de ce nombre de jours restants…
     "cert_warn_days": 21,
+    # Jour où un émetteur ACME (Let's Encrypt, ZeroSSL, Cloudflare/Google Trust)
+    # déclenche le renouvellement automatique. Sert à DATER une panne, pas à
+    # alerter : sous ce seuil, un certificat automatique aurait dû être
+    # remplacé, donc le renouvellement est en échec depuis (30 − jours) jours.
+    "cert_auto_renew_days": 30,
     # …et compté comme critique en dessous de celui-ci.
     "cert_critical_days": 7,
     # Une vulnérabilité « high » corrigeable devient-elle un incident critique ?
@@ -1370,13 +1375,20 @@ def health_probe(site):
     return (st == 200), st, size, f"HTTP {st}, {size} octets"
 
 
-def remote_bash(srv, site, body, timeout=300):
-    """Exécute du bash arbitraire côté site (helpers `asuser`/`run` disponibles)."""
+def remote_bash(srv, site, body, timeout=300, max_out=6000):
+    """Exécute du bash arbitraire côté site (helpers `asuser`/`run` disponibles).
+
+    `max_out=None` rend le flux entier. Les 6000 caractères par défaut suffisent
+    pour un message d'erreur, mais PAS pour du JSON : la liste des pages d'un
+    site de 40 pages fait 9 ko, elle arrivait amputée de son début et
+    `viz_json_tail` ne trouvait plus rien à lire — « 0 page(s) connues » sur un
+    site qui en a 40. Les lectures JSON passent donc `max_out=None`.
+    """
     script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
                                     owner=sq(site["owner"] or "root"),
                                     mode=exec_mode(srv),
                                     timeout=timeout, body=body)
-    return run_remote_script(srv, script, timeout)
+    return run_remote_script(srv, script, timeout, max_out=max_out)
 
 
 def viz_available(srv, site):
@@ -1541,7 +1553,8 @@ def viz_report_fetch(server, domain, srv, site, run=""):
     """
     t0 = time.time()
     try:
-        rc, out = remote_bash(srv, site, viz_report_cmd(run), timeout=VIZ_REPORT_TIMEOUT)
+        rc, out = remote_bash(srv, site, viz_report_cmd(run),
+                              timeout=VIZ_REPORT_TIMEOUT, max_out=None)
     except Exception as e:                    # ssh mort, timeout : on continue sans détail
         rc, out = 94, f"erreur interne: {type(e).__name__}: {e}"
     rep = viz_report_payload(viz_json_tail(out)) if rc in (0, VIZ_ANOMALY_RC) else None
@@ -1651,7 +1664,8 @@ def viz_linked_probe(srv, site):
     clé `configured` du JSON qui fait foi, pas le code de sortie (même lecture
     que le collecteur).
     """
-    rc, out = remote_bash(srv, site, 'run vizproof status --format=json', timeout=90)
+    rc, out = remote_bash(srv, site, 'run vizproof status --format=json',
+                          timeout=90, max_out=None)
     for ligne in reversed(str(out or "").splitlines()):
         s = ligne.strip()
         if s[:1] != "{":
@@ -1682,7 +1696,8 @@ def viz_status_json(srv, site):
     Plugins CHARGÉS (helper `run`, pas de `--skip-plugins`) : la commande vient
     justement du plugin.
     """
-    _rc, out = remote_bash(srv, site, 'run vizproof status --format=json', timeout=90)
+    _rc, out = remote_bash(srv, site, 'run vizproof status --format=json',
+                           timeout=90, max_out=None)
     return viz_json_tail(out)
 
 
@@ -1929,7 +1944,7 @@ def viz_verdict_publish(server, domain, action, res, duree=0):
             libelle = action
         alert(f"viz_anomaly:{domain}", "viz_anomaly",
               f"👁 <b>Anomalies visuelles</b> après « {esc_html(libelle)} »"
-              f"\nSite : <b>{esc_html(domain)}</b> ({esc_html(server)})"
+              f"\nSite : <b>{esc_html(nom_usage(domain))}</b> ({esc_html(server)})"
               + (f"\n{esc_html(res['report_url'])}" if res.get("report_url") else ""))
 
 
@@ -2394,7 +2409,7 @@ def viz_pages_read(server_name, domain):
     if not srv:
         return site
     rc, out = remote_bash(srv, site, "run vizproof pages --format=json",
-                          timeout=VIZ_PAGES_TIMEOUT)
+                          timeout=VIZ_PAGES_TIMEOUT, max_out=None)
     if rc == 0:
         j = viz_json_tail(out)
         if isinstance(j, dict) and isinstance(j.get("pages"), list):
@@ -2417,7 +2432,7 @@ def viz_pages_read_137(srv, site):
         "run option get page_on_front || true\n"
         "exit 0\n"
     )
-    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT)
+    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT, max_out=None)
     if rc != 0:
         return rc, {"ok": False, "error": str(out or "")[-800:]}
     txt = str(out or "")
@@ -2477,7 +2492,8 @@ def viz_pages_write(server_name, domain, ids, scope, source="ui"):
     args = ["vizproof", "pages", "set", "--scope=" + sq(scope), "--format=json"]
     if ids:
         args.insert(3, "--ids=" + sq(",".join(str(i) for i in ids)))
-    rc, out = remote_bash(srv, site, "run " + " ".join(args), timeout=VIZ_PAGES_TIMEOUT)
+    rc, out = remote_bash(srv, site, "run " + " ".join(args),
+                          timeout=VIZ_PAGES_TIMEOUT, max_out=None)
     if rc == 0:
         j = viz_json_tail(out)
         if isinstance(j, dict) and isinstance(j.get("pages"), list):
@@ -2498,7 +2514,7 @@ def viz_pages_write_137(srv, site, ids, scope):
         " --format=json || exit $?\n"
         f"run option patch update {VIZ_PAGES_OPTION} scan_scope {sq(scope)} || exit $?\n"
     )
-    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT)
+    rc, out = remote_bash(srv, site, body, timeout=VIZ_PAGES_TIMEOUT, max_out=None)
     if rc != 0:
         return rc, {"ok": False, "error": str(out or "")[-800:]}
     rc2, lu = viz_pages_read_137(srv, site)
@@ -2526,7 +2542,8 @@ def viz_report_read(server_name, domain, run=""):
     if not srv:
         rc, payload = site
         return fin(rc, str(payload.get("error") or "site injoignable"))
-    rc, out = remote_bash(srv, site, viz_report_cmd(run), timeout=VIZ_REPORT_TIMEOUT)
+    rc, out = remote_bash(srv, site, viz_report_cmd(run),
+                          timeout=VIZ_REPORT_TIMEOUT, max_out=None)
     if rc in (0, VIZ_ANOMALY_RC):
         rep = viz_report_payload(viz_json_tail(out))
         if rep:
@@ -3398,7 +3415,7 @@ def _bulk_worker(job):
             if task["viz"] == "anomalies":
                 alert(f"viz_anomaly:{task['domain']}", "viz_anomaly",
                       f"👁 <b>Anomalies visuelles</b> après « {ACTIONS.get(task['action'], (task['action'],))[0]} »"
-                      f"\nSite : <b>{esc_html(task['domain'])}</b> ({esc_html(task['server'])})")
+                      f"\nSite : <b>{esc_html(nom_usage(task['domain']))}</b> ({esc_html(task['server'])})")
         job["done"] += 1
         if rc != 0 and job["mode"] == "stop":
             job["stopped"] = True
@@ -3855,14 +3872,20 @@ def ssl_certs():
     certificats qu'on sait par ailleurs lire.
     """
     certs, erreur, vus = [], "", set()
+    sondes = {c.get("monitor"): c for c in ssl_certs_probe()}
     if kuma_disponible():
         res = ssl_certs_kuma()
         erreur = str(res.get("error") or "")
         for c in (res.get("certs") or []):
+            # Kuma ne rend pas l'émetteur ; la sonde du collecteur, si. Sans ce
+            # report, aucun certificat suivi par Kuma ne serait reconnu comme
+            # renouvelé automatiquement.
+            if not c.get("issuer"):
+                c["issuer"] = (sondes.get(c.get("monitor")) or {}).get("issuer") or ""
             certs.append(c)
             vus.add(c.get("monitor"))
-    for c in ssl_certs_probe():
-        if c.get("monitor") in vus:
+    for nom, c in sondes.items():
+        if nom in vus:
             continue                       # Kuma fait foi pour ce moniteur
         certs.append(c)
     # les plus urgents d'abord ; les jours inconnus finissent la liste
@@ -3972,6 +3995,32 @@ def send_telegram(text):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def nom_usage(domain):
+    """Vhost → nom d'usage, celui que montre l'interface.
+
+    Les alertes ne nommaient les sites que par leur vhost. Quand les deux
+    diffèrent — abonnement Plesk `androgyne-productions.com` qui sert
+    `sisma-androgyne.fr` — le message parlait d'un site que personne ne
+    retrouvait dans le dashboard. On rend le nom d'usage, et le vhost entre
+    parenthèses quand il apporte quelque chose (retrouver le docroot).
+    """
+    d = norm_domain(domain)
+    if not d:
+        return str(domain or "?")
+    for srv in (load_json(FLEET_PATH, {"servers": []}).get("servers") or []):
+        if not isinstance(srv, dict):
+            continue
+        for s in (srv.get("sites") or []):
+            if not isinstance(s, dict):
+                continue
+            if norm_domain(s.get("domain")) != d and norm_domain(s.get("kuma")) != d:
+                continue
+            nom = s.get("kuma") or s.get("label") or s.get("domain") or d
+            vhost = s.get("domain") or ""
+            return f"{nom} (vhost {vhost})" if vhost and vhost != nom else str(nom)
+    return str(domain)
+
+
 def alert(key, rule, text):
     """Alerte Telegram : alertes activées + règle active + anti-spam de 24 h sur la clé."""
     cfg = alerts_cfg()
@@ -4025,7 +4074,7 @@ def evaluate_alerts():
                 continue
             sent += alert(f"new_admin:{ch.get('domain')}:{ch.get('detail')}", "new_admin",
                           "🛑 <b>Nouvel administrateur</b>"
-                          f"\nSite : <b>{esc_html(ch.get('domain'))}</b>"
+                          f"\nSite : <b>{esc_html(nom_usage(ch.get('domain')))}</b>"
                           f"\nCompte : <code>{esc_html(ch.get('detail'))}</code>")
 
     # 2) sauvegardes UpdraftPlus périmées
@@ -4042,7 +4091,7 @@ def evaluate_alerts():
             detail = f"il y a {age_h:.0f} h" if age_h is not None else "aucune sauvegarde connue"
             sent += alert(f"backup_stale:{s.get('domain')}", "backup_stale_h",
                           "💾 <b>Sauvegarde périmée</b>"
-                          f"\nSite : <b>{esc_html(s.get('domain'))}</b> ({esc_html(server)})"
+                          f"\nSite : <b>{esc_html(nom_usage(s.get('domain')))}</b> ({esc_html(server)})"
                           f"\nDernière : {esc_html(detail)} — seuil {stale_h:g} h")
 
     # 3) checksums du core en échec (data/checksums.json)
@@ -4052,7 +4101,7 @@ def evaluate_alerts():
                 continue
             sent += alert(f"checksum_fail:{dom}", "checksum_fail",
                           "🧬 <b>Checksums du core en échec</b>"
-                          f"\nSite : <b>{esc_html(dom)}</b>"
+                          f"\nSite : <b>{esc_html(nom_usage(dom))}</b>"
                           f"\n<code>{esc_html((rec.get('output_tail') or '')[-300:])}</code>")
 
     # 4) certificats TLS proches de l'expiration (info relevée par Kuma)
@@ -4062,10 +4111,14 @@ def evaluate_alerts():
             days = c.get("days")
             if days is None or days > cert_days:
                 continue
+            auto = cert_auto(c.get("issuer"))
             sent += alert(f"cert:{c.get('monitor')}", "cert_days",
-                          "🔐 <b>Certificat proche de l'expiration</b>"
-                          f"\nMoniteur : <b>{esc_html(c.get('monitor'))}</b>"
-                          f"\nExpire dans {days} jour(s)")
+                          ("🔐 <b>Renouvellement TLS automatique en échec</b>" if auto
+                           else "🔐 <b>Certificat proche de l'expiration</b>")
+                          + f"\nSite : <b>{esc_html(c.get('monitor'))}</b>"
+                          + f"\nExpire dans {days} jour(s)"
+                          + (f"\n{esc_html(c.get('issuer'))} renouvelle normalement à 30 j : "
+                             "le renouvellement ne passe plus." if auto else ""))
 
     # 5) collecteur muet (dernière ligne de collect_history.jsonl)
     dead_h = to_number(rules.get("collect_dead_h"))
@@ -4827,6 +4880,21 @@ def inc_backup(sites, rules, now):
     return out
 
 
+# Émetteurs qui renouvellent seuls, sans intervention humaine. Pour eux
+# l'échéance n'est pas l'information utile : elle ne se rapproche que si le
+# renouvellement automatique est déjà en panne. L'alerte ne dit donc pas
+# « certificat à renouveler » (ce que personne n'a à faire à la main) mais
+# « le renouvellement automatique ne se fait plus », avec son ancienneté.
+ACME_ISSUERS = ("let's encrypt", "letsencrypt", "zerossl", "buypass",
+                "google trust services", "cloudflare", "amazon", "actalis")
+
+
+def cert_auto(issuer):
+    """L'émetteur renouvelle-t-il tout seul ? (émetteur inconnu → non)"""
+    e = str(issuer or "").strip().lower()
+    return bool(e) and any(m in e for m in ACME_ISSUERS)
+
+
 def inc_certs(index, rules, now):
     """Certificat TLS proche de l'expiration (info relevée par Kuma)."""
     res = ssl_certs()
@@ -4834,6 +4902,8 @@ def inc_certs(index, rules, now):
         raise RuntimeError(str(res["error"])[-200:])
     warn = to_number(rules.get("cert_warn_days")) or INCIDENT_RULES_DEFAULTS["cert_warn_days"]
     crit = to_number(rules.get("cert_critical_days")) or INCIDENT_RULES_DEFAULTS["cert_critical_days"]
+    rappel = (to_number(rules.get("cert_auto_renew_days"))
+              or INCIDENT_RULES_DEFAULTS["cert_auto_renew_days"])
     out = []
     for c in (res.get("certs") or []):
         jours = c.get("days_left", c.get("days"))
@@ -4849,16 +4919,24 @@ def inc_certs(index, rules, now):
                   else f"expiré depuis {-jours} jour(s)")
         if c.get("valid_to"):
             detail += f" (le {c['valid_to']})"
+        auto = cert_auto(c.get("issuer"))
+        titre = f"Certificat de {nom} à renouveler"
+        if auto:
+            titre = f"Renouvellement automatique en échec — {nom}"
+            retard = max(0, int(rappel - jours))
+            detail += (f" ; {c.get('issuer')} renouvelle à {rappel:g} j,"
+                       f" donc en échec depuis ~{retard} jour(s)")
         out.append(make_incident(
             "cert_expiring", "critical" if jours < crit else "warning", nom,
-            f"Certificat de {nom} à renouveler", detail + f" — seuil {warn:g} j",
+            titre, detail + f" — seuil {warn:g} j",
             site=nom, server=server, now=now,
             link={"tab": "securite", "sub": "certs"},
             # Une échéance encore lointaine est un rendez-vous, pas une urgence :
             # elle passe en « à planifier » tant qu'elle n'a pas franchi le
             # seuil critique (7 jours par défaut).
             bucket="now" if jours < crit else "plan",
-            extra={"days_left": jours, "expires": str(c.get("valid_to") or "")}))
+            extra={"days_left": jours, "expires": str(c.get("valid_to") or ""),
+                   "issuer": str(c.get("issuer") or ""), "auto_renew": auto}))
     return out
 
 
@@ -5164,7 +5242,7 @@ def ingest_event(domain, body):
     if event_is_critical(event, detail):
         alert(f"event:{domain}:{event}:{detail[:60]}", "new_admin",
               "🚨 <b>Évènement critique</b>"
-              f"\nSite : <b>{esc_html(domain)}</b>"
+              f"\nSite : <b>{esc_html(nom_usage(domain))}</b>"
               f"\nÉvènement : <code>{esc_html(event)}</code>"
               f"\n{esc_html(detail[:300])}")
     return entry

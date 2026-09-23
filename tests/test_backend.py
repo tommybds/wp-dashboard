@@ -1722,7 +1722,7 @@ class TestSafeUpdateViz(BaseTmp):
             p.start()
             self.addCleanup(p.stop)
 
-    def _bash(self, srv, site, body, timeout=300):
+    def _bash(self, srv, site, body, timeout=300, max_out=6000):
         """Sorties distantes plausibles, une par étape que la fonction lit."""
         self.bash.append(body)
         if "vizproof scan" in body:
@@ -1907,7 +1907,7 @@ class TestVizAfterUpdate(BaseTmp):
             return self.rc_scan, self.sortie_scan
         return 0, "ok"
 
-    def _remote(self, srv, site, body, timeout=300):
+    def _remote(self, srv, site, body, timeout=300, max_out=6000):
         if "vizproof report" in body:
             self.rapports.append(body)
             return self.rc_report, self.sortie_report
@@ -2295,7 +2295,7 @@ class TestRunRouteViz(BaseTmp):
             return 0, '{"anomalies":0,"report_url":"https://vizproof.com/r/4"}'
         return 0, "ok"
 
-    def _remote(self, srv, site, body, timeout=300):
+    def _remote(self, srv, site, body, timeout=300, max_out=6000):
         """Le plugin a lancé son propre scan pendant la mise à jour."""
         if "vizproof status" in body:
             at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2719,7 +2719,7 @@ class TestVizUpdateJob(BaseTmp):
             return 0, '{"anomalies":0}'
         return (self.rc_maj, "ok" if not self.rc_maj else "Error: échec de la mise à jour")
 
-    def _remote(self, srv, site, body, timeout=300):
+    def _remote(self, srv, site, body, timeout=300, max_out=6000):
         """Le plugin a lancé son propre scan pendant la mise à jour."""
         if "vizproof status" in body:
             at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -3995,3 +3995,140 @@ class RapportNicheDansLeScan(unittest.TestCase):
         bloquant, libelle, _anom = A.viz_decide(A.VIZ_ANOMALY_RC, True, totals)
         self.assertFalse(bloquant)
         self.assertIn("sous le seuil", libelle)
+
+
+# --------------------------------------------------------------------------- #
+#  remote_bash : les lectures JSON ne doivent plus être amputées                #
+# --------------------------------------------------------------------------- #
+class TestRemoteBashMaxOut(unittest.TestCase):
+    """`remote_bash` transmet `max_out` — sans quoi la liste des pages d'un gros
+    site (9 ko de JSON) arrivait coupée et se lisait « 0 page(s) connues »."""
+
+    SITE = {"path": "/var/www/x", "domain": "x.fr", "owner": "x"}
+
+    def lancer(self, **kw):
+        vus = {}
+
+        def faux(srv, script, timeout, max_out=6000):
+            vus["max_out"] = max_out
+            return 0, "y" * 9000 if max_out is None else "y" * min(9000, max_out)
+
+        with mock.patch.object(A, "run_remote_script", faux), \
+             mock.patch.object(A, "exec_mode", lambda s: "direct"):
+            rc, out = A.remote_bash({"name": "s"}, self.SITE, "run x", **kw)
+        return vus["max_out"], out
+
+    def test_defaut_inchange(self):
+        self.assertEqual(self.lancer()[0], 6000)
+
+    def test_none_transmis(self):
+        m, out = self.lancer(max_out=None)
+        self.assertIsNone(m)
+        self.assertEqual(len(out), 9000)
+
+    def test_les_lectures_json_demandent_le_flux_entier(self):
+        """Garde-fou : toute lecture `--format=json` de VizProof passe max_out=None."""
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(racine, "actions_server.py"), encoding="utf-8").read()
+        for fn in ("viz_pages_read", "viz_status_read", "viz_report_read"):
+            i = src.find("def %s(" % fn)
+            if i < 0:
+                continue
+            corps = src[i:src.find("\ndef ", i + 10)]
+            self.assertIn("max_out=None", corps,
+                          "%s lit du JSON sans demander le flux entier" % fn)
+
+
+# --------------------------------------------------------------------------- #
+#  un site, un nom : les alertes parlent comme l'interface                      #
+# --------------------------------------------------------------------------- #
+class TestNomUsage(BaseTmp):
+    """Le vhost Plesk et le nom public diffèrent souvent (abonnement
+    `androgyne-productions.com` qui sert `sisma-androgyne.fr`). Les alertes
+    nommaient le vhost, l'interface le nom public : deux sites pour l'humain."""
+
+    def setUp(self):
+        super().setUp()
+        self._fp = A.FLEET_PATH
+        A.FLEET_PATH = os.path.join(self.data, "fleet.json")
+        self.addCleanup(lambda: setattr(A, "FLEET_PATH", self._fp))
+        A.save_json(A.FLEET_PATH, {"servers": [{"name": "plesk-mutu", "sites": [
+            {"domain": "androgyne-productions.com", "kuma": "sisma-androgyne.fr"},
+            {"domain": "elwave.fr", "kuma": "elwave.fr"},
+            {"domain": "interne.fr", "label": "Site vitrine"},
+            {"domain": "nu.fr"},
+        ]}]})
+
+    def test_vhost_different_du_nom_public(self):
+        self.assertEqual(A.nom_usage("androgyne-productions.com"),
+                         "sisma-androgyne.fr (vhost androgyne-productions.com)")
+
+    def test_noms_identiques_ne_repetent_pas_le_vhost(self):
+        self.assertEqual(A.nom_usage("elwave.fr"), "elwave.fr")
+
+    def test_libelle_saisi_a_la_main(self):
+        self.assertEqual(A.nom_usage("interne.fr"), "Site vitrine (vhost interne.fr)")
+
+    def test_sans_moniteur_ni_libelle(self):
+        self.assertEqual(A.nom_usage("nu.fr"), "nu.fr")
+
+    def test_site_inconnu_rendu_tel_quel(self):
+        self.assertEqual(A.nom_usage("jamais-vu.fr"), "jamais-vu.fr")
+
+    def test_recherche_aussi_par_nom_de_moniteur(self):
+        # les clés de `checksums.json` sont des noms de moniteur, pas des vhosts
+        self.assertEqual(A.nom_usage("sisma-androgyne.fr"),
+                         "sisma-androgyne.fr (vhost androgyne-productions.com)")
+
+    def test_vide_ne_casse_pas(self):
+        self.assertEqual(A.nom_usage(""), "?")
+
+
+# --------------------------------------------------------------------------- #
+#  certificats : reconnaître un émetteur qui renouvelle seul                    #
+# --------------------------------------------------------------------------- #
+class TestCertAuto(unittest.TestCase):
+
+    def test_acme_reconnus(self):
+        for em in ("Let's Encrypt", "LETSENCRYPT", "ZeroSSL", "Google Trust Services",
+                   "Cloudflare, Inc.", "Buypass AS-983163327"):
+            self.assertTrue(A.cert_auto(em), em)
+
+    def test_manuels_non_reconnus(self):
+        for em in ("DigiCert Inc", "Sectigo Limited", "GlobalSign nv-sa", "", None):
+            self.assertFalse(A.cert_auto(em), em)
+
+
+class TestSslCertsIssuer(BaseTmp):
+    """Kuma ne rend pas l'émetteur ; la sonde du collecteur, si. Sans report,
+    aucun certificat suivi par Kuma ne serait vu comme automatique."""
+
+    def fusion(self, kuma, sondes):
+        with mock.patch.object(A, "kuma_disponible", lambda: True), \
+             mock.patch.object(A, "ssl_certs_kuma", lambda: {"certs": kuma}), \
+             mock.patch.object(A, "ssl_certs_probe", lambda: sondes):
+            return {c["monitor"]: c for c in A.ssl_certs()["certs"]}
+
+    def test_emetteur_repris_de_la_sonde(self):
+        c = self.fusion([{"monitor": "elwave.fr", "days": 9, "days_left": 9}],
+                        [{"monitor": "elwave.fr", "days": 9, "days_left": 9,
+                          "issuer": "Let's Encrypt"}])
+        self.assertEqual(c["elwave.fr"]["issuer"], "Let's Encrypt")
+
+    def test_kuma_reste_maitre_des_jours(self):
+        c = self.fusion([{"monitor": "elwave.fr", "days": 9, "days_left": 9}],
+                        [{"monitor": "elwave.fr", "days": 77, "days_left": 77,
+                          "issuer": "Let's Encrypt"}])
+        self.assertEqual(c["elwave.fr"]["days"], 9)
+
+    def test_sonde_seule_conservee(self):
+        c = self.fusion([], [{"monitor": "seul.fr", "days": 5, "days_left": 5,
+                              "issuer": "ZeroSSL"}])
+        self.assertEqual(c["seul.fr"]["issuer"], "ZeroSSL")
+
+    def test_emetteur_deja_connu_non_ecrase(self):
+        c = self.fusion([{"monitor": "elwave.fr", "days": 9, "days_left": 9,
+                          "issuer": "DigiCert Inc"}],
+                        [{"monitor": "elwave.fr", "days": 9, "days_left": 9,
+                          "issuer": "Let's Encrypt"}])
+        self.assertEqual(c["elwave.fr"]["issuer"], "DigiCert Inc")

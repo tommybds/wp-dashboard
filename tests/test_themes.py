@@ -449,7 +449,7 @@ class TestMajSureThemes(unittest.TestCase):
     def restauration_faite(self):
         return any("theme__*.tgz" in b for b in self.bash)
 
-    def _bash(self, srv, site, body, timeout=300):
+    def _bash(self, srv, site, body, timeout=300, max_out=6000):
         self.bash.append(body)
         if "plugin list --update=available" in body:
             return 0, ""                       # aucune extension à mettre à jour

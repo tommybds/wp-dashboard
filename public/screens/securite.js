@@ -1065,13 +1065,25 @@ function sectionCerts() {
       h('table', {},
         h('thead', {}, h('tr', {},
           h('th', { text: 'Hôte' }), h('th', { text: 'Jours restants' }),
-          h('th', { text: 'Expire le' }), h('th', { text: 'Source' }))),
+          h('th', { text: 'Expire le' }), h('th', { text: 'Émetteur' }),
+          h('th', { text: 'Source' }))),
         h('tbody', { id: 'cert-tb' }))),
     zoneMessage('cert-msg', 'small muted mt2', 'div'));
 }
 
 /* Source lisible d'une ligne. Le backend pose « kuma » ou « sonde » ; un
    backend antérieur ne pose rien, et la ligne vient alors forcément de Kuma. */
+/* Émetteurs qui renouvellent seuls (miroir d'ACME_ISSUERS côté serveur). Pour
+   eux, une échéance qui se rapproche ne veut pas dire « à renouveler » : elle
+   veut dire que le renouvellement automatique ne passe plus. C'est la seule
+   lecture utile de cette colonne, alors la table la dit. */
+const CERT_AUTO = ["let's encrypt", 'letsencrypt', 'zerossl', 'buypass',
+  'google trust services', 'cloudflare', 'amazon', 'actalis'];
+function certAuto(x) {
+  const e = String(x.issuer || '').toLowerCase();
+  return !!e && CERT_AUTO.some(m => e.includes(m));
+}
+
 function certSource(x) {
   const s = String(x.source || '').toLowerCase();
   return (s === 'sonde' || s === 'probe') ? 'sonde du dashboard' : 'Uptime Kuma';
@@ -1126,7 +1138,10 @@ function renderCerts() {
         + 'lointain — un hôte relevé des deux côtés n’apparaît qu’une fois. '
       : 'Expiration relevée par les sondes du dashboard à chaque collecte, du plus urgent au plus '
         + 'lointain. ')
-      + 'Alerte sous 21 jours, critique sous 7 jours.';
+      + 'Alerte sous 21 jours, critique sous 7 jours. Sur un émetteur '
+      + 'automatique (Let’s Encrypt, Cloudflare…), le renouvellement part à '
+      + '30 jours : un compte à rebours qui descend en dessous signale que ce '
+      + 'renouvellement est en panne, pas qu’il y a une date à noter.';
   }
   mount(tb, certs.map(x => {
     const d = x.days;
@@ -1135,7 +1150,13 @@ function renderCerts() {
       h('td', {}, lienSite(x.monitor)),
       h('td', {}, chipEl(d === null || d === undefined ? '?' : d + ' j', niv)),
       h('td', { class: 'sub', text: x.valid_to || '' }),
-      h('td', {}, chipEl(certSource(x), 'mut', { point: false, title: x.issuer || '' })));
+      h('td', {}, x.issuer
+        ? chipEl(x.issuer, certAuto(x) ? 'ok' : 'mut', { point: false,
+            title: certAuto(x)
+              ? 'renouvellement automatique : sous 30 jours, il est en échec'
+              : 'renouvellement manuel : la date compte' })
+        : h('span', { class: 'sub', text: '—' })),
+      h('td', {}, chipEl(certSource(x), 'mut', { point: false })));
   }));
   msg.textContent = certs.length ? '' : (CERTMSG || 'aucun certificat remonté.');
 }

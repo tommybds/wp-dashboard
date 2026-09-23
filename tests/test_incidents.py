@@ -513,6 +513,51 @@ class TestCerts(IncidentsBase):
         self.poser(None)
         self.assertEqual(self.par_kind("cert_expiring"), [])
 
+    # ---- émetteur automatique : ce n'est pas une échéance, c'est une panne -- #
+    def poser_emetteur(self, jours, issuer):
+        self.poser_fleet(self.serveur(sites=[site("elwave.fr")]))
+        self.certs = {"certs": [{"monitor": "elwave.fr", "days": jours,
+                                 "valid_to": "2026-09-20T00:00:00Z",
+                                 "issuer": issuer}]}
+
+    def test_emetteur_manuel_parle_de_renouvellement_a_faire(self):
+        self.poser_emetteur(14, "DigiCert Inc")
+        inc = self.par_kind("cert_expiring")[0]
+        self.assertEqual(inc["title"], "Certificat de elwave.fr à renouveler")
+        self.assertIs(inc["extra"]["auto_renew"], False)
+
+    def test_lets_encrypt_parle_de_renouvellement_en_panne(self):
+        # 14 jours restants sur un certificat qui se renouvelle à 30 : la
+        # bascule ne s'est pas faite depuis 16 jours. C'est CELA qu'il faut lire.
+        self.poser_emetteur(14, "Let's Encrypt")
+        inc = self.par_kind("cert_expiring")[0]
+        self.assertEqual(inc["title"], "Renouvellement automatique en échec — elwave.fr")
+        self.assertIn("en échec depuis ~16 jour(s)", inc["detail"])
+        self.assertIs(inc["extra"]["auto_renew"], True)
+        self.assertEqual(inc["extra"]["issuer"], "Let's Encrypt")
+
+    def test_cloudflare_et_zerossl_comptent_aussi_comme_automatiques(self):
+        for em in ("Google Trust Services", "ZeroSSL", "Cloudflare, Inc."):
+            with self.subTest(em=em):
+                self.poser_emetteur(9, em)
+                self.assertIs(self.par_kind("cert_expiring")[0]["extra"]["auto_renew"], True)
+
+    def test_emetteur_inconnu_reste_prudent(self):
+        self.poser_emetteur(9, "")
+        self.assertIs(self.par_kind("cert_expiring")[0]["extra"]["auto_renew"], False)
+
+    def test_seuil_de_renouvellement_configurable(self):
+        self.poser_emetteur(14, "Let's Encrypt")
+        self.reglages(cert_auto_renew_days=60)
+        self.assertIn("en échec depuis ~46 jour(s)",
+                      self.par_kind("cert_expiring")[0]["detail"])
+
+    def test_un_automatique_encore_large_ne_declenche_toujours_rien(self):
+        # 40 jours : au-dessus du seuil d'alerte, donc silence — le
+        # renouvellement n'est même pas encore censé avoir eu lieu.
+        self.poser_emetteur(40, "Let's Encrypt")
+        self.assertEqual(self.par_kind("cert_expiring"), [])
+
 
 # --------------------------------------------------------------------------- #
 #  php_eol                                                                     #
@@ -667,7 +712,8 @@ class TestExtra(IncidentsBase):
         self.certs = {"certs": [{"monitor": "elwave.fr", "days": 6,
                                  "valid_to": "2026-09-09T00:00:00Z"}]}
         self.assertEqual(self.par_kind("cert_expiring")[0]["extra"],
-                         {"days_left": 6, "expires": "2026-09-09T00:00:00Z"})
+                         {"days_left": 6, "expires": "2026-09-09T00:00:00Z",
+                          "issuer": "", "auto_renew": False})
 
     def test_php_eol_porte_tous_les_sites_pas_seulement_les_douze_du_detail(self):
         self.poser_fleet(self.serveur("mutu", [site(f"s{i:02d}.fr", php_version="7.4.33")
