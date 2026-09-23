@@ -2286,10 +2286,20 @@ def vizup_run(server, domain, action, arg):
 
         # (a) baseline — le témoin d'AVANT, sans lequel le verdict d'après ne
         #     porterait pas sur cette mise à jour.
+        prev_ref = ""
         if vizup_has(domain, "baseline"):
             vizup_step(domain, "baseline", VIZUP_RUN)
             rcb, outb = logged_action(server, domain, "viz_baseline", None,
                                       source=VIZ_PRE_SOURCE)
+            # La référence qu'on vient de prendre EST un run VizProof : récent,
+            # d'un identifiant que l'inventaire ne connaît pas encore. L'attente
+            # du scan d'après, qui reconnaît « le nouveau run » à ces deux
+            # traits, la prenait pour lui — et rendait « aucune anomalie » sur
+            # une capture comparée à rien (banc, 23/09 : verdict rendu 17 s AVANT
+            # que le plugin ne commence seulement son scan). On l'exclut par son
+            # identifiant, relu auprès du plugin, même si la référence a échoué
+            # (un run partiel peut exister).
+            prev_ref = str(viz_run_of(viz_status_json(srv, site)).get("id") or "")
             if rcb == 0:
                 vizup_step(domain, "baseline", VIZUP_OK, "baseline capturée")
             elif settings_cfg().get("viz_baseline_required"):
@@ -2328,7 +2338,8 @@ def vizup_run(server, domain, action, arg):
             vizup_step(domain, "viz", VIZUP_RUN, VIZ_PHASE_WAIT)
             t1 = time.time()
             res.update(viz_verdict_after_update(server, domain, srv, site, t0,
-                                                viz_prev_run_id(site), on_phase=phase),
+                                                prev_ref or viz_prev_run_id(site),
+                                                on_phase=phase),
                        pending=False, phase=None, ts=_now_s())
             viz_last_set(domain, res)
             viz_verdict_publish(server, domain, action, res, time.time() - t1)

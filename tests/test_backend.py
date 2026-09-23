@@ -2820,9 +2820,18 @@ class TestVizUpdateJob(BaseTmp):
         return (self.rc_maj, "ok" if not self.rc_maj else "Error: échec de la mise à jour")
 
     def _remote(self, srv, site, body, timeout=300, max_out=6000):
-        """Le plugin a lancé son propre scan pendant la mise à jour."""
+        """Le plugin a lancé son propre scan pendant la mise à jour.
+
+        Avant la mise à jour, `last_run` est la référence que le job vient de
+        prendre ; ce n'est qu'APRÈS que le run du plugin apparaît. Un simulateur
+        qui rendait le même run avant et après masquait la confusion entre les
+        deux (corrigée le 23/09)."""
         if "vizproof status" in body:
             at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if not any(a in A.VIZ_AFTER_UPDATE_ACTIONS for a, _g, _s in self.actions):
+                return 0, json.dumps({"configured": True,
+                                      "last_run": {"id": "run-ref", "at": at,
+                                                   "status": "completed", "anomalies": 0}})
             return 0, json.dumps({"configured": True,
                                   "last_run": {"id": "run-42", "at": at,
                                                "status": "completed",
@@ -2859,6 +2868,38 @@ class TestVizUpdateJob(BaseTmp):
 
     def faites(self):
         return [a for a, _g, _s in self.actions]
+
+    # ---- la référence d'avant n'est pas le résultat d'après ----
+    def test_la_reference_n_est_pas_prise_pour_le_scan_d_apres(self):
+        """Banc, 23/09 : juste après la référence, `status.last_run` EST la
+        référence — récente, d'un identifiant que l'inventaire ignore. L'attente
+        la prenait pour le scan d'après et rendait « aucune anomalie » sur une
+        capture comparée à rien, avant même que le plugin ne scanne."""
+        lectures = {"n": 0}
+        maintenant = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        def remote(srv, site, body, timeout=300, max_out=6000):
+            if "vizproof status" not in body:
+                return 0, ""
+            fait = [a for a, _g, _s in self.actions]
+            lectures["n"] += 1
+            if "plugin_update" not in fait or lectures["n"] < 4:
+                # la référence, tant que le plugin n'a pas lancé le scan d'après
+                run = {"id": "run-ref", "at": maintenant(), "status": "completed",
+                       "anomalies": 0}
+            else:
+                run = {"id": "run-apres", "at": maintenant(), "status": "completed",
+                       "anomalies": 3, "url": "https://vizproof.com/r/apres"}
+            return 0, json.dumps({"configured": True, "last_run": run})
+
+        with mock.patch.object(A, "remote_bash", remote):
+            st, j = self.maj()
+            self.assertEqual(st, 200)
+            job = A.VIZUP["a.fr"]
+        viz = (job.get("result") or {}).get("viz") or {}
+        self.assertEqual(viz.get("run_id"), "run-apres",
+                         "le verdict doit venir du scan d'APRÈS, pas de la référence")
+        self.assertEqual(viz.get("anomalies_count"), 3)
 
     # ---- déclenchement ----
     def test_job_demarre_et_la_route_repond_sans_attendre(self):
