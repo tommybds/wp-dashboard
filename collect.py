@@ -535,6 +535,21 @@ def postprocess(raw):
     site["core_update"] = (cu[0].get("version")
                            if isinstance(cu, list) and cu and isinstance(cu[0], dict) else None)
 
+    # Un abonnement Plesk peut porter PLUSIEURS WordPress : `httpdocs`, plus un
+    # répertoire par domaine supplémentaire — androgyne-productions.com héberge
+    # ainsi le vieux site dans `httpdocs` ET le site public dans
+    # `sisma-androgyne.fr/`. Or le script distant nomme un site d'après le
+    # répertoire de l'ABONNEMENT : les deux installs porteraient le même nom et
+    # la seconde écraserait la première à la déduplication.
+    #
+    # Pour ces docroots secondaires — et pour eux seulement, afin de ne changer
+    # aucune clé existante — c'est le `siteurl` de l'install qui fait foi : c'est
+    # l'adresse que le public voit, et elle est lue sur l'install elle-même.
+    if os.path.basename(str(raw.get("path") or "")) != "httpdocs":
+        propre = site_key(site.get("siteurl") or "")
+        if propre and propre != site["domain"]:
+            site["domain"] = propre
+
     apply_plugins(site, extract_json(f.get("plugins", "")) if ok("plugins") else None)
 
     apply_themes(site, extract_json(f.get("themes", "")) if ok("themes") else None)
@@ -1133,11 +1148,24 @@ def annotate_kuma(fleet):
         finaliser()
         return
 
+    # Force de l'appariement, du plus au moins probant. Deux sites peuvent
+    # revendiquer le MÊME moniteur : androgyne-productions.com le revendique
+    # parce qu'il redirige vers sisma-androgyne.fr (alias), et sisma-androgyne.fr
+    # parce que c'est son propre nom. Sans départage, le moniteur du site public
+    # se collait sur l'ancien install qui ne fait que le rediriger — et le
+    # dashboard pilotait alors le mauvais WordPress.
+    #
+    # L'ordre de RÉSOLUTION ne bouge pas (il décide quel nom est retenu, et
+    # toucher à cela changerait des clés existantes) ; seule la force sert au
+    # départage, plus bas.
+    FORCE_ALIAS, FORCE_SITEURL, FORCE_DOMAINE = 1, 2, 3
+
     def match(site):
+        """→ (nom du moniteur, force de l'appariement) ou (None, 0)."""
         if aliases.get(site["domain"]) in mon:
-            return aliases[site["domain"]]
+            return aliases[site["domain"]], FORCE_ALIAS
         if site["domain"] in mon:
-            return site["domain"]
+            return site["domain"], FORCE_DOMAINE
         try:
             h = urlparse(site.get("siteurl") or "").hostname or ""
         except ValueError:
@@ -1145,19 +1173,19 @@ def annotate_kuma(fleet):
         if h.startswith("www."):
             h = h[4:]
         if h and h in mon:
-            return h
+            return h, FORCE_SITEURL
         if h and "www." + h in mon:
-            return "www." + h
-        return None
+            return "www." + h, FORCE_SITEURL
+        return None, 0
 
     cand = {}
     for srv in fleet["servers"]:
         for s in srv["sites"]:
             s["kuma"] = None
             s["kuma_group"] = None
-            n = match(s)
+            n, force = match(s)
             if n:
-                cand.setdefault(n, []).append((srv, s))
+                cand.setdefault(n, []).append((srv, s, force))
     # Un même domaine peut exister sur deux serveurs (migration en cours…) :
     # à défaut de résolution DNS tranchante, on retient le serveur de plus forte
     # « priority » (clé optionnelle de servers.json, entier, défaut 2).
@@ -1173,10 +1201,20 @@ def annotate_kuma(fleet):
             hits = [t for t in lst if t[0].get("host") in ips]
             if len(hits) == 1:
                 chosen = hits[0]
+            elif len(hits) > 1:
+                # Même serveur, plusieurs installs : c'est la force qui tranche.
+                fort = max(t[2] for t in hits)
+                seuls = [t for t in hits if t[2] == fort]
+                if len(seuls) == 1:
+                    chosen = seuls[0]
         if chosen is None:
-            chosen = sorted(lst, key=lambda t: (prio.get(t[0].get("name")) if
-                                                prio.get(t[0].get("name")) is not None else 2),
-                            reverse=True)[0]
+            # Force de l'appariement d'abord, priorité du serveur ensuite : un
+            # site qui PORTE le nom du moniteur bat un site qui n'y arrive que
+            # par une redirection.
+            chosen = sorted(lst, key=lambda t: (
+                t[2],
+                prio.get(t[0].get("name")) if prio.get(t[0].get("name")) is not None else 2),
+                reverse=True)[0]
         chosen[1]["kuma"] = name
         chosen[1]["kuma_group"] = folders.get(name)
     elire_principaux(fleet, prio)
@@ -1463,7 +1501,13 @@ def main():
             fs = {"name": only, "host": "-" if only == "rest" else (srv_only or {}).get("host", "-"),
                   "complete": True, "sites": []}
             fleet["servers"].append(fs)
-        fs["sites"] = [s for s in (fs.get("sites") or []) if s.get("domain") != match] + sites
+        # Dédoublonnage par nom ET par docroot : un re-scan peut RENOMMER un
+        # site (un docroot secondaire prend désormais le nom de son `siteurl`),
+        # et l'ancienne entrée, portant l'ancien nom, survivait au filtre —
+        # le même WordPress apparaissait deux fois dans la flotte.
+        chemins = {x.get("path") for x in sites if x.get("path")}
+        fs["sites"] = [s for s in (fs.get("sites") or [])
+                       if s.get("domain") != match and s.get("path") not in chemins] + sites
         fs["sites"].sort(key=lambda s: s.get("domain") or "")
         # Re-scan d'un seul site : on ne sonde que celui-là.
         write_fleet(fleet, probe_only={match} | {s.get("domain") for s in sites})

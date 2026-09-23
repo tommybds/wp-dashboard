@@ -1353,3 +1353,135 @@ class TestDetectionKuma(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDocrootSecondaire(unittest.TestCase):
+    """Un abonnement Plesk peut porter plusieurs WordPress. Le script distant
+    nomme un site d'après le répertoire de l'abonnement : sans correction, le
+    site public `sisma-androgyne.fr/` et le vieux `httpdocs` du même abonnement
+    portaient le nom `androgyne-productions.com` tous les deux, et l'un
+    écrasait l'autre — le dashboard pilotait alors le mauvais install."""
+
+    def brut(self, path, siteurl, domain="androgyne-productions.com"):
+        return {"domain": domain, "path": path, "owner": "androgyne",
+                "fields": {"siteurl": siteurl, "core_version": "7.0.6"},
+                "rcs": {"siteurl": 0, "core_version": 0}}
+
+    def test_docroot_secondaire_prend_son_propre_siteurl(self):
+        s = collect.postprocess(self.brut(
+            "/var/www/vhosts/androgyne-productions.com/sisma-androgyne.fr",
+            "https://sisma-androgyne.fr"))
+        self.assertEqual(s["domain"], "sisma-androgyne.fr")
+
+    def test_httpdocs_garde_le_nom_de_l_abonnement(self):
+        """Ne JAMAIS toucher aux clés existantes : elles portent l'historique,
+        les surcharges d'affichage et les points de retour arrière."""
+        s = collect.postprocess(self.brut(
+            "/var/www/vhosts/androgyne-productions.com/httpdocs",
+            "https://autre-chose.example"))
+        self.assertEqual(s["domain"], "androgyne-productions.com")
+
+    def test_docroot_secondaire_sans_siteurl_lisible(self):
+        s = collect.postprocess(self.brut(
+            "/var/www/vhosts/androgyne-productions.com/sisma-androgyne.fr", ""))
+        self.assertEqual(s["domain"], "androgyne-productions.com")
+
+    def test_les_deux_installs_coexistent(self):
+        a = collect.postprocess(self.brut(
+            "/var/www/vhosts/androgyne-productions.com/httpdocs",
+            "https://androgyne-productions.com"))
+        b = collect.postprocess(self.brut(
+            "/var/www/vhosts/androgyne-productions.com/sisma-androgyne.fr",
+            "https://sisma-androgyne.fr"))
+        self.assertNotEqual(a["domain"], b["domain"])
+
+    def test_sous_repertoire_garde_le_chemin_dans_la_cle(self):
+        s = collect.postprocess(self.brut(
+            "/var/www/vhosts/portailbijou.fr/blogs.portailbijou.fr",
+            "https://miss-ambre.fr/blog"))
+        self.assertEqual(s["domain"], "miss-ambre.fr/blog")
+
+
+class TestKumaDepartage(TempDirs):
+    """Deux installs du même abonnement revendiquent le même moniteur : l'ancien
+    site par sa redirection (alias), le site public par son propre nom. Sans
+    départage, c'est l'ancien qui gagnait — et le dashboard pilotait le mauvais
+    WordPress (constaté sur androgyne-productions.com / sisma-androgyne.fr)."""
+
+    def poser(self, alias_de="androgyne-productions.com", alias_vers="sisma-androgyne.fr"):
+        with open(os.path.join(self.data, "overrides.json"), "w") as fh:
+            json.dump({alias_de: {"alias": alias_vers}}, fh)
+
+    def annoter(self, sites, moniteurs=("sisma-androgyne.fr",)):
+        f = fleet(srv("plesk-mutu", sites))
+        with mock.patch.object(collect, "kuma_disponible", lambda: True), \
+             mock.patch.object(collect, "kuma_monitor_names", lambda: (set(moniteurs), "")), \
+             mock.patch.object(collect, "kuma_folder_map", lambda: {}), \
+             muet():
+            collect.annotate_kuma(f)
+        return {s["domain"]: s for s in f["servers"][0]["sites"]}
+
+    def test_le_nom_propre_bat_l_alias(self):
+        self.poser()
+        par = self.annoter([
+            site("androgyne-productions.com", kuma=None),
+            site("sisma-androgyne.fr", kuma=None),
+        ])
+        self.assertEqual(par["sisma-androgyne.fr"]["kuma"], "sisma-androgyne.fr")
+        self.assertIsNone(par["androgyne-productions.com"]["kuma"])
+
+    def test_l_ordre_de_collecte_ne_change_rien(self):
+        self.poser()
+        par = self.annoter([
+            site("sisma-androgyne.fr", kuma=None),
+            site("androgyne-productions.com", kuma=None),
+        ])
+        self.assertEqual(par["sisma-androgyne.fr"]["kuma"], "sisma-androgyne.fr")
+        self.assertIsNone(par["androgyne-productions.com"]["kuma"])
+
+    def test_l_alias_reste_utile_quand_il_est_seul(self):
+        """Ne pas casser le cas nominal : un site dont le moniteur porte un
+        autre nom continue d'être apparié par son alias."""
+        self.poser()
+        par = self.annoter([site("androgyne-productions.com", kuma=None)])
+        self.assertEqual(par["androgyne-productions.com"]["kuma"], "sisma-androgyne.fr")
+
+    def test_site_sans_moniteur_reste_sans_moniteur(self):
+        par = self.annoter([site("autre.fr", kuma=None)])
+        self.assertIsNone(par["autre.fr"]["kuma"])
+
+
+class TestRescanRenommage(TempDirs):
+    """Un re-scan ciblé peut RENOMMER un site : le docroot secondaire
+    `.../sisma-androgyne.fr` s'appelait `androgyne-productions.com` et prend
+    désormais le nom de son `siteurl`. L'ancienne entrée doit disparaître, sinon
+    le même WordPress figure deux fois dans la flotte."""
+
+    def flotte_apres(self, existants, frais, match):
+        """Reproduit le filtre de la collecte ciblée (collect.py, bloc --match)."""
+        chemins = {x.get("path") for x in frais if x.get("path")}
+        return [s for s in existants
+                if s.get("domain") != match and s.get("path") not in chemins] + frais
+
+    def test_l_ancienne_entree_du_meme_docroot_disparait(self):
+        existants = [{"domain": "sisma-androgyne.fr", "path": "/v/a/sisma-androgyne.fr"},
+                     {"domain": "androgyne-productions.com", "path": "/v/a/httpdocs"},
+                     {"domain": "autre.fr", "path": "/v/autre.fr/httpdocs"}]
+        frais = [{"domain": "androgyne-productions.com", "path": "/v/a/httpdocs"},
+                 {"domain": "sisma-androgyne.fr", "path": "/v/a/sisma-androgyne.fr"}]
+        out = self.flotte_apres(existants, frais, "androgyne-productions.com")
+        self.assertEqual(len(out), 3)
+        self.assertEqual(sorted(s["domain"] for s in out),
+                         ["androgyne-productions.com", "autre.fr", "sisma-androgyne.fr"])
+
+    def test_les_autres_sites_ne_bougent_pas(self):
+        existants = [{"domain": "autre.fr", "path": "/v/autre.fr/httpdocs"}]
+        frais = [{"domain": "a.fr", "path": "/v/a.fr/httpdocs"}]
+        out = self.flotte_apres(existants, frais, "a.fr")
+        self.assertIn("autre.fr", [s["domain"] for s in out])
+
+    def test_le_filtre_est_bien_celui_du_code(self):
+        """Garde-fou : le bloc --match de collect.py filtre sur les deux clés."""
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "collect.py"), encoding="utf-8").read()
+        self.assertIn('s.get("domain") != match and s.get("path") not in chemins', src)
