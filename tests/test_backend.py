@@ -1805,6 +1805,23 @@ class TestSafeUpdateViz(BaseTmp):
         self.assertIsNone(self.etape_ref(st))
         self.assertIsNone(self.indice("vizproof baseline"))
 
+    def test_retour_arriere_sous_maintenance(self):
+        """Le site passe en maintenance pendant la restauration : un visiteur
+        doit recevoir le 503 « Maintenance » de WordPress, pas un 500 « erreur
+        critique » sur un dossier à moitié restauré (banc, 23/09)."""
+        self.reglages(viz_baseline_before_update=True)
+        self.rc_scan = A.VIZ_ANOMALY_RC
+        st = self.lancer(viz_rollback=True)
+        self.assertEqual(st["verdict"], "annulé (retour arrière)")
+        rb = next(b for b in self.bash if ROLLBACK_MARQUEUR in b)
+        pose = rb.index('> \'$MAINT\'')
+        self.assertLess(pose, rb.index("untar_site"), "maintenance AVANT la première extraction")
+        self.assertIn("$upgrading", rb)
+        self.assertIn('[ "$POSE" = "1" ] && onsite "rm -f \'$MAINT\'"', rb,
+                      "on ne retire que ce qu'on a posé")
+        self.assertGreater(rb.index("rm -f '$MAINT'"), rb.rindex("untar_site"),
+                           "retirée APRÈS la dernière extraction")
+
     def test_sans_controle_visuel_pas_de_reference(self):
         A.safe_update_run("s1", "a.fr", slugs=["akismet"], do_backup=False, use_viz=False)
         self.assertIsNone(self.indice("vizproof baseline"))

@@ -3221,6 +3221,17 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
 THEMEDIR={sq(themedir or "$D/wp-content/themes")}
+# Maintenance pendant la restauration. Sans elle, un visiteur qui tombait dans
+# l'intervalle recevait « Il y a eu une erreur critique » — un 500, dossier à
+# moitié restauré (vu sur le banc le 23/09 : astra_html_before() indéfinie) —
+# au lieu du 503 « Maintenance » que WordPress prévoit pour ce cas. Le fichier
+# est daté : WordPress l'ignore de lui-même au bout de 10 minutes s'il restait.
+# On ne retire que ce qu'on a posé.
+MAINT="$D/.maintenance"; POSE=0
+if [ ! -e "$MAINT" ]; then
+  onsite "printf '<?php \\$upgrading = %s; ?>' $(date +%s) > '$MAINT'" && POSE=1
+  sleep 2   # les requêtes déjà lancées finissent sur les anciens fichiers
+fi
 for f in {sq(arc)}/plugin__*.tgz; do
   [ -f "$f" ] || continue
   s=$(basename "$f" .tgz); s=${{s#plugin__}}
@@ -3235,11 +3246,15 @@ if [ -f {sq(arc)}/core__.tgz ]; then
   # On remet les fichiers du cœur par-dessus (wp-content n'a jamais été touché).
   untar_site {sq(arc)}/core__.tgz "$D" && echo "restauré (coeur)" || echo "ECHEC (coeur)"
 fi
+[ "$POSE" = "1" ] && onsite "rm -f '$MAINT'"
+echo "MAINTENANCE_POSEE=$POSE"
 '''
             rcr, outr = remote_bash(srv, site, rb, timeout=900)
             n_res = sum(1 for l in (outr or "").splitlines() if l.startswith("restauré"))
             safe_step("Retour arrière (fichiers)", rcr == 0 and n_res > 0,
-                      f"{n_res} élément(s) remis en version précédente")
+                      f"{n_res} élément(s) remis en version précédente"
+                      + (" · site en maintenance pendant la restauration"
+                         if "MAINTENANCE_POSEE=1" in (outr or "") else ""))
             # La base n'est JAMAIS restaurée automatiquement : elle contient ce
             # qui a été écrit pendant la mise à jour (commande, formulaire,
             # commentaire). La rejouer ferait perdre ces données. On donne la
