@@ -4132,3 +4132,49 @@ class TestSslCertsIssuer(BaseTmp):
                         [{"monitor": "elwave.fr", "days": 9, "days_left": 9,
                           "issuer": "Let's Encrypt"}])
         self.assertEqual(c["elwave.fr"]["issuer"], "DigiCert Inc")
+
+
+class TestCertIssuerProbe(BaseTmp):
+    """Un certificat que SEUL Kuma voit (site non suivi, hôte hors parc) n'a pas
+    d'émetteur — et c'est exactement celui dont l'échéance alerte. On le relit
+    donc en direct, une fois par hôte et par demi-journée."""
+
+    def setUp(self):
+        super().setUp()
+        A._ISSUER_CACHE.clear()
+        self.addCleanup(A._ISSUER_CACHE.clear)
+
+    def test_sonde_et_met_en_cache(self):
+        appels = []
+
+        def faux(host, **kw):
+            appels.append(host)
+            return {"issuer": "Let's Encrypt"}
+
+        with mock.patch.object(A, "read_cert", faux):
+            self.assertEqual(A.cert_issuer_probe("a.fr"), "Let's Encrypt")
+            self.assertEqual(A.cert_issuer_probe("a.fr"), "Let's Encrypt")
+        self.assertEqual(appels, ["a.fr"])
+
+    def test_echec_ne_leve_jamais(self):
+        def boum(host, **kw):
+            raise OSError("injoignable")
+
+        with mock.patch.object(A, "read_cert", boum):
+            self.assertEqual(A.cert_issuer_probe("a.fr"), "")
+
+    def test_hote_vide(self):
+        self.assertEqual(A.cert_issuer_probe(""), "")
+
+    def test_seuls_les_certificats_proches_sont_sondes(self):
+        """Sonder tout le parc à chaque calcul d'incidents serait absurde."""
+        vus = []
+        with mock.patch.object(A, "kuma_disponible", lambda: True), \
+             mock.patch.object(A, "ssl_certs_probe", lambda: []), \
+             mock.patch.object(A, "cert_issuer_probe", lambda h: vus.append(h) or "X"), \
+             mock.patch.object(A, "ssl_certs_kuma", lambda: {"certs": [
+                 {"monitor": "proche.fr", "days": 9, "days_left": 9},
+                 {"monitor": "loin.fr", "days": 80, "days_left": 80},
+                 {"monitor": "inconnu.fr", "days": None, "days_left": None}]}):
+            A.ssl_certs()
+        self.assertEqual(vus, ["proche.fr"])

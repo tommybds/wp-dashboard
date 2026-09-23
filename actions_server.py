@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dashboard_config import (CONFIG, KUMA_ABSENT_MSG, kuma_disponible, kuma_statut,
                               reset_kuma_cache)
 from vulns import version_compare
+from collect import read_cert
 # Briques communes à tous les scripts du dépôt (cf. dashlib.py) : une seule copie
 # de la lecture/écriture JSON, du quotage shell, de l'identité d'un site et des
 # expressions de validation partagées avec collect.py.
@@ -3861,6 +3862,37 @@ def ssl_certs_probe():
     return certs
 
 
+# Émetteur relu en direct, et mémorisé 12 h. Sert UNIQUEMENT aux moniteurs que
+# Kuma voit sans que le collecteur les sonde (site non suivi dans le dashboard,
+# hôte qui n'est pas un WordPress du parc). Or ce sont précisément ceux dont
+# l'échéance alerte : sans cette relecture, l'incident ne saurait jamais si le
+# certificat se renouvelle tout seul, et dirait « à renouveler » à un humain qui
+# n'a rien à renouveler. Borné aux certificats déjà proches : une poignée
+# d'hôtes, jamais le parc entier.
+_ISSUER_CACHE = {}
+ISSUER_TTL = 12 * 3600
+ISSUER_PROBE_DAYS = 60
+
+
+def cert_issuer_probe(host, timeout=4):
+    """Émetteur du certificat présenté par `host`, ou "" (jamais d'exception)."""
+    h = norm_domain(host)
+    if not h:
+        return ""
+    vu = _ISSUER_CACHE.get(h)
+    if vu and time.time() - vu[0] < ISSUER_TTL:
+        return vu[1]
+    em = ""
+    try:
+        # `read_cert` fait déjà les deux passes qu'il faut : un contexte non
+        # vérifiant rend un `getpeercert()` VIDE, il faut relire le DER.
+        em = str((read_cert(h, timeout=timeout) or {}).get("issuer") or "")
+    except Exception:
+        em = ""
+    _ISSUER_CACHE[h] = (time.time(), em)
+    return em
+
+
 def ssl_certs():
     """Certificats TLS du parc, Kuma d'abord, sondes du collecteur ensuite.
 
@@ -3882,6 +3914,10 @@ def ssl_certs():
             # renouvelé automatiquement.
             if not c.get("issuer"):
                 c["issuer"] = (sondes.get(c.get("monitor")) or {}).get("issuer") or ""
+            jours = c.get("days_left")
+            if (not c.get("issuer") and isinstance(jours, int)
+                    and jours < ISSUER_PROBE_DAYS):
+                c["issuer"] = cert_issuer_probe(c.get("monitor"))
             certs.append(c)
             vus.add(c.get("monitor"))
     for nom, c in sondes.items():
