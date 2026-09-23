@@ -1401,7 +1401,17 @@ def viz_decide(rc, rollback, totals=None):
                 return (False,
                         "écarts visuels sous le seuil du site — mise à jour conservée, "
                         "à regarder dans le rapport", True)
-        return True, "anomalies détectées — retour arrière déclenché (réglage)", True
+        # Deux situations très différentes menaient au MÊME message, et on ne
+        # pouvait donc pas savoir, en lisant le compte rendu, si le retour
+        # arrière reposait sur un échec constaté ou sur l'absence de rapport.
+        # Pour une action qui défait des mises à jour sur un site en production,
+        # c'est la première chose à savoir.
+        if isinstance(totals, dict):
+            return (True, "écart(s) au-dessus du seuil du site — retour arrière "
+                          "déclenché (réglage)", True)
+        return (True, "anomalies détectées mais rapport illisible (scan encore en "
+                      "cours ou run introuvable) — retour arrière par précaution "
+                      "(réglage)", True)
     return True, "", False
 
 

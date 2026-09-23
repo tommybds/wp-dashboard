@@ -4325,3 +4325,34 @@ class TestVizReportRunDeSecours(BaseTmp):
         self.assertEqual(rep["totals"]["fail"], 1)
         annule, _msg, _ran = A.viz_decide(A.VIZ_ANOMALY_RC, True, rep["totals"])
         self.assertTrue(annule, "un échec réel doit toujours déclencher le retour arrière")
+
+
+class TestVizDecideMessages(unittest.TestCase):
+    """Un retour arrière défait des mises à jour sur un site en production. La
+    première chose à savoir en lisant le compte rendu, c'est s'il repose sur un
+    écart CONSTATÉ ou sur l'absence de rapport — les deux disaient la même
+    phrase, et on ne pouvait pas trancher (sumotori.fr, 2026-09-23)."""
+
+    def test_echec_mesure(self):
+        annule, msg, anomalie = A.viz_decide(A.VIZ_ANOMALY_RC, True, {"fail": 1, "warn": 0})
+        self.assertTrue(annule)
+        self.assertIn("seuil du site", msg)
+        self.assertNotIn("illisible", msg)
+        self.assertTrue(anomalie)
+
+    def test_rapport_illisible_le_dit(self):
+        annule, msg, _ = A.viz_decide(A.VIZ_ANOMALY_RC, True, None)
+        self.assertTrue(annule, "sans rapport, on annule toujours par précaution")
+        self.assertIn("illisible", msg)
+        self.assertIn("précaution", msg)
+
+    def test_sous_le_seuil_on_conserve(self):
+        annule, msg, _ = A.viz_decide(A.VIZ_ANOMALY_RC, True, {"fail": 0, "warn": 1})
+        self.assertFalse(annule)
+        self.assertIn("conservée", msg)
+
+    def test_les_trois_messages_sont_distincts(self):
+        msgs = {A.viz_decide(A.VIZ_ANOMALY_RC, True, {"fail": 1})[1],
+                A.viz_decide(A.VIZ_ANOMALY_RC, True, {"fail": 0})[1],
+                A.viz_decide(A.VIZ_ANOMALY_RC, True, None)[1]}
+        self.assertEqual(len(msgs), 3)
