@@ -402,6 +402,7 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 .spk-dot{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);
   box-shadow:0 0 0 2px var(--surface-2);pointer-events:none}
 .spk-end{width:7px;height:7px}
+.spk-mark{position:absolute;top:0;bottom:0;width:0;border-left:1px dashed var(--muted);opacity:.7}
 .sechead .periodes{margin:0 0 0 auto}
 
 /* ---- adaptations ---------------------------------------------------------- */

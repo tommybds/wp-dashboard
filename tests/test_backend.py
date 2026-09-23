@@ -793,7 +793,7 @@ class TestDivers(BaseTmp):
         for mort in ('"/api/sec/diff"', '"/api/actions/list"', '"/api/auth/me"',
                      '"/api/mgmt/site_secret"'):
             self.assertNotIn(mort, src, mort)
-        self.assertIn("def compute_diff", src)   # la fonction sert à evaluate_alerts
+        self.assertIn("diff_fleets(", src)   # evaluate_alerts partage le diff de la chronologie
 
     def test_imports_en_tete(self):
         with open(os.path.join(REPO, "actions_server.py")) as fh:
@@ -4508,3 +4508,32 @@ class TestMajSureUnSeulScan(unittest.TestCase):
         i = corps.index("if use_viz and deja_casse")
         j = corps.index("viz_scan_after_update_cmd(", i)
         self.assertLess(i, j, "le garde-fou doit précéder le scan")
+
+
+class TestAlerteNouvelAdmin(unittest.TestCase):
+    def lancer(self, changes, baseline=None):
+        envoyes = []
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        if baseline is not None:
+            with open(os.path.join(d, "admins_baseline.json"), "w") as fh:
+                json.dump(baseline, fh)
+        cfg = {"enabled": True, "rules": {"new_admin": True}}
+        with mock.patch.object(A, "alerts_cfg", lambda: cfg), \
+             mock.patch.object(A, "DATA", d), \
+             mock.patch.object(A, "visible_sites", lambda: []), \
+             mock.patch.object(A, "alert", lambda k, r, t: envoyes.append(k) or True):
+            A.evaluate_alerts(changes)
+        return [k for k in envoyes if k.startswith("new_admin:")]
+
+    def test_admin_ajoute_alerte(self):
+        ch = [{"domain": "a.fr", "kind": "admin_add", "detail": "+ admin pirate <x@evil.example>"}]
+        self.assertEqual(self.lancer(ch), ["new_admin:a.fr:pirate <x@evil.example>"])
+
+    def test_compte_de_reference_silencieux(self):
+        ch = [{"domain": "a.fr", "kind": "admin_add", "detail": "+ admin dash <d@x.fr>"}]
+        self.assertEqual(self.lancer(ch, {"a.fr": {"logins": ["dash"]}}), [])
+
+    def test_installation_remplacee_silencieuse(self):
+        ch = [{"domain": "a.fr", "kind": "install_moved", "detail": "installation suivie changée"}]
+        self.assertEqual(self.lancer(ch), [])

@@ -97,10 +97,10 @@ function sectionTendance() {
       h('h2', { text: 'Tendance du parc' }),
       h('span', { class: 'small', id: 'hist-sum' }),
       barrePeriode()),
-    h('p', { class: 'hint' }, 'Relevé à chaque collecte. Montre si la dette de mises à jour se résorbe ou s’accumule. ',
+    h('p', { class: 'hint' }, 'Relevé à chaque collecte, sur les sites suivis en production. Montre si la dette de mises à jour se résorbe ou s’accumule. ',
       h('span', {
         class: 'info', text: '?', tabindex: '0', role: 'button',
-        'data-tip': "Ces chiffres portent sur toutes les installations detectees, y compris celles qui ne sont pas suivies dans Kuma et n'apparaissent donc pas dans la liste du parc.",
+        'data-tip': "Préproductions et installations masquées exclues. Les traits pointillés verticaux marquent un changement de périmètre (site ajouté ou retiré du suivi) : ce qui bouge à cet instant n'est pas une évolution de la dette. Un pic bref de « MAJ cœur » est normalement une version de WordPress qui vient de sortir et que les sites appliquent seuls dans l'heure.",
       })),
     h('div', { class: 'dstats', id: 'hist-tiles' }),
     h('div', { id: 'hist-charts' }));
@@ -124,7 +124,7 @@ function entreeAction(e) {
     niveau: rc === 0 ? 'ok' : anom ? 'warn' : 'err',
     warn: rc !== 0,
     detail: sortie,
-    meta: [e.source || '', e.duration_s !== undefined && e.duration_s !== null ? e.duration_s + ' s' : '']
+    meta: [e.source || '', Number(e.duration_s) > 0 ? e.duration_s + ' s' : '']
       .filter(Boolean).join(' · '),
   };
 }
@@ -328,7 +328,7 @@ function creerCourbe(m) {
   };
   plot.onpointerdown = plot.onpointermove;
   plot.onpointerleave = () => survoler(null);
-  return { m, noeud, aire, trait, ys, fin, curseur, point, legende, valeur, axe,
+  return { m, noeud, plot, aire, trait, ys, fin, curseur, point, legende, valeur, axe,
     ech: null, mn: 0, mx: 1, anim: 0 };
 }
 
@@ -361,7 +361,8 @@ const sansAnim = () => { try { return matchMedia('(prefers-reduced-motion: reduc
 // rendu) et l'échelle glisse en même temps que les valeurs.
 function animer(c, ts, vals) {
   const cible = grille(ts, vals);
-  const mn = Math.min(...vals), mx = Math.max(...vals);
+  // Des décomptes : l'axe part de zéro, sinon 56 → 60 ressemble à un mur.
+  const mn = Math.min(0, ...vals), mx = Math.max(1, ...vals);
   c.ts = ts; c.vals = vals; c.cibleMn = mn; c.cibleMx = mx;
   const depart = c.ech || new Array(ECH).fill(mn);
   const mn0 = c.ech ? c.mn : mn, mx0 = c.ech ? c.mx : mx;
@@ -408,25 +409,47 @@ function survoler(frac) {
     c.curseur.style.left = x + '%';
     c.point.style.left = x + '%';
     c.point.style.top = (py(v, c.cibleMn, c.cibleMx) / HT * 100) + '%';
-    c.legende.firstChild.textContent = fmtMs(HIST_MS[i]) + ' : ';
+    const r = RUPTURES.find(x => x.i === i);
+    c.legende.firstChild.textContent = (r ? r.txt + ' · ' : '') + fmtMs(HIST_MS[i]) + ' : ';
     c.valeur.textContent = String(v);
   });
 }
 
-function deltaPill(cur, ref, inverse) {
-  if (ref === null || ref === undefined) return null;
-  const d = cur - ref;
+/* Delta d'une tuile. Le périmètre change (site ajouté au suivi) : la dette
+   brute monte mécaniquement. On juge donc la dette PAR SITE, et le nombre de
+   sites lui-même n'est ni bon ni mauvais. */
+function deltaTuile(m, der, ref) {
+  if (!ref || ref[m.k] === undefined) return null;
+  const cur = der[m.k] ?? 0, d = cur - ref[m.k];
   if (!d) return chipEl('stable', 'mut');
-  // `inverse` : pour une dette, une baisse est une bonne nouvelle.
-  const bon = inverse ? d < 0 : d > 0;
-  return chipEl((d > 0 ? '+' : '') + d, bon ? 'ok' : 'warn');
+  const txt = (d > 0 ? '+' : '') + d;
+  if (!m.inv) return chipEl(txt, 'mut');
+  const avant = ref[m.k] / (ref.sites || 1), apres = cur / (der.sites || 1);
+  const niveau = Math.abs(apres - avant) < 1e-9 ? 'mut' : apres < avant ? 'ok' : 'warn';
+  return chipEl(txt, niveau);
 }
+
+// Ruptures de périmètre ou de mesure : là où `sites` ou `mesure` change.
+function ruptures(hist) {
+  const out = [];
+  for (let i = 1; i < hist.length; i++) {
+    const a = hist[i - 1], b = hist[i];
+    if ((a.mesure || '') !== (b.mesure || '')) {
+      out.push({ i, txt: 'nouvelle mesure : sites suivis en production' });
+    } else if (a.sites !== b.sites) {
+      const d = b.sites - a.sites;
+      out.push({ i, txt: `périmètre ${d > 0 ? '+' : ''}${d} site${Math.abs(d) > 1 ? 's' : ''} (${a.sites} → ${b.sites})` });
+    }
+  }
+  return out;
+}
+let RUPTURES = [];
 
 const MESURES = [
   { k: 'plugin_updates', lbl: 'MAJ extensions', c: 'var(--warn)', inv: true },
   { k: 'core_updates', lbl: 'MAJ cœur', c: 'var(--accent)', inv: true },
   { k: 'errors', lbl: 'Sites en erreur', c: 'var(--err)', inv: true },
-  { k: 'sites', lbl: 'Installations', c: 'var(--ok)', inv: false },
+  { k: 'sites', lbl: 'Sites suivis (prod)', c: 'var(--ok)', inv: false },
 ];
 
 let HIST_MS = [];
@@ -453,10 +476,17 @@ function renderTendance(hist) {
   mount('hist-sum', chipEl((court ? 'historique ' : '') + depuis, 'mut'));
   // Les tuiles comparent au début de la période affichée, comme les courbes.
   const sur = court ? depuis : { semaine: 'sur 7 jours', mois: 'sur 30 jours', annee: 'sur 1 an' }[PERIODE];
+  RUPTURES = ruptures(hist);
+  // Une comparaison n'a de sens qu'à mesure égale : la référence est le premier
+  // relevé de la période qui compte de la même façon que le dernier.
+  const ref = hist.find(x => (x.mesure || '') === (der.mesure || '')) || prem;
+  const refDebut = ref === prem ? sur : 'depuis le ' + fmtMs(tsMs(ref.ts), true);
+  const perim = (der.sites ?? 0) - (ref.sites ?? 0);
   mount('hist-tiles', MESURES.map(m => h('div', { class: 'dstat' },
     h('div', { class: 'lbl', text: m.lbl }),
     h('div', { class: 'val', text: String(der[m.k] ?? '?') }),
-    h('div', { class: 'sub' }, deltaPill(der[m.k] ?? 0, prem[m.k], m.inv), ' ' + sur))));
+    h('div', { class: 'sub' }, deltaTuile(m, der, ref), ' ' + refDebut,
+      m.inv && perim ? h('span', { class: 'muted', text: ` · périmètre ${perim > 0 ? '+' : ''}${perim}` }) : null))));
   // Deux colonnes fixes : quatre courbes pleine largeur donnent des rapports
   // hauteur/largeur absurdes sur un grand écran.
   if (!charts.querySelector('.histgrid')) {
@@ -465,6 +495,11 @@ function renderTendance(hist) {
   }
   MESURES.forEach(m => {
     const c = COURBES[m.k];
+    c.plot.querySelectorAll('.spk-mark').forEach(x => x.remove());
+    RUPTURES.forEach(r => c.plot.insertBefore(h('div', {
+      class: 'spk-mark', title: r.txt,
+      style: { left: pctX(fx((HIST_MS[r.i - 1] + HIST_MS[r.i]) / 2)) + '%' },
+    }), c.curseur));
     animer(c, HIST_MS, hist.map(x => x[m.k] ?? 0));
     [T0, (T0 + T1) / 2, T1].forEach((t, i) => { c.axe[i].textContent = fmtMs(t, true); });
   });
@@ -526,7 +561,7 @@ async function loadHist(force) {
   const sum = document.getElementById('chg-sum');
   if (RESUME && RESUME.day_total) {
     mount(sum, chipEl(
-      `${RESUME.day_total} sur 24 h · ${RESUME.day_sites} site${RESUME.day_sites > 1 ? 's' : ''}`
+      `${RESUME.day_total} sur 24 h · ${RESUME.day_sites} site${RESUME.day_sites > 1 ? 's' : ''} concerné${RESUME.day_sites > 1 ? 's' : ''}`
       + (RESUME.day_warn ? ` · ${RESUME.day_warn} à surveiller` : ''),
       RESUME.day_warn ? 'err' : 'mut'));
   } else if (RESUME) mount(sum, chipEl('rien sur 24 h', 'ok'));

@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dashboard_config import (CONFIG, KUMA_ABSENT_MSG, kuma_disponible, kuma_statut,
                               reset_kuma_cache)
 from vulns import version_compare
-from collect import read_cert
+from collect import read_cert, diff_fleets
 # Briques communes à tous les scripts du dépôt (cf. dashlib.py) : une seule copie
 # de la lecture/écriture JSON, du quotage shell, de l'identité d'un site et des
 # expressions de validation partagées avec collect.py.
@@ -211,6 +211,8 @@ CHANGE_LABELS = {
     "plugin_add": "extension ajoutée", "plugin_remove": "extension retirée",
     "plugin_update": "extension mise à jour", "plugin_status": "extension activée/désactivée",
     "admin_add": "admin ajouté", "admin_remove": "admin retiré", "updraft": "réglage sauvegarde",
+    "install_new": "installation suivie", "install_moved": "installation remplacée",
+    "install_gone": "installation plus suivie",
 }
 EVENTS_MAX_BYTES = 5 * 1024 * 1024  # au-delà : rotation vers events.jsonl.1
 INGEST_MAX_BYTES = 16 * 1024
@@ -3254,12 +3256,21 @@ fi
             alert(f"safeupdate:{domain}", None,
                   f"⛔ <b>{esc_html(domain)}</b> — mise à jour annulée automatiquement "
                   f"({n_res} élément(s) remis en arrière). Verdict : {esc_html(SAFE['verdict'])}")
+        try:
+            duree = round((datetime.datetime.now() - datetime.datetime.strptime(
+                SAFE["started"], "%Y-%m-%d %H:%M:%S")).total_seconds())
+        except (TypeError, ValueError):
+            duree = None
+        # Un retour arrière sans sa cause ne dit rien : on nomme la première étape en échec.
+        cause = next((f"{e['label']} : {e['detail'][:160]}" for e in SAFE["steps"]
+                      if not e.get("ok") and not e["label"].startswith("Retour arrière")), "")
         append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "source": "maj-sure", "server": server_name, "domain": domain,
                     "action": "safe_update",
                     "arg": ",".join(pending + [f"theme:{t}" for t in pending_th]),
-                    "rc": 0 if sain else 2, "duration_s": 0,
-                    "output_tail": f"verdict={SAFE['verdict']}"})
+                    "rc": 0 if sain else 2, "duration_s": duree,
+                    "output_tail": f"verdict={SAFE['verdict']}"
+                                   + (f" · cause = {cause}" if cause and not sain else "")})
     except Exception as e:
         safe_step("Erreur interne", False, f"{type(e).__name__}: {e}")
         SAFE["verdict"] = "erreur"
@@ -3535,12 +3546,7 @@ def collect_worker():
                 COLLECT["done_servers"] += 1
         p.wait()
         COLLECT["rc"] = p.returncode
-        if p.returncode == 0:
-            # collecte complète réussie : on évalue les règles d'alerte sur les données fraîches
-            try:
-                evaluate_alerts()
-            except Exception as e:
-                alerts_log(f"evaluate_alerts: {e}")
+        # Les alertes sont évaluées par collect.py lui-même, à chaque collecte.
     except Exception as e:
         COLLECT["lines"] = COLLECT["lines"] + [f"erreur: {e}"]
         COLLECT["rc"] = 95
@@ -3934,45 +3940,6 @@ def kuma_create(domain, monitor_name, group_id, url, mtype, keyword):
 
 
 # ---------- sécurité : diff et référence admins ----------
-def compute_diff():
-    cur = load_json(os.path.join(DATA, "fleet.json"), {"servers": []})
-    prev = load_json(os.path.join(DATA, "fleet.prev.json"), None)
-    if prev is None:
-        return {"available": False}
-
-    def index(fl):
-        d = {}
-        for srv in fl["servers"]:
-            for s in srv["sites"]:
-                d[(srv["name"], s["domain"])] = s
-        return d
-    ci, pi = index(cur), index(prev)
-    changes = []
-    for key, s in ci.items():
-        if key not in pi:
-            changes.append({"domain": s["domain"], "type": "nouveau site", "detail": f"{key[0]}"})
-            continue
-        p = pi[key]
-        if s.get("core_version") != p.get("core_version"):
-            changes.append({"domain": s["domain"], "type": "core", "detail": f"{p.get('core_version')} → {s.get('core_version')}"})
-        if (s.get("plugins_updates") or 0) != (p.get("plugins_updates") or 0):
-            changes.append({"domain": s["domain"], "type": "MAJ plugins en attente", "detail": f"{p.get('plugins_updates')} → {s.get('plugins_updates')}"})
-        if (s.get("plugins_total") or 0) != (p.get("plugins_total") or 0):
-            changes.append({"domain": s["domain"], "type": "nombre de plugins", "detail": f"{p.get('plugins_total')} → {s.get('plugins_total')}"})
-        if s.get("php_version") != p.get("php_version"):
-            changes.append({"domain": s["domain"], "type": "PHP", "detail": f"{p.get('php_version')} → {s.get('php_version')}"})
-        na = {a["login"] for a in (s.get("admins") or [])}
-        oa = {a["login"] for a in (p.get("admins") or [])}
-        for login in na - oa:
-            changes.append({"domain": s["domain"], "type": "⚠ nouvel admin", "detail": login})
-        for login in oa - na:
-            changes.append({"domain": s["domain"], "type": "admin supprimé", "detail": login})
-    for key, p in pi.items():
-        if key not in ci:
-            changes.append({"domain": p["domain"], "type": "site disparu", "detail": f"{key[0]}"})
-    return {"available": True, "prev": prev.get("generated_at"), "cur": cur.get("generated_at"), "changes": changes}
-
-
 def set_baseline(domain=None):
     """Fige les administrateurs actuels comme référence.
 
@@ -4306,23 +4273,37 @@ def visible_sites():
     return out
 
 
-def evaluate_alerts():
-    """Évalue les règles après une collecte complète et envoie ce qui doit l'être."""
+def evaluate_alerts(changes=None):
+    """Évalue les règles après une collecte complète et envoie ce qui doit l'être.
+
+    `changes` : sortie de collect.diff_fleets pour cette collecte — le MÊME
+    calcul que la chronologie, pour qu'alerte et journal disent la même chose.
+    """
     cfg = alerts_cfg()
     if not cfg.get("enabled"):
         return {"enabled": False, "sent": 0}
     rules, now, sent = cfg["rules"], time.time(), 0
 
-    # 1) nouveaux administrateurs (issus du diff de collecte)
+    # 1) nouveaux administrateurs
     if rules.get("new_admin"):
-        diff = compute_diff()
-        for ch in (diff.get("changes") or []):
-            if "nouvel admin" not in str(ch.get("type", "")):
+        if changes is None:
+            prev = load_json(os.path.join(DATA, "fleet.prev.json"), None)
+            cur = load_json(os.path.join(DATA, "fleet.json"), None)
+            changes = diff_fleets(prev, cur, "") if prev and cur else []
+        # Les comptes figés en référence (dont celui du dashboard) sont connus.
+        base = load_json(os.path.join(DATA, "admins_baseline.json"), {})
+        base = base if isinstance(base, dict) else {}
+        for ch in changes:
+            if ch.get("kind") != "admin_add":
                 continue
-            sent += alert(f"new_admin:{ch.get('domain')}:{ch.get('detail')}", "new_admin",
+            compte = str(ch.get("detail") or "").removeprefix("+ admin ").strip()
+            login = compte.split(" <")[0]
+            if login in ((base.get(ch.get("domain")) or {}).get("logins") or []):
+                continue
+            sent += alert(f"new_admin:{ch.get('domain')}:{compte}", "new_admin",
                           "🛑 <b>Nouvel administrateur</b>"
                           f"\nSite : <b>{esc_html(nom_usage(ch.get('domain')))}</b>"
-                          f"\nCompte : <code>{esc_html(ch.get('detail'))}</code>")
+                          f"\nCompte : <code>{esc_html(compte)}</code>")
 
     # 2) sauvegardes UpdraftPlus périmées
     stale_h = to_number(rules.get("backup_stale_h"))
@@ -5410,7 +5391,7 @@ def read_changes(n=1500, domain=None):
     Produit par collect.py : chaque ligne est un changement d'état réel (version
     installée qui bouge, admin/extension ajouté), déjà dédoublonné par domaine
     Kuma. C'est l'historique complet — au-delà de la seule dernière collecte que
-    donne compute_diff(). Renvoyé du plus récent au plus ancien.
+    donne collect.diff_fleets(). Renvoyé du plus récent au plus ancien.
     """
     out = [c for c in read_jsonl_tail(CHANGES_PATH, n)
            if not domain or c.get("domain") == domain]

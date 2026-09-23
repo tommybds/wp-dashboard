@@ -179,6 +179,23 @@ class TestDiffFleets(unittest.TestCase):
         self.assertEqual(ch[0]["severity"], "warn")
         self.assertIn("inconnu", ch[0]["detail"])
 
+    def test_installation_remplacee_une_seule_ligne(self):
+        """Même domaine, autre serveur (reconstruction) : pas de faux « + admin »."""
+        avant = fleet(srv("legacy", [site("a.fr")]))
+        apres = fleet(srv("mutu", [site("a.fr", admins=[
+            {"login": "adm", "email": "adm@example.com"},
+            {"login": "nouveau", "email": "n@example.com"}])]))
+        ch = collect.diff_fleets(avant, apres, "t")
+        self.assertEqual([c["kind"] for c in ch], ["install_moved"])
+        self.assertEqual(ch[0]["severity"], "info")
+        self.assertIn("legacy", ch[0]["detail"])
+
+    def test_perimetre_journalise(self):
+        avant = fleet(srv("s1", [site("a.fr")]))
+        apres = fleet(srv("s1", [site("b.fr")]))
+        kinds = sorted(c["kind"] for c in collect.diff_fleets(avant, apres, "t"))
+        self.assertEqual(kinds, ["install_gone", "install_new"])
+
     def test_admin_ajoute_est_un_warn(self):
         avant = fleet(srv("s1", [site("a.fr")]))
         apres = fleet(srv("s1", [site("a.fr", admins=[
@@ -223,6 +240,19 @@ class TestMergeStale(unittest.TestCase):
                 ligne = json.loads(lire(os.path.join(d, "collect_history.jsonl")))
         self.assertEqual(ligne["sites"], 2)
         self.assertEqual(ligne["stale_servers"], 1)
+
+    def test_history_mesure_les_sites_suivis_en_production(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(collect, "DATA", d):
+                f = fleet(srv("s1", [
+                    site("a.fr", followed=True, core_update="7.1.2"),
+                    site("dev.a.fr", followed=True, preprod=True, core_update="7.1.2"),
+                    site("copie.fr", followed=False, core_update="7.1.2")]))
+                collect.append_history(f)
+                ligne = json.loads(lire(os.path.join(d, "collect_history.jsonl")))
+        self.assertEqual((ligne["sites"], ligne["preprod"], ligne["hidden"]), (1, 1, 1))
+        self.assertEqual(ligne["core_updates"], 1)
+        self.assertEqual(ligne["mesure"], "suivis-prod")
 
 
 # --------------------------------------------------------------------------- #

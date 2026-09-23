@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 # attribut du module, comme avant la mise en commun.
 from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      PATH_PATTERN_RE as PATTERN_RE, load_json, norm_domain,
-                     preprod_auto, site_preprod,
+                     preprod_auto, site_preprod, site_visible,
                      site_key, sq, valid_path_pattern as valid_pattern,
                      validate_public_url, load_followed, ensure_followed_migrated,
                      exec_mode)
@@ -1371,12 +1371,20 @@ def merge_stale(entry, previous, ts):
 
 def append_history(fleet):
     servers = fleet.get("servers") or []
-    sites = [(s, x) for s in servers for x in (s.get("sites") or [])]
+    tous = [(s, x) for s in servers for x in (s.get("sites") or [])]
+    # La dette se mesure sur ce que le dashboard SUIT (même règle que l'en-tête
+    # et la liste du parc), et en production seulement : les copies masquées
+    # (legacy, doublons) et les préprods gonflaient les courbes.
+    suivis = [(s, x) for s, x in tous if site_visible(x)]
+    sites = [(s, x) for s, x in suivis if not x.get("preprod")]
     # Un serveur injoignable conserve sa photo précédente (voir merge_stale) :
     # ses sites comptent donc normalement, la courbe ne plonge pas à zéro. On
     # note simplement combien de serveurs sont dans cet état.
     line = {"ts": fleet.get("generated_at"),
+            "mesure": "suivis-prod",   # avant : toutes les installations découvertes
             "sites": len(sites),
+            "preprod": len(suivis) - len(sites),
+            "hidden": len(tous) - len(suivis),
             "core_updates": sum(1 for _, x in sites if x.get("core_update")),
             "plugin_updates": sum((x.get("plugins_updates") or 0) for _, x in sites),
             "errors": sum(1 for _, x in sites if x.get("errors")),
@@ -1405,6 +1413,7 @@ def _index_sites(fleet):
     Un même domaine peut exister sur deux serveurs (mutu + legacy) : on retient
     l'install rattaché à Kuma, celui que l'UI affiche — même logique que le
     reste du dashboard, pour ne pas differ deux copies l'une contre l'autre.
+    Chaque site porte `_ou` = (serveur, chemin) : l'identité de l'INSTALLATION.
     """
     out = {}
     for s in fleet.get("servers", []):
@@ -1414,8 +1423,12 @@ def _index_sites(fleet):
                 continue
             if dom in out and not site.get("kuma"):
                 continue
-            out[dom] = site
+            out[dom] = dict(site, _ou=(s.get("name"), site.get("path") or ""))
     return out
+
+
+def _ou_txt(ou):
+    return f"{ou[0]}:{ou[1]}" if ou[1] else str(ou[0])
 
 def _plugin_map(site):
     return {p.get("name"): p for p in (site.get("plugins_list") or []) if p.get("name")}
@@ -1435,7 +1448,17 @@ def diff_fleets(old, new, ts):
     for dom, ns in ni.items():
         prev = oi.get(dom)
         if prev is None:
-            continue  # site nouveau dans l'inventaire : pas un « changement »
+            # Pas un changement DU site : le périmètre suivi s'agrandit.
+            mk(dom, "install_new", "info", f"installation suivie : {_ou_txt(ns['_ou'])}")
+            continue
+        if prev["_ou"] != ns["_ou"]:
+            # Le domaine pointe désormais sur une AUTRE installation (migration,
+            # reconstruction, docroot corrigé) : comparer les deux inventaires
+            # produirait des « + admin » et « + extension » qui ne sont pas des
+            # changements du site. Une seule ligne, et on repart de là.
+            mk(dom, "install_moved", "info",
+               f"installation suivie changée : {_ou_txt(prev['_ou'])} → {_ou_txt(ns['_ou'])}")
+            continue
         # Une collecte en erreur donne des champs peu fiables (plugins_list vide,
         # etc.) : on ne diffe pas, sinon flot de faux « + / − plugin ».
         if ns.get("errors") or prev.get("errors"):
@@ -1486,6 +1509,9 @@ def diff_fleets(old, new, ts):
                 a, b = ou.get(k), nu.get(k)
                 if (a or b) and str(a) != str(b):
                     mk(dom, "updraft", "info", f"Updraft {lbl} {a} → {b}")
+    for dom, ps in oi.items():
+        if dom not in ni:
+            mk(dom, "install_gone", "info", f"installation plus suivie : {_ou_txt(ps['_ou'])}")
     return changes
 
 def append_changes(changes):
@@ -1615,6 +1641,7 @@ def main():
         # write_fleet(rotate=True) vient de basculer l'ancienne photo en
         # fleet.prev.json : on la compare à la nouvelle pour tracer les changements.
         prev = load_json(os.path.join(DATA, "fleet.prev.json"), None)
+        changes = []
         if prev:
             changes = diff_fleets(prev, fleet, fleet["generated_at"])
             append_changes(changes)
@@ -1622,6 +1649,13 @@ def main():
                 warn = sum(1 for c in changes if c["severity"] == "warn")
                 print(f"{len(changes)} changement(s) détecté(s)"
                       + (f", dont {warn} à surveiller." if warn else "."))
+        # Les alertes suivent CHAQUE collecte complète, y compris celles du cron :
+        # elles ne partaient qu'après un clic sur « Collecter ».
+        try:
+            import actions_server
+            actions_server.evaluate_alerts(changes if prev else [])
+        except Exception as e:  # une alerte ratée ne doit pas faire échouer la collecte
+            print(f"alertes : {type(e).__name__}: {e}", flush=True)
     print(f"OK — {sum(len(s['sites']) for s in fleet['servers'])} sites.")
 
 
