@@ -85,6 +85,10 @@ VIZ_SKIP_DURING_SAFE = "--skip-plugins=vizproof-timeline"
 # que NOUS choisissons. Un plugin plus ancien refuse l'option : on retombe sur
 # le scan simple.
 VIZ_SCAN_AFTER_UPDATE_RE = re.compile(r"unknown --after-update|after-update.{0,40}(unknown|invalid)", re.I)
+# Référence d'avant mise à jour : la commande que le plugin exécute lui-même
+# avant une mise à jour dans wp-admin (`maybe_prepare_pre_update_baseline_scan`).
+VIZ_BASELINE_CMD = "run vizproof baseline --wait --timeout=300 --format=json"
+VIZ_BASELINE_TIMEOUT = 420
 VIZ_OPTION_NAME = "vizproof_timeline_options"
 VIZ_AUTOSCAN_KEY = "enable_update_scan_by_default"
 VIZ_POLL_S = 10       # cadence d'interrogation de `wp vizproof status`
@@ -2883,6 +2887,41 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                       "de base de données (core update-db) ne sont PAS annulées par le retour "
                       "arrière — la sauvegarde UpdraftPlus est le recours pour la base")
 
+        # 2 bis. référence VizProof d'AVANT — ce que fait le plugin avant une
+        #    mise à jour dans wp-admin, et ce que faisaient déjà les mises à jour
+        #    simples du dashboard (`vizup_run`). Sans elle, le scan de fin
+        #    comparait à la dernière référence connue, parfois vieille de
+        #    plusieurs semaines : toute retouche de contenu faite depuis passait
+        #    pour un effet de la mise à jour, et pouvait la faire annuler. Prise
+        #    ici, AVANT les sauvegardes, pour pouvoir s'arrêter sans rien avoir
+        #    écrit quand les Réglages l'exigent et qu'elle échoue. Mêmes
+        #    réglages que les mises à jour simples.
+        cfg_viz = settings_cfg()
+        viz_dispo = bool(use_viz and viz_available(srv, site))
+        if viz_dispo and cfg_viz.get("viz_baseline_before_update"):
+            rcb, outb = remote_bash(srv, site, VIZ_BASELINE_CMD, timeout=VIZ_BASELINE_TIMEOUT,
+                                    max_out=None)
+            jb = viz_json_tail(outb) or {}
+            nb = len(jb.get("run_ids") or []) if isinstance(jb, dict) else 0
+            if rcb == 0:
+                safe_step("Référence VizProof avant mise à jour", True,
+                          f"capturée et promue ({nb} page(s)) — le contrôle de fin "
+                          "comparera à cet état-ci")
+            elif cfg_viz.get("viz_baseline_required"):
+                safe_step("Référence VizProof avant mise à jour", False,
+                          "exigée par les Réglages et en échec : "
+                          + str((jb or {}).get("message") or outb or "")[-300:])
+                safe_step("Interrompu", False,
+                          "aucune modification : sans référence d'avant, le contrôle "
+                          "visuel ne porterait pas sur cette mise à jour")
+                SAFE["verdict"] = "annulé"
+                return
+            else:
+                safe_step("Référence VizProof avant mise à jour", True,
+                          "en échec — le contrôle de fin comparera à la dernière "
+                          "référence connue : "
+                          + str((jb or {}).get("message") or outb or "")[-200:], warn=True)
+
         # 3. sauvegarde UpdraftPlus (filet distant, hors mécanisme de retour arrière)
         if do_backup:
             rc, out = logged_action(server_name, domain, "updraft_backup", None, source="maj-sure")
@@ -3123,7 +3162,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         if use_viz and deja_casse:
             safe_step("Contrôle visuel VizProof", True,
                       "non lancé : le site est déjà en échec, le retour arrière est acquis")
-        elif use_viz and viz_available(srv, site):
+        elif viz_dispo:
             viz_used = True
             rcv, outv = remote_bash(srv, site, viz_scan_after_update_cmd(pending, pending_th),
                                     timeout=600, max_out=None)
@@ -3150,7 +3189,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             # « échec » : elle réclame un œil, pas une alarme.
             safe_step("Contrôle visuel VizProof", viz_ok and not viz_anomaly, detail,
                       warn=viz_anomaly and viz_ok, report=rapp)
-        elif use_viz:
+        elif use_viz and not deja_casse:
             safe_step("Contrôle visuel VizProof", True,
                       "indisponible sur ce site (commande wp vizproof absente) — ignoré")
 

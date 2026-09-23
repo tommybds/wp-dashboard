@@ -1706,6 +1706,7 @@ class TestSafeUpdateViz(BaseTmp):
         self.addCleanup(lambda: setattr(A, "ROLLBACK_INDEX_PATH", self._ri))
         A.SAFE.update({"running": False, "domain": "", "steps": [], "verdict": ""})
         self.rc_scan = A.VIZ_ANOMALY_RC
+        self.rc_baseline = 0
         self.bash = []
         srv = {"name": "s1", "host": "203.0.113.1", "port": 22, "patterns": ["/x/*"]}
         site = {"domain": "a.fr", "path": "/var/www/a.fr", "owner": "www",
@@ -1726,6 +1727,10 @@ class TestSafeUpdateViz(BaseTmp):
     def _bash(self, srv, site, body, timeout=300, max_out=6000):
         """Sorties distantes plausibles, une par étape que la fonction lit."""
         self.bash.append(body)
+        if "vizproof baseline" in body:
+            if self.rc_baseline == 0:
+                return 0, '{"status":"ok","run_ids":["r1","r2"],"message":"baseline capturée et promue"}'
+            return self.rc_baseline, '{"status":"failed","run_ids":[],"message":"API injoignable"}'
         if "vizproof scan" in body:
             return self.rc_scan, '{"anomalies":2,"report_url":"https://vizproof.com/r/9"}'
         if "plugin list --update=available" in body:
@@ -1746,7 +1751,63 @@ class TestSafeUpdateViz(BaseTmp):
         return dict(A.SAFE)
 
     def etape_viz(self, st):
-        return next((x for x in st["steps"] if "VizProof" in x["label"]), None)
+        # l'étape du CONTRÔLE de fin — « Référence VizProof avant mise à jour »
+        # contient aussi « VizProof » et la précède désormais
+        return next((x for x in st["steps"] if x["label"] == "Contrôle visuel VizProof"), None)
+
+    def etape_ref(self, st):
+        return next((x for x in st["steps"]
+                     if x["label"] == "Référence VizProof avant mise à jour"), None)
+
+    def reglages(self, **kw):
+        A.save_json(A.SETTINGS_PATH, kw)
+
+    def indice(self, motif):
+        return next((i for i, b in enumerate(self.bash) if motif in b), None)
+
+    # ---- référence d'AVANT : comme le plugin, et comme les MAJ simples ------- #
+    def test_reference_prise_avant_toute_ecriture(self):
+        """Avant la sauvegarde, l'archive et la mise à jour : le scan de fin doit
+        comparer à l'état d'une minute plus tôt, pas à une référence vieille de
+        plusieurs semaines où chaque retouche de contenu passerait pour un effet
+        de la mise à jour."""
+        st = self.lancer()
+        self.assertTrue(self.etape_ref(st)["ok"])
+        ib = self.indice("vizproof baseline")
+        self.assertIsNotNone(ib)
+        self.assertLess(ib, self.indice("BESOIN_MO"), "avant l'archivage")
+        self.assertLess(ib, self.indice("run plugin update"), "avant la mise à jour")
+        self.assertLess(ib, self.indice("vizproof scan"), "avant le contrôle de fin")
+
+    def test_reference_exigee_et_en_echec_rien_n_est_touche(self):
+        self.reglages(viz_baseline_before_update=True, viz_baseline_required=True)
+        self.rc_baseline = 1
+        st = self.lancer()
+        self.assertEqual(st["verdict"], "annulé")
+        self.assertFalse(self.etape_ref(st)["ok"])
+        self.assertIn("API injoignable", self.etape_ref(st)["detail"])
+        self.assertIsNone(self.indice("BESOIN_MO"), "aucune archive")
+        self.assertIsNone(self.indice("run plugin update"), "aucune mise à jour")
+
+    def test_reference_facultative_en_echec_avertit_et_continue(self):
+        self.reglages(viz_baseline_before_update=True, viz_baseline_required=False)
+        self.rc_baseline = 1
+        st = self.lancer()
+        ref = self.etape_ref(st)
+        self.assertTrue(ref["ok"])
+        self.assertTrue(ref["warn"])
+        self.assertIn("dernière référence connue", ref["detail"])
+        self.assertIsNotNone(self.indice("run plugin update"))
+
+    def test_reglage_eteint_pas_de_reference(self):
+        self.reglages(viz_baseline_before_update=False)
+        st = self.lancer()
+        self.assertIsNone(self.etape_ref(st))
+        self.assertIsNone(self.indice("vizproof baseline"))
+
+    def test_sans_controle_visuel_pas_de_reference(self):
+        A.safe_update_run("s1", "a.fr", slugs=["akismet"], do_backup=False, use_viz=False)
+        self.assertIsNone(self.indice("vizproof baseline"))
 
     def test_par_defaut_anomalies_conservees(self):
         st = self.lancer()
