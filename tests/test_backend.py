@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import textwrap
 import threading
@@ -4199,3 +4200,128 @@ class TestCertIssuerProbe(BaseTmp):
                  {"monitor": "inconnu.fr", "days": None, "days_left": None}]}):
             A.ssl_certs()
         self.assertEqual(vus, ["proche.fr"])
+
+
+# --------------------------------------------------------------------------- #
+#  Sauvegarde locale de la base : le mot de passe doit survivre au my.cnf       #
+# --------------------------------------------------------------------------- #
+class TestMyCnfMotDePasse(unittest.TestCase):
+    """Le lecteur d'options de MySQL coupe une valeur non protégée au premier
+    « # » : il y voit un commentaire. Un mot de passe de base qui en contient un
+    — c'est courant — arrivait donc tronqué, mysqldump répondait « Access
+    denied », et la MAJ sûre continuait SANS dump de base. Le retour arrière
+    n'avait alors plus de filet côté base, sans que rien ne le dise clairement.
+
+    Constaté sur sumotori.fr le 2026-09-23 (mot de passe contenant `$`, `#`, `~`).
+    """
+
+    MOTIF = "DBPW=$(cfg DB_PASSWORD"
+
+    def lignes_generees(self):
+        """Les deux lignes telles que l'f-string les produira."""
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(racine, "actions_server.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        brutes = [l for l in src.splitlines()
+                  if self.MOTIF in l or "printf '[client]" in l]
+        self.assertEqual(len(brutes), 2, "bloc du my.cnf introuvable")
+        # f-string NON brute : les échappements du source sont résolus
+        return [l.encode().decode("unicode_escape") for l in brutes]
+
+    def essayer(self, motdepasse):
+        """Rejoue les deux lignes en bash et rend le fichier d'options produit."""
+        sed, printf = self.lignes_generees()
+        with tempfile.TemporaryDirectory() as tmp:
+            cnf = os.path.join(tmp, ".my.cnf")
+            script = "\n".join([
+                "cfg() { printf '%s' \"$MDP\"; }",
+                "CNF=" + cnf,
+                sed.strip(),
+                printf.strip(),
+                "cat " + cnf,
+            ])
+            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                               env=dict(os.environ, MDP=motdepasse))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout
+
+    def test_le_mot_de_passe_est_entre_guillemets(self):
+        out = self.essayer("abc123")
+        self.assertIn('password="abc123"', out)
+
+    def test_un_diese_ne_tronque_plus_rien(self):
+        out = self.essayer("aJ$k#7m~Qp")
+        self.assertIn('password="aJ$k#7m~Qp"', out)
+        # la ligne entière doit être là : c'est CE point qui cassait
+        ligne = [l for l in out.splitlines() if l.startswith("password=")][0]
+        self.assertTrue(ligne.endswith('"'), ligne)
+
+    def test_guillemets_et_antislashes_echappes(self):
+        out = self.essayer('a"b\\c')
+        self.assertIn('password="a\\"b\\\\c"', out)
+
+    def test_le_fichier_reste_lisible_par_son_seul_proprietaire(self):
+        """umask 077 : le mot de passe ne doit jamais être lisible par un voisin
+        du mutualisé, même le temps d'un dump."""
+        sed, printf = self.lignes_generees()
+        self.assertIn("umask 077", printf)
+
+
+class TestVizReportRunDeSecours(BaseTmp):
+    """Un scan multi-pages ouvre un run par page. L'identifiant relevé au
+    lancement n'est pas toujours celui que l'API VizProof conserve : elle répond
+    « Run not found », le rapport arrive vide, et faute de totaux la décision se
+    rabat sur le retour arrière. Constaté sur sumotori.fr le 2026-09-23 — un
+    rapport parfaitement lisible existait sous l'identifiant que le plugin, lui,
+    avait gardé."""
+
+    RAPPORT = {"run_id": "bon", "status": "completed", "totals": {"fail": 1, "ok": 1},
+               "items": [], "report_url": "https://x/r"}
+
+    def poser(self, reponses, dernier="bon"):
+        """`reponses` : {identifiant demandé → JSON rendu}. '' = appel sans --run."""
+        self.vus = []
+
+        def faux_bash(srv, site, body, timeout=300, max_out=6000):
+            if "vizproof status" in body:
+                return 0, json.dumps({"last_run": {"id": dernier}})
+            rid = ""
+            if "--run=" in body:
+                rid = body.split("--run=", 1)[1].split()[0]
+            self.vus.append(rid)
+            r = reponses.get(rid)
+            return (0, json.dumps(r)) if r else (1, '{"run_id":"","message":"Run not found"}')
+
+        return mock.patch.object(A, "remote_bash", faux_bash)
+
+    def test_repli_sur_le_run_garde_par_le_plugin(self):
+        with self.poser({"bon": self.RAPPORT}):
+            rep = A.viz_report_fetch("s1", "a.fr", {"name": "s1"}, {"path": "/d", "domain": "a.fr",
+                                                                    "owner": "o"}, "perdu")
+        self.assertIsNotNone(rep)
+        self.assertEqual(rep["run_id"], "bon")
+        self.assertEqual(self.vus, ["perdu", "bon"])
+
+    def test_pas_de_seconde_tentative_sur_le_meme_run(self):
+        """Redemander le même identifiant ne ferait que répéter l'échec."""
+        with self.poser({}, dernier="perdu"):
+            rep = A.viz_report_fetch("s1", "a.fr", {"name": "s1"}, {"path": "/d", "domain": "a.fr",
+                                                                    "owner": "o"}, "perdu")
+        self.assertIsNone(rep)
+        self.assertEqual(self.vus, ["perdu"])
+
+    def test_le_premier_essai_suffit_quand_il_repond(self):
+        with self.poser({"perdu": dict(self.RAPPORT, run_id="perdu")}):
+            rep = A.viz_report_fetch("s1", "a.fr", {"name": "s1"}, {"path": "/d", "domain": "a.fr",
+                                                                    "owner": "o"}, "perdu")
+        self.assertEqual(rep["run_id"], "perdu")
+        self.assertEqual(self.vus, ["perdu"], "aucune requête de secours inutile")
+
+    def test_les_totaux_reviennent_donc_la_decision_redevient_possible(self):
+        """C'est tout l'enjeu : sans totaux, `viz_decide` annule par défaut."""
+        with self.poser({"bon": self.RAPPORT}):
+            rep = A.viz_report_fetch("s1", "a.fr", {"name": "s1"}, {"path": "/d", "domain": "a.fr",
+                                                                    "owner": "o"}, "perdu")
+        self.assertEqual(rep["totals"]["fail"], 1)
+        annule, _msg, _ran = A.viz_decide(A.VIZ_ANOMALY_RC, True, rep["totals"])
+        self.assertTrue(annule, "un échec réel doit toujours déclencher le retour arrière")

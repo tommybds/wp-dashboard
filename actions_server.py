@@ -1596,12 +1596,32 @@ def viz_report_fetch(server, domain, srv, site, run=""):
     pas, il n'apprendrait rien à l'historique du site.
     """
     t0 = time.time()
-    try:
-        rc, out = remote_bash(srv, site, viz_report_cmd(run),
-                              timeout=VIZ_REPORT_TIMEOUT, max_out=None)
-    except Exception as e:                    # ssh mort, timeout : on continue sans détail
-        rc, out = 94, f"erreur interne: {type(e).__name__}: {e}"
-    rep = viz_report_payload(viz_json_tail(out)) if rc in (0, VIZ_ANOMALY_RC) else None
+
+    def lire(rid):
+        try:
+            rc, out = remote_bash(srv, site, viz_report_cmd(rid),
+                                  timeout=VIZ_REPORT_TIMEOUT, max_out=None)
+        except Exception as e:                # ssh mort, timeout : on continue sans détail
+            return 94, f"erreur interne: {type(e).__name__}: {e}", None
+        return rc, out, (viz_report_payload(viz_json_tail(out))
+                         if rc in (0, VIZ_ANOMALY_RC) else None)
+
+    rc, out, rep = lire(run)
+    if rep is None:
+        # Un scan multi-pages ouvre UN run par page. L'identifiant que le
+        # dashboard a relevé au lancement n'est pas toujours celui que l'API
+        # conserve : elle répond alors « Run not found », le rapport arrive
+        # vide, et faute de totaux la décision se rabat sur le retour arrière.
+        # Un site parfaitement sain était annulé sans que rien ne puisse dire
+        # pourquoi. Le plugin, lui, sait quel run a abouti : on le lui demande,
+        # et on ne réessaie que si c'est un AUTRE run — sinon on ne ferait que
+        # répéter le même échec.
+        dernier = str(viz_run_of(viz_status_json(srv, site)).get("id") or "").strip()
+        if dernier and dernier != str(run or "").strip():
+            rc2, out2, rep2 = lire(dernier)
+            if rep2 is not None:
+                return rep2
+            rc, out = rc2, out2
     if rep is None:
         append_log({"ts": _now_s(), "source": VIZ_AFTER_SOURCE, "server": server,
                     "domain": domain, "action": "viz_report", "arg": str(run or "") or None,
@@ -2901,7 +2921,15 @@ if [ "$dump_ok" = "0" ]; then
     cfg() {{ asuser "$base wp config get $1 --skip-plugins --skip-themes $extra --no-color" 2>/dev/null | tail -1; }}
     DBN=$(cfg DB_NAME); DBU=$(cfg DB_USER); DBH=$(cfg DB_HOST)
     CNF={sq(arc)}/.my.cnf
-    ( umask 077; printf '[client]\npassword=%s\n' "$(cfg DB_PASSWORD)" > "$CNF" )
+    # Le mot de passe est ENTRE GUILLEMETS dans le fichier d'options. Sans eux,
+    # le lecteur d'options de MySQL coupe la valeur au premier « # » — qu'il
+    # prend pour un début de commentaire — et la connexion échoue par « Access
+    # denied » sans rien dire de la vraie cause. Un « # » dans un mot de passe
+    # de base est courant : la sauvegarde locale de la base échouait donc en
+    # silence sur ces sites, et le retour arrière n'avait plus de filet côté
+    # base. Les guillemets et antislashes de la valeur sont échappés.
+    DBPW=$(cfg DB_PASSWORD | sed 's/[\\\\"]/\\\\&/g')
+    ( umask 077; printf '[client]\npassword="%s"\n' "$DBPW" > "$CNF" )
     # DB_HOST peut valoir « hote », « hote:port » ou « hote:/chemin/socket » :
     # passe tel quel a -h, mysqldump le prend pour un nom d'hote et echoue.
     DBPORT=""; DBSOCK=""
