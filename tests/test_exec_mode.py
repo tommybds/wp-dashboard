@@ -172,7 +172,13 @@ class TestCommandeDistante(unittest.TestCase):
         """Aucun chemin du script ne bascule de compte sans passer par asuser.
 
         C'est la vraie garantie : `su -s` et `sudo -n -u` n'apparaissent QUE
-        dans `asuser` / `asuser_bin`, jamais recopiés ailleurs.
+        dans `asuser` / `asuser_bin` — à UNE exception near, inscrite ici
+        explicitement : `php_site`, qui a besoin d'un shell de CONNEXION
+        (`su -` / `bash -lc`) que `asuser` ne fournit délibérément pas. C'est
+        précisément le profil de connexion qui connaît le PHP du vhost ; sans
+        lui, `wp` prend celui du système et le dashboard travaille sous un PHP
+        que le site n'a jamais vu. La commande exécutée y est figée
+        (`command -v php`), elle ne transporte aucun argument.
         """
         for nom, s, t in (("REMOTE_TEMPLATE", script_wp("sudo"), 60),
                           ("collect", collect.REMOTE_SCRIPT, 75)):
@@ -181,6 +187,13 @@ class TestCommandeDistante(unittest.TestCase):
                 f'timeout {t} su -s /bin/bash "$OWN" -c "$1"',
                 f'out=$(timeout {t} sudo -n -u "$OWN" /bin/bash -c "$1" 2>&1); rc=$?',
                 f'timeout {t} sudo -n -u "$OWN" /bin/bash -c "$1"',
+                # php_site : shell de CONNEXION, commande figée, aucun argument
+                'out=$(timeout 25 su - "$own" -s /bin/bash -c \'php -r "echo PHP_BINARY, '
+                'chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"\' 2>/dev/null '
+                '| tail -1)',
+                'out=$(timeout 25 sudo -n -u "$own" /bin/bash -lc \'php -r "echo PHP_BINARY, '
+                'chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"\' 2>/dev/null '
+                '| tail -1)',
             }
             lignes = [ligne.strip() for ligne in s.splitlines()
                       if ("su -s /bin/bash" in ligne or "sudo -n -u" in ligne)
@@ -522,3 +535,75 @@ class TestJournauxIllisibles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPhpDuSite(unittest.TestCase):
+    """Le dashboard doit travailler sous le PHP DU SITE, pas sous le sien.
+
+    Mesuré le 2026-09-23 : les 44 sites du Plesk mutualisé étaient rapportés en
+    « PHP 8.4 » — aucun ne l'était — ce qui masquait 17 vhosts hors support et
+    faisait exécuter les mises à jour sous un PHP que le site n'a jamais vu.
+    """
+
+    def scripts(self):
+        return (("REMOTE_TEMPLATE", script_wp("su")), ("collect", collect.REMOTE_SCRIPT))
+
+    def test_la_detection_existe_des_deux_cotes(self):
+        for nom, s in self.scripts():
+            self.assertIn("php_site()", s, nom)
+            self.assertIn("PHP_MAJOR_VERSION", s, nom)
+
+    def test_le_php_du_web_prime(self):
+        """Plesk règle SÉPARÉMENT le PHP du web (pool FPM) et celui de la ligne
+        de commande (phpenv). C'est le premier qui sert les pages, donc celui
+        sous lequel le code du site est censé tourner : ffhbi.fr sert en 7.4
+        alors que son wp-cli partait en 8.4, et c'est exactement ce qui faisait
+        échouer une mise à jour sur du code parfaitement valide."""
+        for nom, s in self.scripts():
+            bloc = s[s.index("php_site()"):]
+            bloc = bloc[:bloc.index("\n}")]
+            self.assertIn('/opt/plesk/php/*/etc/php-fpm.d/', bloc, nom)
+            # le pool du docroot secondaire ne porte pas le nom de l'abonnement
+            self.assertIn('[ "$nom" = "httpdocs" ] && nom="$dom"', bloc, nom)
+            # et la version du chemin doit désigner un binaire exécutable
+            self.assertIn('[ -x "/opt/plesk/php/$v/bin/php" ]', bloc, nom)
+
+    def test_le_shim_phpenv_est_ecarte(self):
+        """Le shim ne fonctionne pas hors shell de connexion : le retenir
+        ferait échouer toutes les commandes au lieu de les corriger."""
+        for nom, s in self.scripts():
+            self.assertIn('*/.phpenv/shims/php) bin="" ;;', s, nom)
+
+    def test_les_trois_modes_sont_couverts(self):
+        for nom, s in self.scripts():
+            bloc = s[s.index("php_site()"):]
+            bloc = bloc[:bloc.index("\n}")]
+            for mode in ("direct)", "sudo)", "*)"):
+                self.assertIn(mode, bloc, f"{nom} : mode {mode} absent de php_site")
+
+    def test_le_chemin_est_verifie_avant_d_etre_utilise(self):
+        """Un profil bavard écrit sa bannière : on ne prend que la dernière
+        ligne, et seulement si c'est un chemin absolu exécutable."""
+        for nom, s in self.scripts():
+            bloc = s[s.index("php_site()"):]
+            bloc = bloc[:bloc.index("\n}")]
+            self.assertIn("tail -1", bloc, nom)
+            self.assertIn('case "$bin" in /*) printf', bloc, nom)
+            self.assertIn('[ -x "$bin" ] || bin=""', bloc, nom)
+
+    def test_wp_est_lance_avec_ce_php(self):
+        s = script_wp("su")
+        self.assertIn('WPRUN="$PHPBIN -d display_errors=0 -d error_reporting=0 $WPBIN"', s)
+        self.assertIn('out=$(asuser "$base $WPRUN $* $extra --no-color")', s)
+        self.assertIn('wprun="$PHPBIN -d display_errors=0 -d error_reporting=0 $WPBIN"',
+                      collect.REMOTE_SCRIPT)
+
+    def test_sans_detection_le_comportement_ne_change_pas(self):
+        """Filet : si php_site ne rend rien, on repasse par le `wp` du système."""
+        self.assertIn('WPRUN="wp"', script_wp("su"))
+        self.assertIn('local wprun="wp"', collect.REMOTE_SCRIPT)
+
+    def test_la_detection_a_lieu_une_fois_par_site(self):
+        self.assertIn('PHPBIN=$(php_site "$OWN" "$D" "$DOM")', collect.REMOTE_SCRIPT)
+        self.assertIn('local CACHE PHPBIN', collect.REMOTE_SCRIPT)
+        self.assertIn('PHPBIN=$(php_site "$OWN" "$D" "$DOM")', script_wp("su"))

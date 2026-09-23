@@ -98,6 +98,37 @@ asuser() {
   esac
 }
 
+# PHP DU SITE, et non celui du collecteur. Voir le commentaire jumeau dans
+# actions_server.py : un vhost Plesk tourne sur son propre PHP (7.0 à 8.5), que
+# `wp` lancé sans shell de connexion ignore. Sans cette détection, les 44 sites
+# du mutualisé étaient tous rapportés en « 8.4 » — aucun ne l'était — et 17 PHP
+# hors support n'étaient donc jamais signalés.
+php_site() {
+  local own="$1" doc="$2" dom="$3" nom f v p out bin ver
+  # 1) le PHP du WEB : celui qui sert réellement les pages. Plesk le matérialise
+  #    par un pool FPM dont le CHEMIN porte la version. Lisible en root (mode su).
+  nom=$(basename "$doc"); [ "$nom" = "httpdocs" ] && nom="$dom"
+  for f in /opt/plesk/php/*/etc/php-fpm.d/"$nom".conf; do
+    [ -f "$f" ] || continue
+    v=${f#/opt/plesk/php/}; v=${v%%/*}
+    [ -x "/opt/plesk/php/$v/bin/php" ] && { printf '%s' "/opt/plesk/php/$v/bin/php"; return; }
+  done
+  # 2) à défaut, le PHP du shell de CONNEXION du compte. `PHP_BINARY` traverse
+  #    le shim phpenv de Plesk ; quand le shim se désigne lui-même (il ne
+  #    fonctionne pas hors shell de connexion), on reconstruit le binaire à
+  #    partir de la version.
+  case "$MODE" in
+    direct) out=$(php -r 'echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;' 2>/dev/null | tail -1) ;;
+    sudo)   out=$(timeout 25 sudo -n -u "$own" /bin/bash -lc 'php -r "echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"' 2>/dev/null | tail -1) ;;
+    *)      out=$(timeout 25 su - "$own" -s /bin/bash -c 'php -r "echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"' 2>/dev/null | tail -1) ;;
+  esac
+  bin=${out%%|*}; ver=${out##*|}
+  case "$bin" in */.phpenv/shims/php) bin="" ;; esac
+  case "$bin" in /*) [ -x "$bin" ] || bin="" ;; *) bin="" ;; esac
+  [ -z "$bin" ] && [ -x "/opt/plesk/php/$ver/bin/php" ] && bin="/opt/plesk/php/$ver/bin/php"
+  case "$bin" in /*) printf '%s' "$bin" ;; esac
+}
+
 # Répertoire de cache wp-cli du compte $1.
 #
 # Sécurité : surtout PAS un chemin prévisible dans /tmp partagé (un voisin du
@@ -131,8 +162,13 @@ wp_call() {
   # « direct » (le compte de connexion n'est pas root sur un mutualisé).
   case "$MODE" in su|sudo) [ "$OWN" = "root" ] && extra="--allow-root" ;; esac
   local base="cd '$D' && env WP_CLI_CACHE_DIR='$CACHE' WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
+  # Sous le PHP du site quand `php_site` l'a identifié (PHPBIN vient de
+  # `emit_site`, portée dynamique), sinon comme avant.
+  local wprun="wp"
+  [ -n "${PHPBIN:-}" ] && [ -n "$WPBIN" ] \
+    && wprun="$PHPBIN -d display_errors=0 -d error_reporting=0 $WPBIN"
   local out rc
-  out=$(asuser "$base wp $args $extra $skips --no-color"); rc=$?
+  out=$(asuser "$base $wprun $args $extra $skips --no-color"); rc=$?
   if [ $rc -ne 0 ] && printf '%s' "$out" | grep -qiE 'requires PHP|PHP version|Parse error|syntax error, unexpected'; then
     local php
     for php in /opt/plesk/php/7.4/bin/php /opt/plesk/php/8.0/bin/php /opt/plesk/php/8.1/bin/php /opt/plesk/php/8.2/bin/php /opt/plesk/php/8.3/bin/php; do
@@ -169,8 +205,9 @@ emitfield() {
 # chacun dans son propre sous-shell écrivant dans son propre fichier.
 emit_site() {
   local D="$1" DOM="$2" OWN="$3"
-  local CACHE
+  local CACHE PHPBIN
   CACHE=$(wp_cache_dir "$OWN")
+  PHPBIN=$(php_site "$OWN" "$D" "$DOM")
     # Séparateur \037 (unit separator) : un nom de répertoire peut contenir « | ».
     printf '@@SITE@@%s\037%s\037%s\n' "$DOM" "$D" "$OWN"
     emitfield core_version core version

@@ -231,6 +231,45 @@ MAX_BODY_BYTES = 1024 * 1024   # plafond du corps d'une requête JSON
 # passage sous le compte du site, pour que les trois modes s'y comportent
 # exactement pareil (le `su` en dur recopié trois fois était la source des
 # oublis). Il s'insère dans une chaîne passée à .format() : accolades doublées.
+REMOTE_PHP_SITE = r'''# PHP DU SITE, et non celui du dashboard.
+#
+# `wp` lancé sans shell de connexion prend le PHP du système ; or un vhost Plesk
+# tourne sur le sien (7.0 à 8.5 selon l'abonnement). Mesuré sur le mutualisé :
+# les 44 sites étaient rapportés en « 8.4 » — aucun ne l'était — ce qui masquait
+# 17 PHP hors support, et surtout faisait exécuter les mises à jour sous un PHP
+# que le site n'a jamais vu. Du code parfaitement valide sous le sien échouait.
+#
+# Le profil de connexion du compte connaît le bon binaire : on le lui demande
+# une fois par site. La sortie est filtrée (un profil bavard écrirait sa
+# bannière) et le chemin vérifié exécutable ; au moindre doute on ne change rien
+# et le comportement d'avant s'applique.
+php_site() {{
+  local own="$1" doc="$2" dom="$3" nom f v p out bin ver
+  # 1) le PHP du WEB : celui qui sert réellement les pages. Plesk le matérialise
+  #    par un pool FPM dont le CHEMIN porte la version. Lisible en root (mode su).
+  nom=$(basename "$doc"); [ "$nom" = "httpdocs" ] && nom="$dom"
+  for f in /opt/plesk/php/*/etc/php-fpm.d/"$nom".conf; do
+    [ -f "$f" ] || continue
+    v=${{f#/opt/plesk/php/}}; v=${{v%%/*}}
+    [ -x "/opt/plesk/php/$v/bin/php" ] && {{ printf '%s' "/opt/plesk/php/$v/bin/php"; return; }}
+  done
+  # 2) à défaut, le PHP du shell de CONNEXION du compte. `PHP_BINARY` traverse
+  #    le shim phpenv de Plesk ; quand le shim se désigne lui-même (il ne
+  #    fonctionne pas hors shell de connexion), on reconstruit le binaire à
+  #    partir de la version.
+  case "$MODE" in
+    direct) out=$(php -r 'echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;' 2>/dev/null | tail -1) ;;
+    sudo)   out=$(timeout 25 sudo -n -u "$own" /bin/bash -lc 'php -r "echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"' 2>/dev/null | tail -1) ;;
+    *)      out=$(timeout 25 su - "$own" -s /bin/bash -c 'php -r "echo PHP_BINARY, chr(124), PHP_MAJOR_VERSION, chr(46), PHP_MINOR_VERSION;"' 2>/dev/null | tail -1) ;;
+  esac
+  bin=${{out%%|*}}; ver=${{out##*|}}
+  case "$bin" in */.phpenv/shims/php) bin="" ;; esac
+  case "$bin" in /*) [ -x "$bin" ] || bin="" ;; *) bin="" ;; esac
+  [ -z "$bin" ] && [ -x "/opt/plesk/php/$ver/bin/php" ] && bin="/opt/plesk/php/$ver/bin/php"
+  case "$bin" in /*) printf '%s' "$bin" ;; esac
+}}
+'''
+
 REMOTE_ASUSER = r'''# Refus de `sudo -n` : le message brut de sudo ne dit pas quoi faire. C'est
 # l'erreur la plus probable à l'installation d'un serveur en mode sudo.
 sudo_refus() {{
@@ -273,7 +312,11 @@ extra=""
 # « direct », où le compte de connexion est celui du site.
 case "$MODE" in su|sudo) [ "$OWN" = "root" ] && extra="--allow-root" ;; esac
 base="cd '$D' && env WP_CLI_CACHE_DIR=/tmp/.wpcli-cache-$OWN WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' HTTP_HOST='$DOM' SERVER_NAME='$DOM'"
-''' + REMOTE_ASUSER + r'''# Variante BINAIRE d'asuser : stderr n'est pas fusionné dans la sortie. Un
+''' + REMOTE_PHP_SITE + REMOTE_ASUSER + r'''PHPBIN=$(php_site "$OWN" "$D" "$DOM")
+# Appel de wp : sous le PHP du site quand on a su l'identifier, sinon comme avant.
+WPRUN="wp"
+[ -n "$PHPBIN" ] && WPRUN="$PHPBIN -d display_errors=0 -d error_reporting=0 $WPBIN"
+# Variante BINAIRE d'asuser : stderr n'est pas fusionné dans la sortie. Un
 # avertissement PHP au milieu d'un flux tar ou d'un dump SQL corromprait
 # l'archive — c'est la seule différence.
 asuser_bin() {{
@@ -306,7 +349,7 @@ untar_site() {{
 }}
 run() {{
   local out rc
-  out=$(asuser "$base wp $* $extra --no-color"); rc=$?
+  out=$(asuser "$base $WPRUN $* $extra --no-color"); rc=$?
   if [ $rc -ne 0 ] && printf '%s' "$out" | grep -qiE 'requires PHP|PHP version'; then
     local php
     for php in /opt/plesk/php/7.4/bin/php /opt/plesk/php/8.0/bin/php /opt/plesk/php/8.1/bin/php /opt/plesk/php/8.2/bin/php /opt/plesk/php/8.3/bin/php; do
