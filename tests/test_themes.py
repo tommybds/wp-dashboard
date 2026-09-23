@@ -487,7 +487,9 @@ class TestMajSureThemes(unittest.TestCase):
         self.assertIn('tar_site', archive)
         self.assertIn('theme__"$t".tgz', archive)
         self.assertIn("wp theme path", archive)
-        self.assertIn("run theme update 'divi'", self.bash)
+        # le plugin VizProof n'est pas chargé pendant la mise à jour : il ne doit
+        # pas lancer son propre scan au milieu de l'opération
+        self.assertIn("run theme update 'divi' --skip-plugins=vizproof-timeline", self.bash)
         self.assertIsNotNone(self.etape("Mise à jour des thèmes"))
         self.assertIn("1 thème(s) : divi", self.etape("À mettre à jour")["detail"])
 

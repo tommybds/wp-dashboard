@@ -68,6 +68,23 @@ VIZ_AFTER_SOURCE = "auto-after-update"   # source journalisée du scan automatiq
 # `enable_update_scan_by_default` est vraie (son défaut), IL LANCE LUI-MÊME un
 # scan à chaque `wp plugin update`. Le dashboard attend donc ce scan-là et ne
 # lance le sien qu'en repli — sans quoi chaque mise à jour en déclenchait deux.
+# …mais PAS pendant une MAJ sûre. Elle enchaîne plusieurs commandes (cœur,
+# extensions, thèmes) : le plugin lançait un scan APRÈS CHACUNE, pendant que les
+# suivantes tournaient encore, puis le dashboard lançait le sien. Trois scans
+# pour une seule opération — et le retour arrière, décidé sur le nôtre, extrayait
+# ses archives pendant que ceux du plugin photographiaient encore. Mesuré sur
+# sumotori.fr le 23/09 : une capture mobile de l'accueil tombée en plein
+# retour arrière a reçu un 500 (« Class WPMailSMTP\Compatibility\Compatibility
+# not found » : dossier à moitié restauré), puis ce run a pollué le rapport lu
+# ensuite. Pendant une MAJ sûre, le plugin n'est donc PAS chargé par les
+# commandes de mise à jour ; un seul scan a lieu, le nôtre, une fois tout fini.
+VIZ_SKIP_DURING_SAFE = "--skip-plugins=vizproof-timeline"
+# Scan « d'après mise à jour » (plugin ≥ 1.3.13) : purge des caches, attente de
+# stabilisation, préchauffage, promotion en référence si le résultat est propre
+# — ce que fait le plugin après une mise à jour dans wp-admin, mais au moment
+# que NOUS choisissons. Un plugin plus ancien refuse l'option : on retombe sur
+# le scan simple.
+VIZ_SCAN_AFTER_UPDATE_RE = re.compile(r"unknown --after-update|after-update.{0,40}(unknown|invalid)", re.I)
 VIZ_OPTION_NAME = "vizproof_timeline_options"
 VIZ_AUTOSCAN_KEY = "enable_update_scan_by_default"
 VIZ_POLL_S = 10       # cadence d'interrogation de `wp vizproof status`
@@ -1411,6 +1428,20 @@ def viz_anomalies_count(src):
     except (TypeError, ValueError):
         return 0
     return max(n, 0)
+
+
+def viz_scan_after_update_cmd(plugins=None, themes=None):
+    """`wp vizproof scan` de fin de MAJ sûre : synchrone, en mode « après mise à
+    jour », avec ce qui a été mis à jour pour que VizProof attribue les écarts.
+    Les slugs ne passent que s'ils sont sûrs pour la ligne de commande."""
+    def liste(xs):
+        return ",".join(x for x in (xs or []) if SLUG_RE.match(str(x)))
+    cmd = "run vizproof scan --wait --after-update --format=json"
+    if liste(plugins):
+        cmd += " --plugins=" + liste(plugins)
+    if liste(themes):
+        cmd += " --themes=" + liste(themes)
+    return cmd
 
 
 def viz_decide(rc, rollback, totals=None):
@@ -3056,15 +3087,18 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         rc = 0
         if with_core:
             rcc, outc = remote_bash(srv, site,
-                                    'run core update\nrun core update-db', timeout=900)
+                                    f'run core update {VIZ_SKIP_DURING_SAFE}\n'
+                                    f'run core update-db {VIZ_SKIP_DURING_SAFE}', timeout=900)
             safe_step(f"Mise à jour du cœur → {core_target}", rcc == 0, (outc or "")[-400:])
             rc = rc or rcc
         if pending:
-            rcp, outp = remote_bash(srv, site, f'run plugin update {lst}', timeout=900)
+            rcp, outp = remote_bash(srv, site, f'run plugin update {lst} {VIZ_SKIP_DURING_SAFE}',
+                                    timeout=900)
             safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
             rc = rc or rcp
         if pending_th:
-            rct2, outt2 = remote_bash(srv, site, f'run theme update {lst_th}', timeout=900)
+            rct2, outt2 = remote_bash(srv, site, f'run theme update {lst_th} {VIZ_SKIP_DURING_SAFE}',
+                                      timeout=900)
             safe_step("Mise à jour des thèmes", rct2 == 0, (outt2 or "")[-500:])
             rc = rc or rct2
 
@@ -3081,10 +3115,23 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
                   else ("ok" if rcw == 0 else "en erreur, mais déjà avant l'opération — non imputé"))
 
         viz_ok, viz_used, viz_anomaly = True, False, False
-        if use_viz and viz_available(srv, site):
+        # Déjà cassé (commande en échec, accueil en erreur ou effondré, WP-CLI
+        # tombé) : le retour arrière est acquis. Scanner ne changerait rien et
+        # risquerait pire — un scan propre serait PROMU en référence, et la
+        # référence décrirait l'état qu'on s'apprête à défaire.
+        deja_casse = not ((rc == 0) and ok2 and not shrunk and not wp_regression)
+        if use_viz and deja_casse:
+            safe_step("Contrôle visuel VizProof", True,
+                      "non lancé : le site est déjà en échec, le retour arrière est acquis")
+        elif use_viz and viz_available(srv, site):
             viz_used = True
-            rcv, outv = remote_bash(srv, site,
-                                    'run vizproof scan --wait --format=json', timeout=600)
+            rcv, outv = remote_bash(srv, site, viz_scan_after_update_cmd(pending, pending_th),
+                                    timeout=600, max_out=None)
+            if rcv != 0 and VIZ_SCAN_AFTER_UPDATE_RE.search(outv or ""):
+                # plugin antérieur à l'option : scan simple, mêmes garanties de
+                # moment (le plugin n'a rien lancé de lui-même, cf. plus haut)
+                rcv, outv = remote_bash(srv, site, 'run vizproof scan --wait --format=json',
+                                        timeout=600, max_out=None)
             # `scan` porte son propre rapport depuis la 1.3.9 du plugin : on le
             # lit dans sa sortie plutôt que de relancer une commande. Il est lu
             # AVANT la décision : ses totaux disent si l'écart est un échec ou

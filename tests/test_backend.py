@@ -4393,3 +4393,57 @@ class TestCollectHistoryWindow(unittest.TestCase):
     def test_periode_inconnue_et_fichier_absent(self):
         self.assertEqual(A.collect_history_window("/nexiste/pas", "zzz"),
                          {"history": [], "ref24": None, "periode": "semaine"})
+
+
+class TestMajSureUnSeulScan(unittest.TestCase):
+    """Une MAJ sûre enchaîne plusieurs commandes. Le plugin VizProof lançait un
+    scan après CHACUNE, puis le dashboard le sien : trois scans, et le retour
+    arrière — décidé sur le nôtre — extrayait ses archives pendant que ceux du
+    plugin photographiaient encore (500 « Class not found » sur sumotori.fr le
+    2026-09-23, dossier wp-mail-smtp à moitié restauré)."""
+
+    def source_maj_sure(self):
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(racine, "actions_server.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        i = src.index("def safe_update_run(")
+        return src[i:src.index("\ndef ", i + 20)]
+
+    def test_aucune_commande_de_maj_ne_charge_le_plugin(self):
+        corps = self.source_maj_sure()
+        for cmd in ("run plugin update {lst}", "run theme update {lst_th}",
+                    "run core update ", "run core update-db "):
+            i = corps.index(cmd)
+            ligne = corps[i:corps.index("\n", i)]
+            self.assertIn("VIZ_SKIP_DURING_SAFE", ligne, cmd)
+        self.assertEqual(A.VIZ_SKIP_DURING_SAFE, "--skip-plugins=vizproof-timeline")
+
+    def test_scan_final_en_mode_apres_mise_a_jour(self):
+        c = A.viz_scan_after_update_cmd(["pods", "wp-mail-smtp"], ["astra"])
+        self.assertIn("--wait", c)
+        self.assertIn("--after-update", c)
+        self.assertIn("--plugins=pods,wp-mail-smtp", c)
+        self.assertIn("--themes=astra", c)
+
+    def test_slugs_douteux_ecartes_de_la_ligne_de_commande(self):
+        c = A.viz_scan_after_update_cmd(["ok-slug", "x;rm -rf /", "$(id)"], [])
+        self.assertIn("--plugins=ok-slug", c)
+        self.assertNotIn("rm -rf", c)
+        self.assertNotIn("$(", c)
+        self.assertNotIn("--themes", c, "rien à passer : pas d'option vide")
+
+    def test_repli_sur_un_plugin_trop_ancien(self):
+        """Un plugin < 1.3.13 refuse l'option : on doit reconnaître son refus."""
+        for msg in ("Error: Parameter errors:\n unknown --after-update parameter",
+                    "Error: unknown --after-update parameter"):
+            self.assertTrue(A.VIZ_SCAN_AFTER_UPDATE_RE.search(msg), msg)
+        self.assertFalse(A.VIZ_SCAN_AFTER_UPDATE_RE.search("Error: API injoignable"))
+
+    def test_pas_de_scan_sur_un_site_deja_casse(self):
+        """Le retour arrière est acquis ; un scan propre serait promu en
+        référence et décrirait l'état qu'on s'apprête à défaire."""
+        corps = self.source_maj_sure()
+        self.assertIn("deja_casse", corps)
+        i = corps.index("if use_viz and deja_casse")
+        j = corps.index("viz_scan_after_update_cmd(", i)
+        self.assertLess(i, j, "le garde-fou doit précéder le scan")
