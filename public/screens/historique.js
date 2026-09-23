@@ -49,10 +49,10 @@ function monterHist() {
   MONTE = true;
   mount('page-hist',
     h('nav', { class: 'anchors', 'aria-label': 'Sections de la page Changements' },
-      h('a', { class: 'anchor', href: '#changements/changements' }, h('span', { text: 'Chronologie' })),
-      h('a', { class: 'anchor', href: '#changements/tendance' }, h('span', { text: 'Tendance' }))),
-    sectionChrono(),
-    sectionTendance());
+      h('a', { class: 'anchor', href: '#changements/tendance' }, h('span', { text: 'Tendance' })),
+      h('a', { class: 'anchor', href: '#changements/changements' }, h('span', { text: 'Chronologie' }))),
+    sectionTendance(),
+    sectionChrono());
 }
 
 function sectionChrono() {
