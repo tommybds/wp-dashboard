@@ -1558,3 +1558,43 @@ class TestPreprodAnnotation(TempDirs):
         with mock.patch.object(collect, "kuma_disponible", lambda: False), muet():
             collect.annotate_kuma(f)
         self.assertFalse(f["servers"][0]["sites"][0]["preprod"])
+
+
+class TestRescanDocrootSecondaire(unittest.TestCase):
+    """Re-scanner un site servi par un docroot secondaire ne doit pas le faire
+    disparaître : le script distant le connaît sous le nom de son abonnement."""
+
+    FLOTTE = {"servers": [{"name": "plesk-mutu", "sites": [
+        {"domain": "sumoto.fr", "path": "/var/www/vhosts/sumoto.fr/httpdocs"},
+        {"domain": "test.sumoto.fr", "path": "/var/www/vhosts/sumoto.fr/test.sumoto.fr"},
+        {"domain": "dev.sandrinejobin.com", "path": "/var/www/vhosts/sandrinejobin.com/site1"},
+    ]}, {"name": "autre", "sites": [
+        {"domain": "test.sumoto.fr", "path": "/srv/ailleurs/test/httpdocs"},
+    ]}]}
+
+    def test_docroot_secondaire_traduit_en_abonnement(self):
+        self.assertEqual(collect.remote_match(self.FLOTTE, "plesk-mutu", "test.sumoto.fr"),
+                         "sumoto.fr")
+        self.assertEqual(collect.remote_match(self.FLOTTE, "plesk-mutu",
+                                              "dev.sandrinejobin.com"), "sandrinejobin.com")
+
+    def test_site_principal_inchange(self):
+        self.assertEqual(collect.remote_match(self.FLOTTE, "plesk-mutu", "sumoto.fr"),
+                         "sumoto.fr")
+
+    def test_site_inconnu_garde_son_nom(self):
+        """Première collecte ciblée d'un abonnement : rien à traduire."""
+        self.assertEqual(collect.remote_match(self.FLOTTE, "plesk-mutu", "nouveau.fr"),
+                         "nouveau.fr")
+
+    def test_le_serveur_compte(self):
+        self.assertEqual(collect.remote_match(self.FLOTTE, "autre", "test.sumoto.fr"), "test")
+
+    def test_flotte_vide_ou_bancale(self):
+        for f in (None, {}, {"servers": None}, {"servers": ["x", {"name": "plesk-mutu"}]}):
+            self.assertEqual(collect.remote_match(f, "plesk-mutu", "a.fr"), "a.fr")
+
+    def test_le_bloc_match_s_en_sert(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "collect.py"), encoding="utf-8").read()
+        self.assertIn("ssh_collect(srv_only, extra, 0, remote_match(fleet, only, match))", src)

@@ -303,6 +303,29 @@ def effective_patterns(server, extra):
     return out
 
 
+def remote_match(fleet, server_name, match):
+    """Nom sous lequel le script DISTANT connaît le site visé par `--match`.
+
+    Le script distant nomme un site d'après le répertoire de son ABONNEMENT
+    (`/var/www/vhosts/<abonnement>/<docroot>`), et filtre `--match` sur ce nom.
+    Un docroot secondaire porte pourtant, dans la flotte, le nom de son
+    `siteurl` (`test.sumoto.fr` sous l'abonnement `sumoto.fr`) : re-scanner
+    `test.sumoto.fr` ne trouvait rien côté serveur, la collecte concluait à sa
+    disparition et le RETIRAIT de la flotte — à chaque « Re-scanner » et à la
+    fin de chaque mise à jour simple (constaté sur le banc le 23/09). On traduit
+    donc le nom de la flotte en répertoire d'abonnement, d'après le docroot
+    déjà connu ; un site encore inconnu garde le nom tel qu'il est donné.
+    """
+    for srv in (fleet or {}).get("servers") or []:
+        if not isinstance(srv, dict) or srv.get("name") != server_name:
+            continue
+        for s in srv.get("sites") or []:
+            if isinstance(s, dict) and s.get("domain") == match and s.get("path"):
+                parent = os.path.basename(os.path.dirname(str(s["path"]).rstrip("/")))
+                return parent or match
+    return match
+
+
 def ssh_user(server):
     """Utilisateur SSH du serveur (root par défaut ; login du site sur les mutualisés)."""
     return str(server.get("user") or "root")
@@ -1559,7 +1582,7 @@ def main():
             # re-scan d'un seul site géré par l'agent distant
             sites = collect_rest_sites(match)
         else:
-            out, rc = ssh_collect(srv_only, extra, 0, match)
+            out, rc = ssh_collect(srv_only, extra, 0, remote_match(fleet, only, match))
             sites = [postprocess(s) for s in parse_sites(out)]
             if not sites and "@@DONE@@" not in out:
                 print(f"[{only}] échec du scan de {match} (rc={rc})")
