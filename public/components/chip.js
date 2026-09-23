@@ -45,3 +45,22 @@ export function chipEl(label, level = 'mut', opts = {}) {
 export function chipEtat(e, opts = {}) {
   return chipEl(e.txt, e.niv, { tip: e.tip, ...opts });
 }
+
+/* ---- préproduction ---------------------------------------------------------
+   Un site de préprod n'a pas les mêmes exigences qu'un site public : une version
+   en retard y est normale, un contenu cassé n'est vu de personne. L'étiquette
+   doit donc se voir, et dire d'où elle vient — une détection qu'on ne peut pas
+   expliquer n'est pas crue. */
+export function estPreprod(s) {
+  return !!(s && s.preprod);
+}
+
+export function pucePreprod(s) {
+  if (!estPreprod(s)) return null;
+  const auto = !!(s && s.preprod_auto);
+  return chipEl('préprod', 'mut', {
+    point: false,
+    title: auto ? 'déduit du nom du site (modifiable dans Gestion)'
+                : 'marqué comme préproduction dans Gestion',
+  });
+}

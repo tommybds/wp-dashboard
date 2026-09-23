@@ -17,7 +17,7 @@ import {
   loadFleet, phpEol, seuilBackup,
 } from '../lib/state.js';
 
-import { chipEl, chipEtat } from '../components/chip.js';
+import { chipEl, chipEtat, estPreprod, pucePreprod } from '../components/chip.js';
 import { askInfo, askText, askChoice, askOpen } from '../components/confirm.js';
 import { demarrerJob } from '../components/job.js';
 import { NOTIF } from '../components/toast.js';
@@ -117,6 +117,15 @@ function barreFiltres() {
 
   const fsrv = h('select', { id: 'fsrv', 'aria-label': 'Serveur' }, h('option', { value: '', text: 'Tous les serveurs' }));
   const fgrp = h('select', { id: 'fgrp', 'aria-label': 'Client' }, h('option', { value: '', text: 'Tous les clients' }));
+  /* Production / préproduction : sans ce filtre, une file « à traiter » mélange
+     un site client en panne et une préprod qu'on laisse volontairement dériver. */
+  const fenv = h('select', { id: 'fenv', 'aria-label': 'Environnement' },
+    h('option', { value: '', text: 'Tous environnements' }),
+    h('option', { value: 'prod', text: 'Production' }),
+    h('option', { value: 'preprod', text: 'Préproduction' }));
+  fenv.value = store.filt.env || '';
+  fenv.onchange = e => { store.filt.env = e.target.value; render(); };
+
   const fst = h('select', { id: 'fst', 'aria-label': 'Statut' },
     h('option', { value: '', text: 'Tous statuts' }),
     h('option', { value: 'up', text: 'En ligne' }),
@@ -156,7 +165,7 @@ function barreFiltres() {
   selmode.onclick = () => setSelMode(!SELMODE);
 
   return h('div', { class: 'filters', id: 'parc-filters' },
-    q, fsrv, fgrp, fst,
+    q, fsrv, fgrp, fenv, fst,
     coche('ftodo', 'todo', 'à traiter'),
     coche('fgroupby', 'groupby', 'grouper par client'),
     coche('fcompact', 'compact', 'compact'),
@@ -434,6 +443,10 @@ function filtered() {
   if (q) S = S.filter(s => (s._q || '').includes(q));
   if (store.filt.srv) S = S.filter(s => s.srv === store.filt.srv);
   if (store.filt.grp) S = S.filter(s => clientDe(s) === store.filt.grp);
+  if (store.filt.env) {
+    const veut = store.filt.env === 'preprod';
+    S = S.filter(s => estPreprod(s) === veut);
+  }
   if (store.filt.st) {
     S = S.filter(s => {
       const v = etatSite(s).v;
@@ -490,6 +503,8 @@ function objetLigne(s) {
 function celluleSite(s) {
   const label = nomDeSite(s);
   const td = h('td', { class: 'site' }, h('b', { text: label }));
+  const pp = pucePreprod(s);
+  if (pp) td.append(' ', pp);
   const rs = h('button', { type: 'button', class: 'rowscan', title: 'Re-scanner ce site maintenant', 'aria-label': 'Re-scanner ce site' },
     iconEl('refresh-cw', { size: 14 }));
   rs.dataset.rowscan = '1';
@@ -782,12 +797,13 @@ async function rowRescan(btn, srv, dom) {
 /* ---- export CSV ---------------------------------------------------------------- */
 function exportCsv() {
   const S = filtered();
-  const rows = [['site', 'serveur', 'client', 'wordpress', 'maj_core', 'plugins_actifs', 'plugins_total',
+  const rows = [['site', 'environnement', 'serveur', 'client', 'wordpress', 'maj_core', 'plugins_actifs', 'plugins_total',
     'maj_plugins', 'maj_themes', 'vizproof', 'php', 'backup_h', 'statut', 'statut_source',
     'vulnerabilites', 'erreurs']];
   S.forEach(s => {
     const e = etatSite(s), v = e.v, age = bkAge(s), vu = vulnDe(s);
-    rows.push([nomDeSite(s), s.srv, clientDe(s), s.core_version || '', s.core_update || '',
+    rows.push([nomDeSite(s), estPreprod(s) ? 'préprod' : 'prod',
+      s.srv, clientDe(s), s.core_version || '', s.core_update || '',
       s.plugins_active ?? '', s.plugins_total ?? '', s.plugins_updates ?? '', s.themes_updates ?? '',
       vizInfo(s)?.version || vizOf(s)?.version || '', s.php_version || '',
       age === null ? '' : Math.round(age), v === 1 ? 'up' : v === 0 ? 'down' : '?', e.source,

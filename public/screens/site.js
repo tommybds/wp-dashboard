@@ -28,7 +28,7 @@ import {
 } from '../lib/state.js';
 
 import { setBusy, setIdle } from '../components/button.js';
-import { chipEl, chipEtat } from '../components/chip.js';
+import { chipEl, chipEtat, pucePreprod } from '../components/chip.js';
 import { erreurPhpEl, incidentEl } from '../components/incident.js';
 import { askConfirm, askInfo, askOpen } from '../components/confirm.js';
 import { menuActions, fermerMenus } from '../components/actions-menu.js';
@@ -264,6 +264,7 @@ function entete(s) {
   const titre = h('div', { class: 'sitetitle' },
     h('h1', { text: nom }),
     chipEtat(e),
+    pucePreprod(s),
     s._stale ? chipEl('données du ' + (s._srvAt || 'relevé précédent'), 'warn', {
       tip: 'serveur ' + (s.srv || '') + ' injoignable à la dernière collecte'
         + (s._srvErr ? ' : ' + s._srvErr : '') + ' — les chiffres datent du relevé précédent.',

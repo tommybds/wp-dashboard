@@ -1485,3 +1485,46 @@ class TestRescanRenommage(TempDirs):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "collect.py"), encoding="utf-8").read()
         self.assertIn('s.get("domain") != match and s.get("path") not in chemins', src)
+
+
+class TestPreprodAnnotation(TempDirs):
+    """`preprod` (résolu) et `preprod_auto` (ce que dit le nom seul) sont posés
+    tous les deux : l'interface doit pouvoir expliquer d'où vient l'étiquette."""
+
+    def annoter(self, sites, overrides=None):
+        with open(os.path.join(self.data, "overrides.json"), "w") as fh:
+            json.dump(overrides or {}, fh)
+        f = fleet(srv("s1", sites))
+        with mock.patch.object(collect, "kuma_disponible", lambda: False), muet():
+            collect.annotate_kuma(f)
+        return {s["domain"]: s for s in f["servers"][0]["sites"]}
+
+    def test_detection_par_le_nom(self):
+        par = self.annoter([site("dev.client.fr", kuma=None), site("client.fr", kuma=None)])
+        self.assertTrue(par["dev.client.fr"]["preprod"])
+        self.assertTrue(par["dev.client.fr"]["preprod_auto"])
+        self.assertFalse(par["client.fr"]["preprod"])
+
+    def test_surcharge_marque_une_preprod_que_le_nom_ne_trahit_pas(self):
+        par = self.annoter([site("cartoffset.sumoto.fr", kuma=None)],
+                           {"cartoffset.sumoto.fr": {"preprod": True}})
+        self.assertTrue(par["cartoffset.sumoto.fr"]["preprod"])
+        self.assertFalse(par["cartoffset.sumoto.fr"]["preprod_auto"])
+
+    def test_surcharge_dement_une_detection(self):
+        par = self.annoter([site("dev.client.fr", kuma=None)],
+                           {"dev.client.fr": {"preprod": False}})
+        self.assertFalse(par["dev.client.fr"]["preprod"])
+        self.assertTrue(par["dev.client.fr"]["preprod_auto"])
+
+    def test_la_valeur_precedente_ne_se_perpetue_pas(self):
+        """Piège : réutiliser la fiche comme source rendrait l'étiquette
+        collante — un site démarqué resterait préprod à jamais."""
+        s = site("client.fr", kuma=None)
+        s["preprod"] = True
+        f = fleet(srv("s1", [s]))
+        with open(os.path.join(self.data, "overrides.json"), "w") as fh:
+            json.dump({}, fh)
+        with mock.patch.object(collect, "kuma_disponible", lambda: False), muet():
+            collect.annotate_kuma(f)
+        self.assertFalse(f["servers"][0]["sites"][0]["preprod"])

@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 # attribut du module, comme avant la mise en commun.
 from dashlib import (BASE, DATA_DIR as DATA, PUBLIC_DIR as PUB,  # noqa: F401
                      PATH_PATTERN_RE as PATTERN_RE, load_json, norm_domain,
+                     preprod_auto, site_preprod,
                      site_key, sq, valid_path_pattern as valid_pattern,
                      validate_public_url, load_followed, ensure_followed_migrated,
                      exec_mode)
@@ -1143,6 +1144,12 @@ def annotate_kuma(fleet):
                 # rend par « — ».
                 s["label"] = s.get("kuma") or ov.get("label") or s.get("domain") or ""
                 s["client"] = s.get("kuma_group") or ov.get("client") or None
+                # Préproduction : le nom sert de détection par défaut, la
+                # surcharge posée dans Gestion l'emporte. On garde les DEUX
+                # pour que l'interface puisse dire d'où vient l'étiquette —
+                # une détection qu'on ne peut pas expliquer n'est pas crue.
+                s["preprod_auto"] = preprod_auto(s.get("domain"))
+                s["preprod"] = site_preprod({"domain": s.get("domain")}, ov.get("preprod"))
 
     if not kuma_on or not mon:
         finaliser()

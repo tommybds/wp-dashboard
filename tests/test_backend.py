@@ -2572,6 +2572,27 @@ class TestOverrideLabelClient(KumaRoutesBase):
         self.assertEqual(j["overrides"]["a.fr"],
                          {"visible": False, "alias": "mon-moniteur"})
 
+    def test_preprod_pose_et_dementi(self):
+        """Trois états : sans le « non » explicite, impossible de démentir la
+        détection par le nom ; sans « auto », impossible d'y revenir."""
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "preprod": True})
+        self.assertEqual(j["overrides"]["a.fr"], {"preprod": True})
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "preprod": False})
+        self.assertEqual(j["overrides"]["a.fr"], {"preprod": False},
+                         "un « non » explicite doit SURVIVRE au nettoyage des valeurs vides")
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "preprod": None})
+        self.assertEqual(j["overrides"], {}, "None rend la main à la détection")
+
+    def test_preprod_n_efface_pas_les_autres_champs(self):
+        self.post("/api/mgmt/override", {"domain": "a.fr", "client": "Dupont SA"})
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "preprod": True})
+        self.assertEqual(j["overrides"]["a.fr"], {"client": "Dupont SA", "preprod": True})
+
+    def test_preprod_bancale_retombe_sur_auto(self):
+        st, j = self.post("/api/mgmt/override", {"domain": "a.fr", "preprod": "oui"})
+        self.assertEqual(st, 200)
+        self.assertEqual(j["overrides"], {})
+
 
 class TestCertsFusion(BaseTmp):
     """`ssl_certs()` : Kuma prioritaire, sondes en complément."""

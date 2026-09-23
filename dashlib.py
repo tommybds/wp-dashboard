@@ -231,6 +231,48 @@ def site_key(value):
     return host + path if path else host
 
 
+# --------------------------------------------------------------------------- #
+#  Préproduction                                                               #
+# --------------------------------------------------------------------------- #
+# Un site de préproduction n'a pas les mêmes exigences qu'un site public : une
+# version en retard y est normale, un contenu cassé n'est vu de personne. Le
+# dashboard doit donc le DIRE, sinon il noie les vrais sites dans une file
+# d'incidents qui ne distingue pas les deux.
+#
+# La détection par le nom est une COMMODITÉ, pas une vérité : `cartoffset.sumoto.fr`
+# est une préprod dont le nom ne le dit pas, et un `test-pilates.fr` de client
+# serait un vrai site. La surcharge posée à la main fait donc toujours foi.
+PREPROD_LABELS = frozenset((
+    "dev", "preprod", "pp", "staging", "stage", "test", "recette",
+    "demo", "sandbox", "uat", "preview", "beta", "ppr",
+))
+PREPROD_PREFIXES = ("preprod", "staging", "recette", "sandbox")
+
+
+def preprod_auto(domain):
+    """Le NOM à lui seul désigne-t-il une préproduction ?
+
+    Exige un sous-domaine : `test.fr` est un domaine comme un autre, alors que
+    `test.exemple.fr` est presque toujours une préprod. Le chemin d'une
+    installation en sous-répertoire est ignoré (`exemple.fr/dev` reste public).
+    """
+    hote = str(domain or "").strip().lower().split("/")[0]
+    etiquettes = [e for e in hote.split(".") if e]
+    if len(etiquettes) < 3:
+        return False
+    tete = etiquettes[0]
+    return tete in PREPROD_LABELS or tete.startswith(PREPROD_PREFIXES)
+
+
+def site_preprod(site, override=None):
+    """Préproduction ? La surcharge explicite l'emporte sur le nom."""
+    if isinstance(override, bool):
+        return override
+    if isinstance(site, dict) and isinstance(site.get("preprod"), bool):
+        return site["preprod"]
+    return preprod_auto(isinstance(site, dict) and site.get("domain") or site)
+
+
 def site_visible(site):
     """Règle d'affichage du dashboard.
 

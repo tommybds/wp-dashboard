@@ -540,3 +540,44 @@ class TestDomaineEnDouble(unittest.TestCase):
         """Une fiche d'avant le correctif n'a pas `primary` : elle ne disparaît pas."""
         self.assertTrue(dashlib.site_visible({"domain": "exemple.fr", "followed": True}))
 
+
+
+class TestPreprod(unittest.TestCase):
+    """Détection par le nom : une commodité, jamais une vérité. Elle doit être
+    franche sur les cas évidents et muette sur les cas douteux — une étiquette
+    fausse sur un site client coûte plus cher qu'une préprod non détectée."""
+
+    def test_sous_domaines_de_preprod(self):
+        for d in ("dev.sandrinejobin.com", "preprod.palazzettoorfeo.com",
+                  "pp.bijoux-doccasion.com", "staging.tiphainedesign.com",
+                  "preprod.terrainnova.fr", "recette.exemple.fr",
+                  "TEST.Exemple.FR", "staging2.exemple.fr"):
+            self.assertTrue(dashlib.preprod_auto(d), d)
+
+    def test_sites_de_production(self):
+        for d in ("elwave.fr", "sisma-androgyne.fr", "cartoffset.sumoto.fr",
+                  "ppfinaxys.sumotori.fr", "www.exemple.fr", "developpement.fr"):
+            self.assertFalse(dashlib.preprod_auto(d), d)
+
+    def test_un_domaine_de_deux_etiquettes_n_est_jamais_une_preprod(self):
+        """`test.fr` est un domaine qu'on achète, pas une préprod."""
+        for d in ("test.fr", "dev.com", "demo.io"):
+            self.assertFalse(dashlib.preprod_auto(d), d)
+
+    def test_le_chemin_ne_compte_pas(self):
+        self.assertFalse(dashlib.preprod_auto("exemple.fr/dev"))
+        self.assertTrue(dashlib.preprod_auto("dev.exemple.fr/boutique"))
+
+    def test_vide_et_valeurs_bancales(self):
+        for d in ("", None, ".", "...", 42):
+            self.assertFalse(dashlib.preprod_auto(d), repr(d))
+
+    def test_la_surcharge_l_emporte_dans_les_deux_sens(self):
+        # cartoffset EST une préprod, son nom ne le dit pas
+        self.assertTrue(dashlib.site_preprod({"domain": "cartoffset.sumoto.fr"}, True))
+        # un site client nommé dev.<client>.fr qui serait bien public
+        self.assertFalse(dashlib.site_preprod({"domain": "dev.client.fr"}, False))
+
+    def test_sans_surcharge_le_nom_decide(self):
+        self.assertTrue(dashlib.site_preprod({"domain": "dev.client.fr"}, None))
+        self.assertFalse(dashlib.site_preprod({"domain": "client.fr"}, None))

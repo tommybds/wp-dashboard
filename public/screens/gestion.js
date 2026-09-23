@@ -710,7 +710,7 @@ function colonnesInstalls() {
   return [
     'Install (vhost)', 'Serveur', 'Nom affiché', 'Client',
     ...(k ? ['Moniteur Kuma'] : []),
-    'Visibilité',
+    'Visibilité', 'Environnement',
     ...(k ? ['Alias'] : []),
     'Dashboard', 'WordPress', null,
   ];
@@ -983,9 +983,23 @@ function renderInstalls() {
     });
     alias.value = ov.alias || '';
 
+    /* Trois états, pas deux : sans le « non » explicite, impossible de démentir
+       une détection par le nom — et sans « auto », impossible d'y revenir.
+       `cartoffset.sumoto.fr` est une préprod que son nom ne trahit pas, un
+       `test-pilates.fr` de client serait un vrai site : la main tranche. */
+    const env = h('select', { class: 'w-xs', 'aria-label': 'Environnement de ' + s.domain },
+      h('option', { value: 'auto', text: 'auto (d’après le nom)' }),
+      h('option', { value: 'prod', text: 'production' }),
+      h('option', { value: 'preprod', text: 'préproduction' }));
+    env.value = ov.preprod === true ? 'preprod' : ov.preprod === false ? 'prod' : 'auto';
+    const envTd = h('td', {}, env,
+      h('div', { class: 'sub', text: 'affiché : ' + (s.preprod ? 'préproduction' : 'production')
+        + (ov.preprod === undefined || ov.preprod === null
+           ? (s.preprod_auto ? ' (déduit du nom)' : '') : ' (posé à la main)') }));
+
     const save = h('button', {
       type: 'button', class: 'btn sm',
-      title: 'Enregistrer le nom, le client et l’affichage forcé',
+      title: 'Enregistrer le nom, le client, l’affichage forcé et l’environnement',
     }, iconEl('check', { label: 'Enregistrer' }));
     save.onclick = async () => {
       setBusy(save);
@@ -996,6 +1010,7 @@ function renderInstalls() {
           visible: v === 'show' ? true : v === 'hide' ? false : null,
           label: label.value,
           client: client.value,
+          preprod: env.value === 'preprod' ? true : env.value === 'prod' ? false : null,
           ...(kumaActif() ? { alias: alias.value } : {}),
         }) || {};
         if (r.overrides) store.mgmt.overrides = r.overrides;
@@ -1015,7 +1030,7 @@ function renderInstalls() {
         clientDe(s) ? h('div', { class: 'sub',
           text: 'affiché : ' + clientDe(s) + (s.kuma_group ? ' (groupe Kuma)' : '') }) : null),
       kumaActif() ? h('td', {}, monCell) : null,
-      visTd,
+      visTd, envTd,
       kumaActif() ? h('td', {}, alias) : null,
       h('td', {}, celluleAgent(s)),
       h('td', {}, celluleWp(s.domain, s.srv)),

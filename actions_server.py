@@ -7490,6 +7490,12 @@ class Handler(BaseHTTPRequestHandler):
                 cur = ov.get(domain, {})
                 if "visible" in body:
                     cur["visible"] = body["visible"] if body["visible"] in (True, False) else None
+                # Préproduction : True / False forcent, None (ou "auto") rend la
+                # main à la détection par le nom. Trois états, pas deux : sans
+                # le « non » explicite, impossible de démentir une détection.
+                if "preprod" in body:
+                    cur["preprod"] = (body["preprod"]
+                                      if body["preprod"] in (True, False) else None)
                 if "alias" in body:
                     al = str(body["alias"]).strip()
                     cur["alias"] = al or None
