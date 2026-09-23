@@ -13,7 +13,7 @@
        sans attendre la collecte : c'est souvent la ligne la plus ancienne d'une
        compromission.
 
-   La tendance du parc (les quatre courbes) ferme la page : elle répond à la
+   La tendance du parc (les quatre courbes) ouvre la page : elle répond à la
    même question sur un autre pas de temps.
 
    Ancres : #changements/changements et #changements/tendance continuent de
@@ -95,7 +95,8 @@ function sectionTendance() {
   return h('section', { class: 'section secsec', id: 'hist-tendance' },
     h('div', { class: 'sechead' },
       h('h2', { text: 'Tendance du parc' }),
-      h('span', { class: 'small', id: 'hist-sum' })),
+      h('span', { class: 'small', id: 'hist-sum' }),
+      barrePeriode()),
     h('p', { class: 'hint' }, 'Relevé à chaque collecte. Montre si la dette de mises à jour se résorbe ou s’accumule. ',
       h('span', {
         class: 'info', text: '?', tabindex: '0', role: 'button',
@@ -237,46 +238,154 @@ function renderChrono() {
 /* ============================================================================
    Tendance (courbes) — composant conservé de la phase 1
    ========================================================================== */
-/* Courbe SVG : pas de bibliothèque, 60 points suffisent.
-   Deux contraintes liées à `preserveAspectRatio="none"` (étirement en largeur) :
-   - le trait s'écraserait sans `vector-effect="non-scaling-stroke"` ;
-   - toute FORME ou TEXTE placé dans le SVG serait déformé. Le point final est
-     donc un segment à bout rond, et les ordonnées sont en HTML à côté. */
-function sparkline(points, couleur, hauteur = 90) {
-  if (points.length < 2) return h('div', { class: 'muted small', text: 'pas assez de relevés' });
-  const w = 400, pad = 6;
-  const mn = Math.min(...points), mx = Math.max(...points), amp = (mx - mn) || 1;
-  const x = i => pad + i * (w - 2 * pad) / (points.length - 1);
-  const y = v => hauteur - pad - ((v - mn) / amp) * (hauteur - 2 * pad);
-  const d = points.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
-  const aire = `${d}L${x(points.length - 1).toFixed(1)},${hauteur - pad}L${x(0).toFixed(1)},${hauteur - pad}Z`;
-  const der = points[points.length - 1], mid = (mn + mx) / 2;
-  const ligne = (v, tirets) => `<line x1="0" y1="${y(v).toFixed(1)}" x2="${w}" y2="${y(v).toFixed(1)}"
-      stroke="var(--line)" stroke-width="1" ${tirets ? 'stroke-dasharray="3 4"' : ''}
-      vector-effect="non-scaling-stroke"/>`;
-  const svg = `<svg viewBox="0 0 ${w} ${hauteur}" preserveAspectRatio="none" class="spark" role="img"
-      aria-label="évolution de ${mn} à ${mx}">
-    ${ligne(mn, false)}${ligne(mid, true)}${ligne(mx, true)}
-    <path d="${aire}" fill="${couleur}" opacity=".13"/>
-    <path d="${d}" fill="none" stroke="${couleur}" stroke-width="2" stroke-linejoin="round"
-      stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-    <path d="M${x(points.length - 1).toFixed(1)},${y(der).toFixed(1)}L${x(points.length - 1).toFixed(1)},${y(der).toFixed(1)}"
-      stroke="${couleur}" stroke-width="7" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-  </svg>`;
-  // Graduations en HTML : alignées sur les lignes de référence grâce au même
-  // rembourrage vertical que le SVG. Ce sont des décomptes : une graduation à
-  // « 182,5 extensions » n'a pas de sens.
-  const entiers = Number.isInteger(mn) && Number.isInteger(mx);
-  const fmt = v => entiers ? Math.round(v) : (Number.isInteger(v) ? v : v.toFixed(1));
-  // Le SVG est construit ICI, à partir de NOMBRES : rien de distant n'y entre.
-  // Il est inséré en nœud (et non dans un conteneur) pour rester l'enfant
-  // direct du flex `.chartbody`, dont il prend toute la largeur.
-  const tpl = document.createElement('template');
-  tpl.innerHTML = svg;
-  return h('div', { class: 'chartbody' },
-    h('div', { class: 'yaxis' },
-      h('span', { text: String(fmt(mx)) }), h('span', { text: String(fmt(mid)) }), h('span', { text: String(fmt(mn)) })),
-    tpl.content.firstElementChild);
+/* Courbes SVG sans bibliothèque. `preserveAspectRatio="none"` étire le SVG en
+   largeur : les traits sont donc en `non-scaling-stroke`, et tout ce qui serait
+   déformé (points, bulle, graduations) vit en HTML par-dessus, en pourcentages. */
+const PERIODES = [['semaine', 'Semaine'], ['mois', 'Mois'], ['annee', 'Année']];
+const W = 400, HT = 90, PAD = 6, ECH = 240;
+const SVGNS = 'http://www.w3.org/2000/svg';
+let PERIODE = (() => { try { return localStorage.getItem('hist-periode') || 'semaine'; } catch { return 'semaine'; } })();
+if (!PERIODES.some(([k]) => k === PERIODE)) PERIODE = 'semaine';
+let HIST = [];
+const COURBES = {};
+
+function barrePeriode() {
+  const barre = h('div', { class: 'tabs periodes', role: 'group', 'aria-label': 'Période affichée' });
+  PERIODES.forEach(([k, lbl]) => {
+    const b = h('button', { type: 'button', class: 'tab', dataset: { p: k }, text: lbl });
+    b.onclick = () => {
+      if (PERIODE === k) return;
+      PERIODE = k;
+      try { localStorage.setItem('hist-periode', k); } catch { /* stockage indisponible */ }
+      marquerPeriode();
+      chargerTendance();
+    };
+    barre.append(b);
+  });
+  queueMicrotask(marquerPeriode);
+  return barre;
+}
+
+function marquerPeriode() {
+  document.querySelectorAll('.periodes .tab').forEach(b => {
+    const on = b.dataset.p === PERIODE;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+// Rééchantillonnage à ECH points : l'animation interpole deux séries de même longueur.
+function echantillonner(pts) {
+  if (!pts.length) return new Array(ECH).fill(0);
+  if (pts.length === 1) return new Array(ECH).fill(pts[0]);
+  return Array.from({ length: ECH }, (_, j) => {
+    const p = j * (pts.length - 1) / (ECH - 1), i = Math.floor(p), f = p - i;
+    return i + 1 < pts.length ? pts[i] + (pts[i + 1] - pts[i]) * f : pts[i];
+  });
+}
+
+const px = j => PAD + j * (W - 2 * PAD) / (ECH - 1);
+const pctX = f => (PAD + f * (W - 2 * PAD)) / W * 100;
+const py = (v, mn, mx) => HT - PAD - ((v - mn) / ((mx - mn) || 1)) * (HT - 2 * PAD);
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function creerCourbe(m) {
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${HT}`, preserveAspectRatio: 'none', class: 'spark', 'aria-hidden': 'true' });
+  const ref = y => svgEl('line', { x1: 0, x2: W, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1,
+    'vector-effect': 'non-scaling-stroke', ...(y === HT - PAD ? {} : { 'stroke-dasharray': '3 4' }) });
+  const aire = svgEl('path', { fill: m.c, opacity: '.13' });
+  const trait = svgEl('path', { fill: 'none', stroke: m.c, 'stroke-width': 2, 'stroke-linejoin': 'round',
+    'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' });
+  svg.append(ref(PAD), ref(HT / 2), ref(HT - PAD), aire, trait);
+  const ys = [0, 1, 2].map(() => h('span'));
+  const fin = h('div', { class: 'spk-dot spk-end', style: { background: m.c } });
+  const curseur = h('div', { class: 'spk-cursor', hidden: true });
+  const point = h('div', { class: 'spk-dot', hidden: true, style: { background: m.c } });
+  const plot = h('div', { class: 'spk-plot' }, svg, curseur, point, fin);
+  const valeur = h('b');
+  const legende = h('span', { class: 'muted small' }, h('span', { text: 'actuel : ' }), valeur);
+  const axe = [0, 1, 2].map(() => h('span'));
+  const noeud = h('div', { class: 'chart' },
+    h('div', { class: 'charttop' }, h('b', { text: m.lbl }), legende),
+    h('div', { class: 'chartbody' }, h('div', { class: 'yaxis' }, ys), plot),
+    h('div', { class: 'chartaxis' }, axe));
+  plot.onpointermove = e => survoler((e.clientX - plot.getBoundingClientRect().left) / plot.clientWidth);
+  plot.onpointerdown = plot.onpointermove;
+  plot.onpointerleave = () => survoler(null);
+  return { m, noeud, aire, trait, ys, fin, curseur, point, legende, valeur, axe,
+    ech: null, mn: 0, mx: 1, anim: 0 };
+}
+
+function dessiner(c, ech, mn, mx) {
+  const d = ech.map((v, j) => `${j ? 'L' : 'M'}${px(j).toFixed(1)},${py(v, mn, mx).toFixed(1)}`).join('');
+  c.trait.setAttribute('d', d);
+  c.aire.setAttribute('d', `${d}L${px(ECH - 1)},${HT - PAD}L${px(0)},${HT - PAD}Z`);
+  const entiers = Number.isInteger(c.cibleMn) && Number.isInteger(c.cibleMx);
+  const fmt = v => String(entiers ? Math.round(v) : Math.round(v * 10) / 10);
+  [mx, (mn + mx) / 2, mn].forEach((v, i) => { c.ys[i].textContent = fmt(v); });
+  c.fin.style.left = pctX(1) + '%';
+  c.fin.style.top = (py(ech[ECH - 1], mn, mx) / HT * 100) + '%';
+}
+
+const lisse = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const sansAnim = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
+
+// Morphing : on part de la courbe affichée (ou d'une ligne plate au premier
+// rendu) et l'échelle glisse en même temps que les valeurs.
+function animer(c, pts) {
+  const cible = echantillonner(pts);
+  const mn = Math.min(...pts), mx = Math.max(...pts);
+  c.cibleMn = mn; c.cibleMx = mx;
+  const depart = c.ech || new Array(ECH).fill(mn);
+  const mn0 = c.ech ? c.mn : mn, mx0 = c.ech ? c.mx : mx;
+  cancelAnimationFrame(c.anim);
+  const duree = sansAnim() ? 0 : 650, t0 = performance.now();
+  const pas = now => {
+    const t = duree ? Math.min(1, (now - t0) / duree) : 1, k = lisse(t);
+    const ech = depart.map((v, j) => v + (cible[j] - v) * k);
+    c.mn = mn0 + (mn - mn0) * k; c.mx = mx0 + (mx - mx0) * k;
+    c.ech = ech;
+    dessiner(c, ech, c.mn, c.mx);
+    if (t < 1) c.anim = requestAnimationFrame(pas);
+  };
+  c.anim = requestAnimationFrame(pas);
+}
+
+function fmtTs(ts, court) {
+  const s = String(ts || '');
+  const [d, hm] = [s.slice(0, 10), s.slice(11, 16)];
+  const [a, mo, j] = d.split('-');
+  if (!j) return s;
+  if (PERIODE === 'annee') return `${j}/${mo}/${a.slice(2)}`;
+  if (PERIODE === 'mois' && court) return `${j}/${mo}`;
+  return `${j}/${mo} ${hm.replace(':', 'h')}`;
+}
+
+// Curseur partagé : les quatre courbes montrent le même instant.
+function survoler(frac) {
+  const n = HIST.length;
+  Object.values(COURBES).forEach(c => {
+    if (frac === null || n < 2 || !c.ech) {
+      c.curseur.hidden = true; c.point.hidden = true;
+      c.legende.firstChild.textContent = 'actuel : ';
+      c.valeur.textContent = String(HIST.length ? (HIST[n - 1][c.m.k] ?? '?') : '?');
+      return;
+    }
+    const i = Math.round(Math.max(0, Math.min(1, frac)) * (n - 1));
+    const v = HIST[i][c.m.k] ?? 0;
+    const x = pctX(i / (n - 1));
+    c.curseur.hidden = false; c.point.hidden = false;
+    c.curseur.style.left = x + '%';
+    c.point.style.left = x + '%';
+    c.point.style.top = (py(v, c.cibleMn, c.cibleMx) / HT * 100) + '%';
+    c.legende.firstChild.textContent = fmtTs(HIST[i].ts) + ' : ';
+    c.valeur.textContent = String(v);
+  });
 }
 
 function deltaPill(cur, ref, inverse) {
@@ -295,34 +404,55 @@ const MESURES = [
   { k: 'sites', lbl: 'Installations', c: 'var(--ok)', inv: false },
 ];
 
-function renderTendance(hist) {
+function renderTendance(hist, ref) {
   const charts = document.getElementById('hist-charts');
   if (!charts) return;
+  HIST = hist;
   if (!hist.length) {
+    Object.keys(COURBES).forEach(k => delete COURBES[k]);
     mount(charts, h('span', { class: 'muted', text: 'aucun relevé.' }));
     return;
   }
   const der = hist[hist.length - 1];
-  // référence ≈ 24 h plus tôt : la collecte tourne toutes les 30 min
-  const ref = hist[Math.max(0, hist.length - 49)];
-  mount('hist-sum', chipEl(hist.length + ' relevés · depuis le ' + String(hist[0].ts || '').slice(0, 10), 'mut'));
+  const jours = { semaine: 7, mois: 30, annee: 365 }[PERIODE];
+  const debut = tsMs(hist[0].ts), finMs = tsMs(der.ts);
+  // Moins d'historique que la période demandée : on le dit, sinon on croirait à un trou.
+  const court = debut && finMs && (finMs - debut) < (jours - 1) * 86400000;
+  mount('hist-sum', chipEl((court ? 'historique depuis le ' : 'depuis le ') + fmtTs(hist[0].ts, true), 'mut'));
   mount('hist-tiles', MESURES.map(m => h('div', { class: 'dstat' },
     h('div', { class: 'lbl', text: m.lbl }),
     h('div', { class: 'val', text: String(der[m.k] ?? '?') }),
-    h('div', { class: 'sub' }, deltaPill(der[m.k] ?? 0, ref[m.k], m.inv), ' sur 24 h'))));
+    h('div', { class: 'sub' }, deltaPill(der[m.k] ?? 0, ref ? ref[m.k] : null, m.inv), ' sur 24 h'))));
   // Deux colonnes fixes : quatre courbes pleine largeur donnent des rapports
   // hauteur/largeur absurdes sur un grand écran.
-  mount(charts, h('div', { class: 'histgrid' }, MESURES.map(m => {
-    const pts = hist.map(x => x[m.k] ?? 0);
-    return h('div', { class: 'chart' },
-      h('div', { class: 'charttop' },
-        h('b', { text: m.lbl }),
-        h('span', { class: 'muted small' }, 'actuel : ', h('b', { text: String(pts[pts.length - 1]) }))),
-      sparkline(pts, m.c),
-      h('div', { class: 'chartaxis' },
-        h('span', { text: String(hist[0].ts || '').slice(5, 16) }),
-        h('span', { text: String(der.ts || '').slice(5, 16) })));
-  })));
+  if (!charts.querySelector('.histgrid')) {
+    MESURES.forEach(m => { COURBES[m.k] = creerCourbe(m); });
+    mount(charts, h('div', { class: 'histgrid' }, MESURES.map(m => COURBES[m.k].noeud)));
+  }
+  const mi = hist[Math.floor((hist.length - 1) / 2)];
+  MESURES.forEach(m => {
+    const c = COURBES[m.k];
+    animer(c, hist.map(x => x[m.k] ?? 0));
+    [hist[0], mi, der].forEach((x, i) => { c.axe[i].textContent = fmtTs(x.ts, true); });
+  });
+  survoler(null);
+}
+
+let SEQ_TENDANCE = 0;
+async function chargerTendance() {
+  const seq = ++SEQ_TENDANCE;
+  try {
+    const j = await api('/api/actions/collect_history?periode=' + PERIODE);
+    if (seq !== SEQ_TENDANCE) return;
+    renderTendance((j.history || []).filter(x => x && typeof x === 'object'),
+      j.ref24 && typeof j.ref24 === 'object' ? j.ref24 : null);
+  } catch (e) {
+    if (seq !== SEQ_TENDANCE) return;
+    cacheVider('hist');
+    Object.keys(COURBES).forEach(k => delete COURBES[k]);
+    const charts = document.getElementById('hist-charts');
+    if (charts) mount(charts, h('span', { class: 'muted', text: 'historique indisponible : ' + e }));
+  }
 }
 
 /* ============================================================================
@@ -332,6 +462,8 @@ async function loadHist(force) {
   monterHist();
   if (cacheFrais('hist', force)) return;
   CHGERR = LOGERR = EVTERR = '';
+  // La tendance est en haut de page : elle part tout de suite, en parallèle.
+  const tendance = chargerTendance();
 
   // 1. changements d'état détectés par la collecte
   let changes = [];
@@ -383,15 +515,7 @@ async function loadHist(force) {
   optionsSite();
   renderChrono();
 
-  // 4. tendance
-  try {
-    const j = await api('/api/actions/collect_history');
-    renderTendance((j.history || []).filter(x => x && typeof x === 'object'));
-  } catch (e) {
-    cacheVider('hist');
-    const charts = document.getElementById('hist-charts');
-    if (charts) mount(charts, h('span', { class: 'muted', text: 'historique indisponible : ' + e }));
-  }
+  await tendance;
 }
 
 export { loadHist };

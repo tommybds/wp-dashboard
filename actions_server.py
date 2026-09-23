@@ -1053,6 +1053,42 @@ def read_jsonl_tail(path, n):
     return out
 
 
+HIST_PERIODES = {"semaine": (7, 168), "mois": (30, 180), "annee": (365, 365)}
+
+
+def collect_history_window(path, periode):
+    """Relevés de la période, un point par tranche (le dernier : ce sont des
+    états, pas des flux), plus le relevé d'il y a ~24 h pour les deltas."""
+    if periode not in HIST_PERIODES:
+        periode = "semaine"
+    jours, cible = HIST_PERIODES[periode]
+    pts = []
+    for l in tail_lines(path, 40000) or []:
+        try:
+            o = json.loads(l)
+            t = datetime.datetime.strptime(str(o.get("ts", ""))[:16], "%Y-%m-%d %H:%M")
+        except (ValueError, TypeError, AttributeError):
+            continue
+        pts.append((t, o))
+    if not pts:
+        return {"history": [], "ref24": None, "periode": periode}
+    fin = pts[-1][0]
+    debut = fin - datetime.timedelta(days=jours)
+    pas = jours * 86400 / cible
+    tranches, premier = {}, None
+    for t, o in pts:
+        if t >= debut:
+            premier = premier or o
+            tranches[int((t - debut).total_seconds() // pas)] = o
+    hist = [tranches[k] for k in sorted(tranches)]
+    if hist[0] is not premier:
+        hist.insert(0, premier)
+    if hist[-1] is not pts[-1][1]:
+        hist.append(pts[-1][1])
+    ref = next((o for t, o in reversed(pts) if t <= fin - datetime.timedelta(hours=24)), None)
+    return {"history": hist, "ref24": ref, "periode": periode}
+
+
 def read_log(n=120):
     return read_jsonl_tail(LOG, n)[::-1]
 
@@ -7040,7 +7076,8 @@ class Handler(BaseHTTPRequestHandler):
                              "done": COLLECT["done_servers"], "total": COLLECT["total_servers"],
                              "started": COLLECT["started"], "lines": COLLECT["lines"][-14:]})
         elif p == "/api/actions/collect_history":
-            self._send(200, {"history": read_jsonl_tail(os.path.join(DATA, "collect_history.jsonl"), 60)})
+            self._send(200, collect_history_window(os.path.join(DATA, "collect_history.jsonl"),
+                                                   str(q.get("periode", "semaine"))))
         elif p == "/api/actions/bulk_status":
             self._send(200, get_job(q.get("job", 0)) or {"error": "job inconnu"})
         elif p == "/api/mgmt/state":

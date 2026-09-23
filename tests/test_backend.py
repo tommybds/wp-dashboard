@@ -4356,3 +4356,32 @@ class TestVizDecideMessages(unittest.TestCase):
                 A.viz_decide(A.VIZ_ANOMALY_RC, True, {"fail": 0})[1],
                 A.viz_decide(A.VIZ_ANOMALY_RC, True, None)[1]}
         self.assertEqual(len(msgs), 3)
+
+
+class TestCollectHistoryWindow(unittest.TestCase):
+    def ecrire(self, n, pas_min):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        chemin = os.path.join(d, "h.jsonl")
+        base = datetime.datetime(2026, 1, 1)
+        with open(chemin, "w") as fh:
+            for k in range(n):
+                ts = (base + datetime.timedelta(minutes=pas_min * k)).strftime("%Y-%m-%d %H:%M")
+                fh.write(json.dumps({"ts": ts, "sites": k}) + "\n")
+            fh.write("{tronquée\n")
+        return chemin
+
+    def test_semaine_bornee_et_reechantillonnee(self):
+        r = A.collect_history_window(self.ecrire(48 * 20, 30), "semaine")
+        self.assertLessEqual(len(r["history"]), 170)
+        self.assertEqual(r["history"][-1]["sites"], 48 * 20 - 1)   # dernier relevé toujours présent
+        self.assertEqual(r["ref24"]["sites"], 48 * 20 - 1 - 48)
+
+    def test_annee_remonte_tout_l_historique(self):
+        r = A.collect_history_window(self.ecrire(48 * 40, 30), "annee")
+        self.assertEqual(r["history"][0]["sites"], 0)
+        self.assertLessEqual(len(r["history"]), 366)
+
+    def test_periode_inconnue_et_fichier_absent(self):
+        self.assertEqual(A.collect_history_window("/nexiste/pas", "zzz"),
+                         {"history": [], "ref24": None, "periode": "semaine"})

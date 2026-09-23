@@ -249,7 +249,7 @@ def historique():
         "ts": (base + timedelta(minutes=30 * k)).strftime("%Y-%m-%d %H:%M:%S"),
         "sites": 20 + (k % 3), "plugin_updates": 60 - k // 3,
         "core_updates": 5 - (k % 4), "errors": k % 3,
-    } for k in range(120)]}
+    } for k in range(120)], "ref24": None}
 
 
 def vulns():
