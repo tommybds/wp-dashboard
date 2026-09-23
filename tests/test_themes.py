@@ -386,10 +386,12 @@ class TestGelDesThemes(ActionsBase):
         site = {"domain": "a.fr", "path": "/p", "owner": "www"}
         with mock.patch.object(A, "find_site", lambda s, d: (srv, site)), \
              mock.patch.object(A, "run_wp_remote",
-                               lambda sv, si, args, timeout=300: (vues.append(args), (0, ""))[1]):
+                               lambda sv, si, args, timeout=300, extra="", maintenance=False:
+                               (vues.append((args, maintenance)), (0, ""))[1]):
             rc, _ = A.run_action("vps1", "a.fr", "themes_update_all", None)
         self.assertEqual(rc, 0)
-        self.assertEqual(vues, ["theme update --all --exclude=divi,storefront"])
+        # …et toute mise à jour lancée par le dashboard se fait sous maintenance
+        self.assertEqual(vues, [("theme update --all --exclude=divi,storefront", True)])
 
 
 # --------------------------------------------------------------------------- #
@@ -443,8 +445,8 @@ class TestMajSureThemes(unittest.TestCase):
         return False, 500, 0, "HTTP 500"
 
     def maj_faite(self):
-        return any(b.startswith("run theme update") or b.startswith("run plugin update")
-                   for b in self.bash)
+        # la commande commence par la mise en maintenance (REMOTE_MAINT_ON)
+        return any("run theme update" in b or "run plugin update" in b for b in self.bash)
 
     def restauration_faite(self):
         return any("theme__*.tgz" in b for b in self.bash)
@@ -489,7 +491,12 @@ class TestMajSureThemes(unittest.TestCase):
         self.assertIn("wp theme path", archive)
         # le plugin VizProof n'est pas chargé pendant la mise à jour : il ne doit
         # pas lancer son propre scan au milieu de l'opération
-        self.assertIn("run theme update 'divi' --skip-plugins=vizproof-timeline", self.bash)
+        maj = [b for b in self.bash if "run theme update 'divi'" in b]
+        self.assertEqual(len(maj), 1)
+        # le plugin VizProof n'est pas chargé pendant la mise à jour, et le site
+        # est en maintenance le temps de la commande
+        self.assertIn("run theme update 'divi' --skip-plugins=vizproof-timeline", maj[0])
+        self.assertTrue(maj[0].startswith(A.REMOTE_MAINT_ON))
         self.assertIsNotNone(self.etape("Mise à jour des thèmes"))
         self.assertIn("1 thème(s) : divi", self.etape("À mettre à jour")["detail"])
 

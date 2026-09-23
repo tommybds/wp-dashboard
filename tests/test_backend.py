@@ -1980,7 +1980,7 @@ class TestVizAfterUpdate(BaseTmp):
                 "anomalies": anomalies, "url": "https://vizproof.com/r/9"}
 
     # ---- doublures ----
-    def _logged(self, server, domain, action, arg, source="manuel"):
+    def _logged(self, server, domain, action, arg, source="manuel", wp_extra=""):
         self.actions.append((action, source))
         if action == "viz_scan":
             self.phases.append(A.viz_last_get(domain).get("phase"))
@@ -2406,7 +2406,7 @@ class TestRunRouteViz(BaseTmp):
             p.start()
             self.addCleanup(p.stop)
 
-    def _logged(self, server, domain, action, arg, source="manuel"):
+    def _logged(self, server, domain, action, arg, source="manuel", wp_extra=""):
         if action == "viz_scan":
             return 0, '{"anomalies":0,"report_url":"https://vizproof.com/r/4"}'
         return 0, "ok"
@@ -2848,7 +2848,7 @@ class TestVizUpdateJob(BaseTmp):
             p.start()
             self.addCleanup(p.stop)
 
-    def _logged(self, server, domain, action, arg, source="manuel"):
+    def _logged(self, server, domain, action, arg, source="manuel", wp_extra=""):
         self.actions.append((action, arg, source))
         if action == "viz_baseline":
             return self.rc_baseline, ("" if not self.rc_baseline else "Error: pas de page suivie")
@@ -2905,6 +2905,56 @@ class TestVizUpdateJob(BaseTmp):
 
     def faites(self):
         return [a for a, _g, _s in self.actions]
+
+    # ---- chemin rapide (plugin ≥ 1.3.13) : notre scan, tout de suite ----
+    def lancer_rapide(self, version, rc_scan=0):
+        self.site["vizproof"]["version"] = version
+        vus = {"extra": [], "remote": []}
+        orig = self._logged
+
+        def logged(server, domain, action, arg, source="manuel", wp_extra=""):
+            vus["extra"].append((action, wp_extra))
+            return orig(server, domain, action, arg, source)
+
+        def remote(srv, site, body, timeout=300, max_out=6000):
+            vus["remote"].append(body)
+            if "vizproof scan" in body:
+                return rc_scan, json.dumps({"status": "ok" if not rc_scan else "anomalies",
+                                            "report": dict(REPORT_JSON)})
+            return self._remote(srv, site, body, timeout, max_out)
+
+        with mock.patch.object(A, "logged_action", logged), \
+             mock.patch.object(A, "remote_bash", remote):
+            st, j = self.maj(arg="akismet")
+        return st, A.VIZUP["a.fr"], vus
+
+    def test_rapide_plugin_en_sourdine_et_scan_immediat(self):
+        """Mesuré sur le banc : attendre le scan que le plugin met en file coûtait
+        ~70 s avant qu'il ne démarre, puis ~2 min de finalisation."""
+        st, job, vus = self.lancer_rapide("1.3.13")
+        self.assertEqual(st, 200)
+        self.assertIn(("plugin_update", A.VIZ_SKIP_DURING_SAFE), vus["extra"])
+        scans = [b for b in vus["remote"] if "vizproof scan" in b]
+        self.assertEqual(len(scans), 1)
+        self.assertIn("--after-update", scans[0])
+        self.assertIn("--plugins=akismet", scans[0])
+        self.assertFalse(any("vizproof status" in b for b in vus["remote"][1:]),
+                         "plus d'attente du run du plugin")
+        viz = job["result"]["viz"]
+        self.assertEqual(viz["source"], A.VIZ_SRC_DASHBOARD)
+        self.assertEqual(viz["totals"], REPORT_JSON["totals"])
+
+    def test_rapide_anomalies_remontees(self):
+        st, job, vus = self.lancer_rapide("1.4.0", rc_scan=A.VIZ_ANOMALY_RC)
+        self.assertTrue(job["result"]["viz"]["anomalies"])
+        self.assertEqual(self.etape(job, "viz")["status"], "warn")
+
+    def test_plugin_ancien_garde_l_ancienne_methode(self):
+        """Sans --after-update, un scan simple ne purgerait pas le cache de page :
+        on laisse le plugin scanner lui-même, comme avant."""
+        st, job, vus = self.lancer_rapide("1.3.12")
+        self.assertIn(("plugin_update", ""), vus["extra"])
+        self.assertFalse(any("--after-update" in b for b in vus["remote"]))
 
     # ---- la référence d'avant n'est pas le résultat d'après ----
     def test_la_reference_n_est_pas_prise_pour_le_scan_d_apres(self):
@@ -4632,3 +4682,61 @@ class TestAlerteNouvelAdmin(unittest.TestCase):
     def test_installation_remplacee_silencieuse(self):
         ch = [{"domain": "a.fr", "kind": "install_moved", "detail": "installation suivie changée"}]
         self.assertEqual(self.lancer(ch), [])
+
+
+
+class TestMaintenancePendantLesMaj(unittest.TestCase):
+    """Toute mise à jour lancée par le dashboard se fait sous maintenance
+    WordPress (banc, 23/09 : un visiteur tombé dans le remplacement non atomique
+    des fichiers recevait « Il y a eu une erreur critique »)."""
+
+    def corps(self, action, arg=None):
+        vus = []
+        srv = {"name": "s1", "host": "h", "port": 22}
+        site = {"domain": "a.fr", "path": "/p", "owner": "www"}
+        with mock.patch.object(A, "find_site", lambda s, d: (srv, site)), \
+             mock.patch.object(A, "_frozen_lists", lambda d: ([], [])), \
+             mock.patch.object(A, "run_remote_script",
+                               lambda s, script, timeout=300, max_out=6000:
+                               (vus.append(script), (0, "ok"))[1]):
+            A.run_action("s1", "a.fr", action, arg)
+        return vus[0]
+
+    def test_mises_a_jour_sous_maintenance(self):
+        for action, arg in (("plugin_update", "akismet"), ("plugins_update_all", None),
+                            ("theme_update", "astra"), ("core_update", None)):
+            with self.subTest(action=action):
+                c = self.corps(action, arg)
+                self.assertIn("trap maint_fin EXIT", c)
+                self.assertLess(c.index("MAINT_POSE=1"), c.index("run "), "posée AVANT")
+
+    def test_le_reste_sans_maintenance(self):
+        """Vider un cache ou lancer une sauvegarde ne doit pas couper le site."""
+        for action in ("cache_flush", "verify_checksums", "viz_scan", "updraft_backup"):
+            with self.subTest(action=action):
+                c = self.corps(action)
+                self.assertIn("run ", c)
+                self.assertNotIn("trap maint_fin EXIT", c)
+
+    def test_options_ajoutees_a_chaque_commande(self):
+        vus = []
+        with mock.patch.object(A, "run_remote_script",
+                               lambda s, script, timeout=300, max_out=6000:
+                               (vus.append(script), (0, ""))[1]):
+            A.run_wp_remote({"name": "s1"}, {"domain": "a.fr", "path": "/p", "owner": "w"},
+                            "core update && WPRUN core update-db", extra="--skip-plugins=x")
+        self.assertIn("run core update --skip-plugins=x || exit $?", vus[0])
+        self.assertIn("run core update-db --skip-plugins=x || exit $?", vus[0])
+
+
+class TestVizScanAfterSupported(unittest.TestCase):
+
+    def test_versions(self):
+        for v, attendu in (("1.3.13", True), ("1.4.0", True), ("2.0", True),
+                           ("1.3.12", False), ("1.3.9", False), ("", False), (None, False)):
+            with self.subTest(v=v):
+                self.assertIs(A.viz_scan_after_supported({"vizproof": {"version": v}}), attendu)
+
+    def test_inventaire_sans_bloc_vizproof(self):
+        self.assertFalse(A.viz_scan_after_supported({}))
+        self.assertFalse(A.viz_scan_after_supported({"vizproof": "?"}))

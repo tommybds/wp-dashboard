@@ -90,6 +90,26 @@ VIZ_SCAN_AFTER_UPDATE_RE = re.compile(r"unknown --after-update|after-update.{0,4
 VIZ_BASELINE_CMD = "run vizproof baseline --wait --timeout=300 --format=json"
 VIZ_BASELINE_TIMEOUT = 420
 VIZ_OPTION_NAME = "vizproof_timeline_options"
+
+# Maintenance WordPress autour d'une commande de mise à jour. WordPress ne s'en
+# charge que pendant le remplacement des fichiers d'un composant ACTIF, et pas
+# pour les requêtes déjà en cours : sur le banc (23/09), un visiteur recevait
+# « Il y a eu une erreur critique » (Class "Pods…" not found, astra_html_before()
+# indéfinie) quand il tombait dans ce remplacement non atomique. Le fichier
+# `.maintenance` est posé AVANT la commande, 2 s laissent finir les requêtes en
+# vol, et il est retiré à la sortie du script quoi qu'il arrive (trap EXIT) —
+# seulement s'il a été posé par nous. Daté : WordPress l'ignore de lui-même au
+# bout de 10 minutes s'il restait. WP-CLI travaille normalement pendant ce
+# temps (vérifié). Kuma : contrôles toutes les ~5 min avec 3 relances, une
+# fenêtre de quelques secondes ne peut pas déclencher d'alerte.
+REMOTE_MAINT_ON = r"""MAINT="$D/.maintenance"; MAINT_POSE=0
+maint_fin() { [ "$MAINT_POSE" = "1" ] && onsite "rm -f '$MAINT'"; MAINT_POSE=0; }
+if [ ! -e "$MAINT" ]; then
+  onsite "printf '<?php \$upgrading = %s; ?>' $(date +%s) > '$MAINT'" && MAINT_POSE=1
+  trap maint_fin EXIT
+  sleep 2
+fi
+"""
 VIZ_AUTOSCAN_KEY = "enable_update_scan_by_default"
 VIZ_POLL_S = 10       # cadence d'interrogation de `wp vizproof status`
 VIZ_WAIT_NEW_S = 90   # au plus 90 s pour voir APPARAÎTRE le run lancé par le plugin
@@ -106,6 +126,9 @@ VIZ_PHASE_WAIT = "attente du scan du plugin"
 VIZ_PHASE_RUNNING = "scan en cours"
 VIZ_PHASE_DASHBOARD = "scan dashboard"
 VIZ_PHASE_CAPTURES = "captures en cours"
+VIZ_PHASE_SCAN_AFTER = "scan d'après mise à jour"
+# `wp vizproof scan --after-update` : première version du plugin qui l'accepte.
+VIZ_SCAN_AFTER_MIN = "1.3.13"
 # Connexion d'un site à VizProof (`wp vizproof connect`, plugin ≥ 1.3.6).
 VIZ_SITE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # Jeton de compte : jeu de caractères des jetons porteurs usuels, sur UNE ligne.
@@ -850,10 +873,17 @@ def run_remote_script(srv, script, timeout=300, max_out=6000):
     return r.returncode, (out if max_out is None else out[-max_out:])
 
 
-def run_wp_remote(srv, site, wp_args, timeout=300):
-    """Construit le script distant (chaînage « && WPRUN ») et l'exécute en ssh."""
+def run_wp_remote(srv, site, wp_args, timeout=300, extra="", maintenance=False):
+    """Construit le script distant (chaînage « && WPRUN ») et l'exécute en ssh.
+
+    `extra` s'ajoute à CHAQUE commande wp (ex. `--skip-plugins=…`) ;
+    `maintenance` encadre le tout par REMOTE_MAINT_ON.
+    """
     parts = [p.strip() for p in wp_args.split("&& WPRUN")]
-    body = "\n".join(f"run {p} || exit $?" for p in parts)
+    suite = (" " + extra.strip()) if extra and extra.strip() else ""
+    body = "\n".join(f"run {p}{suite} || exit $?" for p in parts)
+    if maintenance:
+        body = REMOTE_MAINT_ON + body
     script = REMOTE_TEMPLATE.format(docroot=sq(site["path"]), domain=sq(site["domain"]),
                                     owner=sq(site["owner"] or "root"),
                                     mode=exec_mode(srv),
@@ -973,7 +1003,7 @@ def set_frozen_plugin(domain, slug, frozen, kind="plugin"):
     return list(resultat)
 
 
-def run_action(server_name, domain, action, arg):
+def run_action(server_name, domain, action, arg, wp_extra=""):
     if action == "rescan":
         r = subprocess.run(["/usr/bin/python3", os.path.join(BASE, "collect.py"),
                             "--only", server_name, "--match", domain],
@@ -1026,7 +1056,9 @@ def run_action(server_name, domain, action, arg):
             return rc, out
         return 92, "site inconnu"
     # rc 2 sur une action vizproof = anomalies visuelles, remonté tel quel à l'appelant
-    return run_wp_remote(srv, site, wp_args)
+    # Toute mise à jour lancée par le dashboard se fait sous maintenance.
+    return run_wp_remote(srv, site, wp_args, extra=wp_extra,
+                         maintenance=action in VIZ_AFTER_UPDATE_ACTIONS)
 
 
 def append_log(entry):
@@ -1342,10 +1374,10 @@ def viz_status(rc, out):
     return "échec"
 
 
-def logged_action(server, domain, action, arg, source="manuel"):
+def logged_action(server, domain, action, arg, source="manuel", wp_extra=""):
     t0 = time.time()
     try:
-        rc, out = run_action(server, domain, action, arg)
+        rc, out = run_action(server, domain, action, arg, wp_extra=wp_extra)
     except subprocess.TimeoutExpired:
         rc, out = 93, "timeout"
     except Exception as e:
@@ -2048,6 +2080,61 @@ def viz_verdict_from_run(run):
                         else VIZ_AFTER_MSG["ok"])
 
 
+def viz_scan_after_supported(site):
+    """Le plugin du site sait-il faire `scan --after-update` (≥ 1.3.13) ?
+
+    Lu dans l'inventaire : une version plus récente que relevée ne coûte que
+    l'ancienne méthode (on attend le scan du plugin), jamais un scan faux. Sans
+    l'option, un scan simple ne purgerait pas le cache de page — sur un site
+    comme elwave (WP Fastest Cache), il photographierait l'ancien rendu.
+    """
+    v = (site or {}).get("vizproof")
+    ver = str((v or {}).get("version") or "").strip() if isinstance(v, dict) else ""
+    try:
+        return bool(ver) and version_compare(ver, VIZ_SCAN_AFTER_MIN) >= 0
+    except Exception:
+        return False
+
+
+def viz_verdict_scan_after(server, domain, srv, site, action, arg):
+    """Verdict d'une mise à jour simple, par NOTRE scan d'après mise à jour.
+
+    Le plugin a été tenu à l'écart de la commande de mise à jour ; on lance
+    tout de suite `wp vizproof scan --wait --after-update` : purge des caches,
+    stabilisation, préchauffage, captures de toutes les pages, verdict — en une
+    commande synchrone. Mesuré sur le banc le 23/09 avec l'ancienne méthode
+    (attendre le scan que le plugin met en file) : ~70 s avant que le plugin
+    ne démarre, puis ~2 min avant que son rapport ne soit finalisé.
+    """
+    plugins = [arg] if action == "plugin_update" and arg else None
+    themes = [arg] if action == "theme_update" and arg else None
+    t = time.time()
+    rcv, out = remote_bash(srv, site, viz_scan_after_update_cmd(plugins, themes),
+                           timeout=600, max_out=None)
+    if rcv != 0 and VIZ_SCAN_AFTER_UPDATE_RE.search(out or ""):
+        rcv, out = remote_bash(srv, site, "run vizproof scan --wait --format=json",
+                               timeout=600, max_out=None)
+    append_log({"ts": _now_s(), "source": VIZ_AFTER_SOURCE, "server": server,
+                "domain": domain, "action": "viz_scan", "arg": arg or None, "rc": rcv,
+                "duration_s": round(time.time() - t, 1),
+                "output_tail": str(out or "")[-800:]})
+    statut = viz_status(rcv, out)
+    j = viz_json_tail(out) or {}
+    rapp = viz_report_payload(j) or {}
+    res = {"source": VIZ_SRC_DASHBOARD, "rc": rcv, "status": statut, "phase": None,
+           "anomalies": rcv == VIZ_ANOMALY_RC, "anomalies_count": viz_anomalies_count(j),
+           "report_url": rapp.get("report_url") or viz_report_url(out),
+           "run_id": str(rapp.get("run_id") or j.get("run_id") or j.get("id") or ""),
+           "report": rapp or None,
+           "message": VIZ_AFTER_MSG.get(statut, statut)}
+    if isinstance(rapp.get("totals"), dict):
+        res["totals"] = rapp["totals"]
+    res["ran"] = statut != "non configuré"
+    if not res["ran"]:
+        res["reason"] = "non relié"
+    return res
+
+
 def viz_verdict_dashboard(server, domain):
     """Repli : c'est le dashboard qui lance le scan (`wp vizproof scan --wait`)."""
     rcv, out = logged_action(server, domain, "viz_scan", None, source=VIZ_AFTER_SOURCE)
@@ -2369,10 +2456,13 @@ def vizup_run(server, domain, action, arg):
                            "sans baseline, le contrôle d'après compare au dernier "
                            "état connu : " + str(outb or "")[-300:])
 
-        # (b) la mise à jour, exactement celle qu'aurait faite la route
+        # (b) la mise à jour, exactement celle qu'aurait faite la route — plugin
+        #     VizProof en sourdine quand c'est NOUS qui scannerons ensuite.
+        rapide = vizup_has(domain, "viz") and viz_scan_after_supported(site)
         vizup_step(domain, "update", VIZUP_RUN)
         t0 = time.time()
-        rc, out = logged_action(server, domain, action, arg, source="manuel")
+        rc, out = logged_action(server, domain, action, arg, source="manuel",
+                                wp_extra=VIZ_SKIP_DURING_SAFE if rapide else "")
         resultat.update(rc=rc, output=out)
         vizup_step(domain, "update", VIZUP_OK if rc == 0 else VIZUP_ERR,
                    str(out or "")[-300:])
@@ -2388,12 +2478,17 @@ def vizup_run(server, domain, action, arg):
                 viz_last_set(domain, dict(res, phase=p, ts=_now_s(),
                                           message="contrôle visuel VizProof : " + p))
 
-            vizup_step(domain, "viz", VIZUP_RUN, VIZ_PHASE_WAIT)
             t1 = time.time()
-            res.update(viz_verdict_after_update(server, domain, srv, site, t0,
-                                                prev_ref or viz_prev_run_id(site),
-                                                on_phase=phase),
-                       pending=False, phase=None, ts=_now_s())
+            if rapide:
+                phase(VIZ_PHASE_SCAN_AFTER)
+                res.update(viz_verdict_scan_after(server, domain, srv, site, action, arg),
+                           pending=False, phase=None, ts=_now_s())
+            else:
+                vizup_step(domain, "viz", VIZUP_RUN, VIZ_PHASE_WAIT)
+                res.update(viz_verdict_after_update(server, domain, srv, site, t0,
+                                                    prev_ref or viz_prev_run_id(site),
+                                                    on_phase=phase),
+                           pending=False, phase=None, ts=_now_s())
             viz_last_set(domain, res)
             viz_verdict_publish(server, domain, action, res, time.time() - t1)
             resultat["viz"] = dict(res)
@@ -3192,17 +3287,20 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         rc = 0
         if with_core:
             rcc, outc = remote_bash(srv, site,
-                                    f'run core update {VIZ_SKIP_DURING_SAFE}\n'
+                                    REMOTE_MAINT_ON
+                                    + f'run core update {VIZ_SKIP_DURING_SAFE}\n'
                                     f'run core update-db {VIZ_SKIP_DURING_SAFE}', timeout=900)
             safe_step(f"Mise à jour du cœur → {core_target}", rcc == 0, (outc or "")[-400:])
             rc = rc or rcc
         if pending:
-            rcp, outp = remote_bash(srv, site, f'run plugin update {lst} {VIZ_SKIP_DURING_SAFE}',
+            rcp, outp = remote_bash(srv, site, REMOTE_MAINT_ON
+                                    + f'run plugin update {lst} {VIZ_SKIP_DURING_SAFE}',
                                     timeout=900)
             safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
             rc = rc or rcp
         if pending_th:
-            rct2, outt2 = remote_bash(srv, site, f'run theme update {lst_th} {VIZ_SKIP_DURING_SAFE}',
+            rct2, outt2 = remote_bash(srv, site, REMOTE_MAINT_ON
+                                      + f'run theme update {lst_th} {VIZ_SKIP_DURING_SAFE}',
                                       timeout=900)
             safe_step("Mise à jour des thèmes", rct2 == 0, (outt2 or "")[-500:])
             rc = rc or rct2
