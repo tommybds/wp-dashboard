@@ -3914,3 +3914,44 @@ class MajSureCiblee(unittest.TestCase):
         self.assertIn("with_plugins", p)
         self.assertIs(p["with_plugins"].default, True)
         self.assertIn("with_themes", p)
+
+
+class RetourArriereSurGravite(unittest.TestCase):
+    """Le retour arrière automatique suit la GRAVITÉ, pas la présence d'un écart.
+
+    Mesuré le 23/09 sur elwave : une MAJ sûre parfaitement saine a été annulée
+    pour quatre écarts de 0,006 % à 0,05 %, tous `warn`, aucun `fail` — du bruit
+    de rendu. Sept mises à jour perdues pour cela.
+
+    VizProof tranche déjà : au-dessus du seuil du site c'est un `fail`, en
+    dessous un `warn`. On s'appuie sur son verdict au lieu d'en inventer un.
+    """
+
+    def test_aucune_anomalie(self):
+        self.assertEqual(A.viz_decide(0, True, None)[0], False)
+
+    def test_reglage_desactive_ne_bloque_jamais(self):
+        self.assertEqual(A.viz_decide(2, False, {"fail": 9})[0], False)
+
+    def test_warn_seul_conserve_la_mise_a_jour(self):
+        bloq, lib, anom = A.viz_decide(2, True, {"fail": 0, "warn": 4})
+        self.assertFalse(bloq)
+        self.assertTrue(anom)          # l'écart est signalé, pas escamoté
+        self.assertIn("sous le seuil", lib)
+
+    def test_un_echec_declenche_le_retour_arriere(self):
+        self.assertTrue(A.viz_decide(2, True, {"fail": 1, "warn": 0})[0])
+
+    def test_totaux_inconnus_le_reglage_garde_le_dernier_mot(self):
+        """Extension trop ancienne ou rapport illisible : on ne sait pas, donc
+        on applique ce que l'exploitant a demandé."""
+        self.assertTrue(A.viz_decide(2, True, None)[0])
+        self.assertTrue(A.viz_decide(2, True, "pas un dict")[0])
+
+    def test_echec_technique_bloque_quel_que_soit_le_reglage(self):
+        for rb in (True, False):
+            self.assertTrue(A.viz_decide(1, rb, {"fail": 0})[0])
+
+    def test_totaux_illisibles_ne_levent_pas(self):
+        bloq, _lib, _a = A.viz_decide(2, True, {"fail": "beaucoup"})
+        self.assertFalse(bloq)         # non convertible → traité comme 0

@@ -1320,20 +1320,39 @@ def viz_anomalies_count(src):
     return max(n, 0)
 
 
-def viz_decide(rc, rollback):
+def viz_decide(rc, rollback, totals=None):
     """Suite à donner à un scan visuel de MAJ sûre → (bloquant, libellé, anomalie).
 
     `bloquant` True = le scan compte comme un échec de santé, donc retour
-    arrière. Une anomalie visuelle (rc 2) n'est bloquante que si le réglage
-    `viz_anomaly_rollback` le demande ; toute AUTRE sortie non nulle est un
-    échec technique du scan, et reste bloquante quel que soit le réglage.
+    arrière. Toute sortie non nulle AUTRE qu'une anomalie est un échec technique
+    du scan, et reste bloquante quel que soit le réglage.
+
+    La gravité décide, pas la simple présence d'une anomalie. Mesuré le 23/09
+    sur elwave : une MAJ sûre parfaitement saine a été annulée pour quatre
+    écarts de 0,006 % à 0,05 %, tous `warn`, aucun `fail` — du bruit de rendu
+    (bandeau, carrousel, police chargée un peu plus tard). Annuler sept mises à
+    jour pour cela coûte bien plus cher que de les garder.
+
+    VizProof tranche déjà : un écart au-dessus du seuil du site est un `fail`,
+    en dessous un `warn`. On s'appuie sur SON verdict plutôt que d'en inventer
+    un second. `totals` absent — extension trop ancienne, rapport illisible —
+    on ne sait pas : le réglage garde alors le dernier mot, et il annule.
     """
     if rc == 0:
         return False, "aucune anomalie visuelle", False
     if rc == VIZ_ANOMALY_RC:
-        if rollback:
-            return True, "anomalies détectées — retour arrière déclenché (réglage)", True
-        return False, "anomalies détectées — avertissement, mise à jour conservée (réglage)", True
+        if not rollback:
+            return False, "anomalies détectées — avertissement, mise à jour conservée (réglage)", True
+        if isinstance(totals, dict):
+            try:
+                echecs = int(totals.get("fail") or 0)
+            except (TypeError, ValueError):
+                echecs = 0
+            if echecs <= 0:
+                return (False,
+                        "écarts visuels sous le seuil du site — mise à jour conservée, "
+                        "à regarder dans le rapport", True)
+        return True, "anomalies détectées — retour arrière déclenché (réglage)", True
     return True, "", False
 
 
@@ -2913,12 +2932,15 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             viz_used = True
             rcv, outv = remote_bash(srv, site,
                                     'run vizproof scan --wait --format=json', timeout=600)
-            bloquant, libelle, viz_anomaly = viz_decide(rcv, viz_rollback)
+            # `scan` porte son propre rapport depuis la 1.3.9 du plugin : on le
+            # lit dans sa sortie plutôt que de relancer une commande. Il est lu
+            # AVANT la décision : ses totaux disent si l'écart est un échec ou
+            # du bruit, et c'est cela qui déclenche — ou non — le retour arrière.
+            rapp = viz_report_payload(viz_json_tail(outv) or {})
+            bloquant, libelle, viz_anomaly = viz_decide(
+                rcv, viz_rollback, (rapp or {}).get("totals"))
             viz_ok = not bloquant
             detail = libelle or (outv or "")[-300:]
-            # `scan` porte son propre rapport depuis la 1.3.9 du plugin : on le
-            # lit dans sa sortie plutôt que de relancer une commande.
-            rapp = viz_report_payload(viz_json_tail(outv) or {})
             if rapp and rapp.get("message"):
                 detail += " · " + rapp["message"]
             rapport = (rapp or {}).get("report_url") or viz_report_url(outv)
