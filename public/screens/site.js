@@ -731,7 +731,7 @@ function dessinerOnglet() {
   else mount(cible, ongletApercu(s));
   renderPolicy();
   if (ONGLET === 'securite') renderVulnsListe();
-  if (ONGLET === 'apercu' && s.via === 'rest') loadWpCred(s.srv, s.domain);
+  if (s.via === 'rest' && (ONGLET === 'apercu' || ONGLET === 'vizproof')) loadWpCred(s.srv, s.domain);
   if (ONGLET === 'securite') { chargerAdmins(); chargerChecksums(); chargerPhpErrors(); }
   if (ONGLET === 'historique') loadTimeline(s.srv, s.domain);
   if (ONGLET === 'vizproof') brancherViz();
@@ -749,6 +749,9 @@ function dessinerOnglet() {
    Actions, et une phrase qui dit à quoi tout cela sert. */
 function ongletVizproof(s) {
   const blocs = [];
+  const t = vizEtatTexte(s);
+  const relie = t && t.etat === 'connecte';
+  const rest = s.via === 'rest';
   const viz = vizBlocEl(s, { titre: false, compact: true });
 
   /* Site géré par l'agent : VizProof continue de scanner et d'archiver tout
@@ -771,7 +774,8 @@ function ongletVizproof(s) {
       h('b', { text: 'puis refaites la baseline' }), ' — dans cet ordre.')
     : null;
 
-  const notéSansSsh = s.via === 'rest'
+  const posee = ['inactif', 'nocli', 'nonconnecte', 'connecte'].includes((t || {}).etat);
+  const notéSansSsh = (s.via === 'rest' && posee)
     ? h('p', { class: 'hint hint-loose' },
       h('b', { text: 'Site géré sans SSH' }),
       ' : VizProof surveille ce site et enregistre ses scans normalement, mais le '
@@ -783,13 +787,13 @@ function ongletVizproof(s) {
   blocs.push(h('section', { class: 'sitesec', id: 'site-vizbloc' },
     h('h3', { text: 'Contrôle visuel' }),
     notéSansSsh,
+    // Site sans SSH : l'installation passe par l'autorisation WordPress, et
+    // c'est gestion.js qui pose le bouton ici une fois les identifiants lus.
+    rest ? h('div', { class: 'actions mt2', id: 'rest-vizslot' }) : null,
     notéBaseline,
     viz || h('p', { class: 'hint hint-tight',
       text: 'État inconnu : aucun inventaire d’extensions pour ce site.' })));
 
-  const t = vizEtatTexte(s);
-  const relie = t && t.etat === 'connecte';
-  const rest = s.via === 'rest';
 
   /* Une extension trop ancienne pour être pilotée, alors que la mise à jour
      est disponible et à un clic dans l'onglet d'à côté : le volet doit porter
@@ -867,7 +871,6 @@ function ongletApercu(s) {
     blocs.push(h('section', { class: 'sitesec' },
       h('h3', { text: 'Identifiants WordPress' }),
       h('div', { id: 'wpcred' }, attente()),
-      h('div', { class: 'actions mt2', id: 'rest-vizslot' }),
       h('p', { class: 'hint hint-loose', id: 'rest-note' })));
   }
 

@@ -3955,3 +3955,43 @@ class RetourArriereSurGravite(unittest.TestCase):
     def test_totaux_illisibles_ne_levent_pas(self):
         bloq, _lib, _a = A.viz_decide(2, True, {"fail": "beaucoup"})
         self.assertFalse(bloq)         # non convertible → traité comme 0
+
+
+class RapportNicheDansLeScan(unittest.TestCase):
+    """`wp vizproof scan --wait --format=json` niche son rapport sous `report`.
+
+    Mesuré le 23/09 : la sortie du scan a pour clés `anomalies`, `message`,
+    `report`, `report_url`, `run_ids`, `status` — le rapport lui-même est à
+    l'intérieur. Le lecteur attendait un objet à plat, n'y trouvait pas de
+    `run_id`, rendait None, et la MAJ sûre se retrouvait sans totaux. Son retour
+    arrière automatique retombait alors sur « on ne sait pas, donc on annule » :
+    deux mises à jour saines annulées sur elwave avant qu'on comprenne.
+    """
+
+    PLAT = {"run_id": "r1", "status": "completed", "items": [],
+            "summary": {}, "totals": {"fail": 0, "warn": 4, "ok": 0, "other": 0}}
+
+    def test_rapport_a_plat(self):
+        self.assertEqual(A.viz_report_payload(dict(self.PLAT))["totals"]["warn"], 4)
+
+    def test_rapport_niche_sous_report(self):
+        niche = {"status": "anomalies", "anomalies": 4, "report_url": "https://x/",
+                 "run_ids": ["a", "b"], "report": dict(self.PLAT)}
+        out = A.viz_report_payload(niche)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["totals"]["warn"], 4)
+        self.assertEqual(out["run_id"], "r1")
+
+    def test_ni_run_id_ni_report(self):
+        self.assertIsNone(A.viz_report_payload({"status": "ok", "message": "rien"}))
+
+    def test_report_non_dict_ne_leve_pas(self):
+        self.assertIsNone(A.viz_report_payload({"report": "pas un objet"}))
+
+    def test_la_chaine_complete_decide_sur_les_totaux(self):
+        """Le cas réel : scan en anomalie, que des `warn` → on conserve."""
+        niche = {"status": "anomalies", "report": dict(self.PLAT)}
+        totals = (A.viz_report_payload(niche) or {}).get("totals")
+        bloquant, libelle, _anom = A.viz_decide(A.VIZ_ANOMALY_RC, True, totals)
+        self.assertFalse(bloquant)
+        self.assertIn("sous le seuil", libelle)

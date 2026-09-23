@@ -1491,7 +1491,17 @@ def viz_report_payload(j):
     sont bornés, et la liste est coupée à VIZ_REPORT_MAX_ITEMS (`has_more` le
     dit). Un JSON sans `run_id` n'est pas un rapport : c'est autre chose.
     """
-    if not isinstance(j, dict) or not str(j.get("run_id") or "").strip():
+    if not isinstance(j, dict):
+        return None
+    # `wp vizproof scan --wait --format=json` n'expose pas le rapport à plat :
+    # il le NICHE sous « report », à côté de `status`, `anomalies` et
+    # `report_url`. Sans ce déballage, la MAJ sûre lisait un objet sans
+    # `run_id`, n'obtenait aucun total, et son retour arrière automatique
+    # retombait sur « on ne sait pas, donc on annule » — deux mises à jour
+    # parfaitement saines annulées sur elwave avant qu'on comprenne pourquoi.
+    if not str(j.get("run_id") or "").strip() and isinstance(j.get("report"), dict):
+        j = j["report"]
+    if not str(j.get("run_id") or "").strip():
         return None
     tot = j.get("totals") if isinstance(j.get("totals"), dict) else {}
     res = j.get("summary") if isinstance(j.get("summary"), dict) else {}
