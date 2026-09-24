@@ -1229,6 +1229,9 @@ SETTINGS_DEFAULTS = {
     # d'après l'URL WordPress, puis à relier le plugin. Le fichier est en 0600
     # et la valeur n'est JAMAIS renvoyée par l'API : cf. settings_public().
     "vizproof_token": "",
+    # Adresse publique du dashboard : le bilan Telegram du matin s'en sert pour
+    # son lien « ouvrir ». Vide = pas de lien (le dépôt ne connaît pas l'hôte).
+    "public_url": "",
     "vizproof_api_base": VIZ_API_BASE_DEFAULT,
     # Seuils de la file d'incidents (GET /api/incidents). Sous-dictionnaire :
     # les clés inconnues y sont ignorées comme au premier niveau, et chaque

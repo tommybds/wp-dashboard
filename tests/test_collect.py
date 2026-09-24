@@ -861,10 +861,91 @@ class TestDigest(unittest.TestCase):
     def test_build_message(self):
         maintenant = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         ch = [{"ts": maintenant, "domain": "a.fr", "kind": "admin_add",
-               "severity": "warn", "detail": "+ admin pirate"}]
-        texte, n_sites, n_warn = digest.build_message(ch, 24)
-        self.assertEqual((n_sites, n_warn), (1, 1))
-        self.assertIn("pirate", texte)
+               "severity": "warn", "detail": "+ admin pirate <x@evil.io>"}]
+        texte, etat = digest.build_message(ch, 24, [], {})
+        self.assertIn("+ admin pirate", texte)
+        self.assertNotIn("evil.io", texte)          # l'e-mail reste dans le dashboard
+        self.assertIn("À vérifier", texte)
+        self.assertEqual(etat["incidents"], {})
+
+    @staticmethod
+    def maj(dom, detail, kind="plugin_update", sev="info"):
+        return {"ts": "2026-09-24 05:00", "domain": dom, "kind": kind,
+                "severity": sev, "detail": detail}
+
+    @staticmethod
+    def inc(iid, site, kind="php_fatal", title="Fatal error", detail="Uncaught Error: X — f.php"):
+        return {"id": iid, "site": site, "kind": kind, "severity": "critical",
+                "title": title, "detail": detail, "bucket": "now"}
+
+    def test_versions_nettes_chaine_et_aller_retour(self):
+        ch = [self.maj("a.fr", "pods 1 → 2"), self.maj("a.fr", "pods 2 → 3"),
+              self.maj("b.fr", "smtp 4 → 5"), self.maj("b.fr", "smtp 5 → 4")]
+        net = digest.versions_nettes(ch, "plugin_update", digest.RE_MAJ)
+        self.assertEqual(net, {("a.fr", "pods"): ("1", "3")})
+
+    def test_extensions_regroupees(self):
+        ch = [self.maj(d, "updraftplus 1 → 2") for d in ("a.fr", "b.fr", "c.fr")]
+        ch.append(self.maj("a.fr", "seo 1 → 2"))
+        lignes = digest.resume_changements(ch)
+        self.assertEqual(lignes, ["• 4 extensions à jour sur 3 sites (updraftplus ×3)"])
+
+    def test_rien_de_neuf_pas_de_message(self):
+        inc = [self.inc("i1", "a.fr")]
+        texte, etat = digest.build_message([], 24, inc, {"i1": "x"})
+        self.assertIsNone(texte)
+        self.assertIn("i1", etat["incidents"])
+
+    def test_nouveaux_et_regles(self):
+        inc = [self.inc("i1", "a.fr"), self.inc("i2", "b.fr", kind="cert_expiring",
+                                                  detail="expire dans 3 jour(s)")]
+        texte, _ = digest.build_message([], 24, inc, {"i1": "x", "vieux": "<b>c.fr</b> : réparé"})
+        self.assertIn("1 nouveau problème", texte)
+        self.assertIn("<b>b.fr</b> : certificat, expire dans 3 j", texte)
+        self.assertIn("✅ <b>Réglé</b> (1)", texte)
+        self.assertIn("c.fr</b> : réparé", texte)
+        self.assertIn("Toujours ouvert</b> : 1 erreur fatale", texte)
+
+    def test_premier_passage_rien_de_nouveau(self):
+        texte, _ = digest.build_message([], 24, [self.inc("i1", "a.fr")], None)
+        self.assertIn("Rien de nouveau de grave", texte)
+        self.assertIn("Toujours ouvert", texte)
+        self.assertNotIn("Depuis hier", texte)
+
+    def test_preprod_repliee(self):
+        ch = [self.maj("test.x.fr", f"pods {i} → {i + 1}") for i in range(5)]
+        ch.append(self.maj("test.x.fr", "+ admin z", kind="admin_add", sev="warn"))
+        inc = [self.inc("p1", "test.x.fr")]
+        # la préprod seule ne réveille personne : pas de bilan
+        texte, _ = digest.build_message(ch, 24, inc, {}, preprod={"test.x.fr"})
+        self.assertIsNone(texte)
+        ch.append(self.maj("a.fr", "seo 1 → 2"))
+        texte, etat = digest.build_message(ch, 24, inc, {}, preprod={"test.x.fr"})
+        self.assertIn("🧪 Préprod : 6 changements · 1 incident (test.x.fr)", texte)
+        self.assertNotIn("À vérifier", texte)
+        self.assertNotIn("Depuis hier", texte)
+        self.assertEqual(etat["incidents"], {})       # la préprod n'entre pas dans l'état
+
+    def test_changement_massif_resume(self):
+        ch = [self.maj("a.fr", f"+ extension p{i} 1.0", kind="plugin_add", sev="warn")
+              for i in range(6)]
+        ch += [self.maj("a.fr", f"− extension q{i}", kind="plugin_remove") for i in range(6)]
+        ch.append(self.maj("a.fr", "+ admin bob <b@a.fr>", kind="admin_add", sev="warn"))
+        texte, _ = digest.build_message(ch, 24, [], {})
+        self.assertIn("a.fr : changement massif, +6 / −6 extensions", texte)
+        self.assertIn("+ admin bob", texte)
+        self.assertNotIn("p3", texte)
+
+    def test_retrait_seul_pas_a_verifier(self):
+        texte, _ = digest.build_message(
+            [self.maj("a.fr", "− extension vieux", kind="plugin_remove")], 24, [], {})
+        self.assertNotIn("À vérifier", texte)
+        self.assertIn("1 extension retirée", texte)
+
+    def test_lien_echappe(self):
+        texte, _ = digest.build_message([self.maj("a.fr", "x 1 → 2")], 24, [], {},
+                                        url='https://d.fr/?a="b"')
+        self.assertIn('href="https://d.fr/?a=&quot;b&quot;"', texte)
 
 
 # --------------------------------------------------------------------------- #

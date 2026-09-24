@@ -3615,7 +3615,14 @@ class TestVizReportPayload(unittest.TestCase):
 
     def test_cause_et_seo_changes_survivent_a_l_echantillon_1310(self):
         rep = A.viz_report_payload(preview_sample("VIZ_REPORT"))
-        accueil_mobile, applications_desktop, applications_mobile = rep["items"][:3]
+        # Repérées par page et format, pas par position : la maquette place
+        # désormais les pages en erreur HTTP (1.3.14) en tête du rapport.
+        par = {}
+        for i in rep["items"]:              # première occurrence : celle de 1.3.10
+            par.setdefault((i["page"], i["viewport"]), i)
+        accueil_mobile = par[("Accueil", "Mobile")]
+        applications_desktop = par[("Applications", "Desktop")]
+        applications_mobile = par[("Applications", "Mobile")]
         self.assertEqual(accueil_mobile["cause"], "seo")
         self.assertEqual(accueil_mobile["seo_changes"], [
             {"field": "title", "before": "GEIQ Pays de la Loire — alternance",
