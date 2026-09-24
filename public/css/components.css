@@ -460,10 +460,10 @@ textarea.code.short{min-height:70px}
 /* Ligne mise en évidence à l'arrivée depuis l'assistant d'ajout. */
 .flash{outline:2px solid var(--accent);outline-offset:-2px}
 
-/* ---- menus déroulants ------------------------------------------------------
-   Deux formes, une seule apparence : `menuActions()` (bouton + panneau
-   role="menu") et le menu « Colonnes » du Parc, qui est un <details> natif —
-   son ouverture au clavier et sa fermeture par Échap sont gratuites. */
+/* ---- menu déroulant ---------------------------------------------------------
+   Le menu « Colonnes » du Parc, un <details> natif : son ouverture au clavier
+   et sa fermeture par Échap sont gratuites. (Le menu « Actions » de la page
+   site, qui partageait ces styles, a laissé place à l'onglet Réglages.) */
 .menu{position:relative;display:inline-flex}
 .menu>summary{list-style:none;cursor:pointer}
 .menu>summary::-webkit-details-marker{display:none}
@@ -479,9 +479,6 @@ textarea.code.short{min-height:70px}
 .menu-p.start{right:auto;left:0}
 .menu-p[hidden]{display:none}
 .menu[open]>.menu-p{display:block}
-.menu-g{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
-  text-transform:uppercase;letter-spacing:.05em;padding:6px var(--s-8) 3px}
-.menu-g.sep{border-top:1px solid var(--line-2);margin-top:var(--s-4)}
 .menu-i{
   display:flex;align-items:center;gap:var(--s-8);width:100%;
   padding:5px var(--s-8);border:0;border-left:2px solid transparent;border-radius:var(--r-ctl);
@@ -489,24 +486,8 @@ textarea.code.short{min-height:70px}
   text-align:left;cursor:pointer;
 }
 .menu-i:hover,.menu-i:focus-visible{background:var(--surface-2)}
-.menu-i .ic,.menu-ic{color:var(--muted);width:16px;flex:0 0 auto}
+.menu-i .ic{color:var(--muted);width:16px;flex:0 0 auto}
 .menu-l{flex:1;min-width:0}
-/* Trait d'attention : cette action MODIFIE le site. */
-.menu-i.attention{border-left-color:var(--warn)}
-.menu-i.danger{color:var(--err)}
-.menu-mod{font-family:var(--f-mono);font-size:var(--t-12);color:var(--warn);
-  background:var(--warn-bg);border-radius:var(--r-pill);padding:0 6px}
-.menu-i[aria-disabled="true"]{color:var(--muted);cursor:help}
-.menu-i[aria-disabled="true"] .menu-mod{display:none}
-.menu-vide{padding:var(--s-8);color:var(--muted);font-size:var(--t-12)}
-/* Ligne d'ÉTAT : elle ne se clique pas et ne se survole pas. Retrait à gauche
-   aligné sur les entrées voisines, mais fond neutre — rien n'y invite au clic. */
-.menu-etat{display:flex;align-items:flex-start;gap:var(--s-8);
-  padding:4px var(--s-8) 4px calc(var(--s-8) + 2px);
-  font-size:var(--t-12);color:var(--ink-2);line-height:1.45}
-.menu-etat .ic{color:var(--muted);flex:none;margin-top:2px}
-.menu-etat .menu-l{white-space:normal}
-.menu-d{color:var(--muted)}
 
 /* Raccourci clavier affiché dans un bouton. */
 .kbd{font-family:var(--f-mono);font-size:var(--t-12);color:var(--muted);
@@ -623,11 +604,9 @@ textarea.code.short{min-height:70px}
 .sheet-t{flex:1;min-width:0;font-size:var(--t-16)}
 .sheet-b{flex:1;min-height:0;overflow:auto;padding:var(--s-8) var(--s-12) 0;
   display:flex;flex-direction:column;gap:var(--s-4)}
-.sheet-menu{display:flex;flex-direction:column;gap:2px}
 /* Une action de feuille : pleine largeur, hauteur tactile, libellé à gauche. */
 .sheet-a{width:100%;justify-content:flex-start;padding:10px var(--s-12);
   font-size:var(--t-14);min-height:44px;flex-wrap:wrap}
 .sheet-al{flex:1;min-width:0;text-align:left}
 .sheet-ar{flex-basis:100%}
 .sheet-b .menu-i{min-height:44px;padding:10px var(--s-8);font-size:var(--t-14)}
-.sheet-b .menu-g{padding:var(--s-8) var(--s-8) 3px}

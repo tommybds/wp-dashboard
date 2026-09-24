@@ -17,7 +17,6 @@
 
 import { esc } from '../lib/dom.js';
 import { tipOuverte, fermerTips } from './tip.js';
-import { menuOuvert, fermerMenus } from './actions-menu.js';
 
 /* Ordre de fermeture : l'ordre du DOM ne dit pas laquelle est au-dessus (toutes
    les modales partagent z-index 20). Celles qui s'ouvrent PAR-DESSUS une autre
@@ -79,7 +78,6 @@ export function initModals() {
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (tipOuverte()) { fermerTips(); return; }
-    if (menuOuvert()) { fermerMenus(); return; }
     const id = MODALES.find(x => { const m = document.getElementById(x); return m && m.classList.contains('open'); });
     if (id) fermerModale(document.getElementById(id));
   });

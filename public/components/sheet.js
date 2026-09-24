@@ -21,12 +21,6 @@
 import { h, mount } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
 
-/** Le mobile, tel que le CSS l'entend (une seule définition pour les deux). */
-const MOBILE_Q = '(max-width: 720px)';
-export function estMobile() {
-  try { return window.matchMedia(MOBILE_Q).matches; } catch (e) { return false; }
-}
-
 let MODALE = null, BOITE = null, TITRE = null, CORPS = null;
 let OUVREUR = null, ONCLOSE = null;
 
@@ -83,7 +77,7 @@ function brancherGlisser(poignee) {
 }
 
 /** Une feuille est-elle ouverte ? (Échap la ferme avant les autres couches.) */
-export function feuilleOuverte() { return !!(MODALE && MODALE.classList.contains('open')); }
+function feuilleOuverte() { return !!(MODALE && MODALE.classList.contains('open')); }
 
 export function fermerFeuille() {
   if (!MODALE || !feuilleOuverte()) return;

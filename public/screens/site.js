@@ -1,8 +1,9 @@
 /* Page d'un site — `#site/<clé>` et `#site/<clé>/<onglet>`.
 
    Elle remplace le tiroir de la phase 1 : même contenu, mêmes actions, mêmes
-   gardes, mais une adresse partageable, cinq onglets, une action principale
-   déduite de l'état et le reste dans un menu groupé par intention.
+   gardes, mais une adresse partageable, des onglets, une action principale
+   déduite de l'état, et chaque autre geste dans le volet qui en parle — ceux
+   qui touchent aux réglages du site dans l'onglet Réglages.
 
    Trois points d'attention repris tels quels du tiroir :
 
@@ -31,7 +32,6 @@ import { setBusy, setIdle } from '../components/button.js';
 import { chipEl, chipEtat, pucePreprod } from '../components/chip.js';
 import { erreurPhpEl, incidentEl } from '../components/incident.js';
 import { askConfirm, askInfo, askOpen } from '../components/confirm.js';
-import { menuActions, fermerMenus } from '../components/actions-menu.js';
 import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '../components/rollback.js';
 import { NOTIF } from '../components/toast.js';
 import {
@@ -59,6 +59,9 @@ const ONGLETS = [
   ['vizproof', 'VizProof', vizPastilleOnglet],
   ['sauvegardes', 'Sauvegardes'],
   ['historique', 'Historique'],
+  /* Ce que le menu « Actions » de l'en-tête cachait : auto-MAJ, liaisons
+     (agent, WordPress) et entretien. Cf. ongletReglages(). */
+  ['reglages', 'Réglages'],
 ];
 const ONGLET_SLUGS = ONGLETS.map(o => o[0]);
 
@@ -131,7 +134,6 @@ export function renderSite(cle, onglet) {
   const s = siteParCle(cle);
   CLE = String(cle || '');
   ONGLET = ONGLET_SLUGS.includes(onglet) ? onglet : 'apercu';
-  fermerMenus();
   if (!s) {
     CUR = null;
     store.cur = null;
@@ -272,7 +274,7 @@ function entete(s) {
 
   return h('header', { class: 'sitehead' },
     fil, titre, meta,
-    h('div', { class: 'siteact' }, actionPrincipale(s), menuDuSite(s)));
+    h('div', { class: 'siteact' }, actionPrincipale(s)));
 }
 
 /* Action principale déduite de l'état : mettre à jour s'il y a de quoi, sinon
@@ -299,213 +301,9 @@ function actionPrincipale(s) {
   return b;
 }
 
-/* Raison d'indisponibilité, dite en clair : une action grisée sans explication
-   ne se distingue pas d'un bug. */
-function raisons(s) {
-  const rest = s.via === 'rest';
-  return {
-    rest: rest ? "site géré sans SSH : l'agent est en lecture seule, à faire depuis wp-admin" : '',
-  };
-}
-
-/* Porteur d'action DÉTACHÉ. `confirmRun`, `vizInstall` et `vizDisconnect`
-   travaillent sur un élément qui porte `data-act` / `data-arg` et sur lequel
-   elles posent un état de chargement. Lancées depuis une entrée de menu, il
-   n'y a aucun bouton à l'écran : on leur en fabrique un porteur, qui n'entre
-   jamais dans le document.
-
-   Un <span> plutôt qu'un <button> : un bouton hors du document n'a pas de nom
-   accessible, et c'est exactement ce que refuse tools/check_a11y.py — à juste
-   titre, on ne saurait pas quoi y écrire. */
-function porteurAction(act, arg) {
-  const el = h('span', { class: 'btn', hidden: true });
-  if (act) el.dataset.act = act;
-  if (arg) el.dataset.arg = arg;
-  return el;
-}
-
-/* Une entrée du menu qui lance une action unitaire. Elle est DÉCLARÉE
-   (`{action, label, …}`) plutôt que construite : c'est cette forme que
-   tools/check_front.py croise avec la table ACTIONS du backend. */
-function itemAct(s, def) {
-  const R = raisons(s);
-  const act = def.action;
-  let raison = def.raison || '';
-  if (!raison && R.rest && !def.restOk) raison = R.rest;
-  return {
-    label: def.label, ic: def.ic,
-    attention: def.attention === undefined ? ACT_RISQUE.has(act) : !!def.attention,
-    disabled: !!raison, raison,
-    onSelect: () => confirmRun(porteurAction(act, def.arg), def.label),
-  };
-}
-
-function menuDuSite(s) {
-  const rest = s.via === 'rest';
-  const R = raisons(s);
-  const vs = vizState(s);
-  const nEx = s.plugins_updates || 0;
-  const nTh = s.themes_updates || 0;
-  const total = s.plugins_total || 0;
-  const autoOn = (s.plugins_auto_update ?? 0) < total;
-
-  const maj = [
-    {
-      label: 'MAJ sûre' + (nEx || s.core_update ? '' : ' (rien à mettre à jour)'),
-      ic: 'shield-check', attention: true,
-      disabled: rest || !(nEx || s.core_update),
-      raison: rest ? R.rest : 'aucune mise à jour en attente sur ce site',
-      onSelect: () => { const b = document.getElementById('safeup'); if (b) b.click(); },
-    },
-    itemAct(s, { action: 'plugins_update_all', label: 'Extensions seules (sans filet)', ic: 'arrow-up', raison: rest ? R.rest : (nEx ? '' : 'aucune extension à mettre à jour') }),
-    /* Comme les autres entrées : le nombre est DANS le libellé quand il y a de
-       quoi faire, et l'entrée reste grisée avec sa raison quand il n'y a rien. */
-    itemAct(s, { action: 'themes_update_all', label: 'Tous les thèmes' + (nTh ? ' (' + nTh + ')' : ''), ic: 'arrow-up', raison: rest ? R.rest : (nTh ? '' : 'aucun thème à mettre à jour') }),
-    itemAct(s, { action: 'core_update', label: 'Cœur seul (sans filet)', ic: 'arrow-up', raison: rest ? R.rest : (s.core_update ? '' : 'le cœur est à jour') }),
-    autoOn
-      ? itemAct(s, { action: 'autoupdate_on', label: 'Activer les auto-MAJ' + (total ? ' (' + total + ')' : ''), ic: 'check', raison: rest ? R.rest : (total ? '' : 'aucune extension installée') })
-      : itemAct(s, { action: 'autoupdate_off', label: 'Désactiver les auto-MAJ', ic: 'x', raison: rest ? R.rest : (total ? '' : 'aucune extension installée') }),
-  ];
-
-  const verif = [
-    itemAct(s, { action: 'verify_checksums', label: 'Intégrité du cœur', ic: 'shield-check' }),
-    itemAct(s, { action: 'viz_scan', label: 'Scan visuel', ic: 'scan-eye', raison: rest ? R.rest : (vizConnected(s) ? '' : 'site non relié à VizProof') }),
-    itemAct(s, { action: 'viz_baseline', label: 'Capturer une baseline', ic: 'scan-eye', raison: rest ? R.rest : (vizConnected(s) ? '' : 'site non relié à VizProof') }),
-    itemAct(s, { action: 'rescan', label: 'Re-scan de l’inventaire', ic: 'refresh-cw', restOk: true }),
-  ];
-
-  const sauv = [
-    itemAct(s, { action: 'updraft_backup', label: 'Lancer une sauvegarde UpdraftPlus', ic: 'download', attention: true, raison: rest ? R.rest : (s.updraft ? '' : 'UpdraftPlus non détecté sur ce site') }),
-    itemAct(s, { action: 'cache_flush', label: 'Vider les caches', ic: 'eraser', attention: true }),
-  ];
-
-  return menuActions({
-    label: 'Actions', ic: 'list', groups: [
-      { titre: 'Mettre à jour', items: maj },
-      { titre: 'Vérifier', items: verif },
-      { titre: 'Sauvegarder', items: sauv },
-      { titre: 'Connecter', items: groupeConnecter(s) },
-    ],
-  });
-}
-
-/* ---- groupe « Connecter » : l'état d'abord, puis ce qui a du sens ----------
-
-   Il listait TOUT — installer, connecter, dissocier, agent, WordPress — et
-   grisait ce qui ne s'appliquait pas. Devant « Installer VizProof » barré
-   d'un « extension déjà présente », on ne savait toujours pas si le site
-   était RELIÉ. Trois lignes d'état le disent maintenant en toutes lettres, et
-   la liste ne garde que les entrées qui ont un sens dans cet état-là.
-
-   Ce qui reste grisé plutôt que masqué : les cas REST, où l'action existe mais
-   demande un accès SSH. La raison reste en infobulle — la masquer laisserait
-   croire que le dashboard ne sait pas le faire. */
-function groupeConnecter(s) {
-  const rest = s.via === 'rest';
-  const R = raisons(s);
-  const t = vizEtatTexte(s), vs = t.etat;
-  const items = [];
-
-  /* --- VizProof --- */
-  items.push({ etat: true, ic: 'scan-eye', label: 'VizProof :', detail: t.long });
-  if (vs === 'absent' || vs === 'nodata') {
-    items.push({
-      action: 'vizproof_install',
-      label: 'Installer VizProof', ic: 'plus', attention: true,
-      disabled: rest,
-      raison: rest ? 'site sans SSH : passez par « Autoriser WordPress » puis le bloc VizProof' : '',
-      onSelect: () => vizInstall(porteurAction(), s.srv, s.domain),
-    });
-  } else if (vs === 'nonconnecte') {
-    items.push({
-      label: 'Connecter VizProof…', ic: 'link',
-      disabled: rest, raison: rest ? R.rest : '',
-      onSelect: () => openVizConnect([s]),
-    });
-  } else if (vs === 'connecte') {
-    items.push({
-      label: 'Pages surveillées…', ic: 'scan-eye',
-      disabled: rest, raison: rest ? 'site sans SSH : à choisir dans wp-admin' : '',
-      onSelect: () => openVizPages(s),
-    }, {
-      label: 'Reconnecter VizProof…', ic: 'link',
-      disabled: rest, raison: rest ? R.rest : '',
-      onSelect: () => openVizConnect([s]),
-    }, {
-      label: 'Dissocier VizProof', ic: 'x', attention: true,
-      disabled: rest, raison: rest ? R.rest : '',
-      onSelect: () => vizDisconnect(porteurAction(), s),
-    });
-  }
-  // 'inactif' et 'nocli' : rien à proposer d'ici, la ligne d'état dit quoi faire
-  // (activer l'extension, ou la mettre à jour depuis l'onglet Extensions).
-
-  /* --- autorisation WordPress ---
-     Elle n'existe que pour les sites sans SSH : en SSH le dashboard agit déjà
-     directement. Lue AVANT le bloc agent : sans SSH, c'est elle qui décide si
-     l'agent peut être posé d'ici. */
-  const cred = rest ? WPETAT.get(s.domain) : undefined;
-  // `su` : true autorisé · false non autorisé · null on ne sait pas encore.
-  const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;
-
-  /* --- agent Dash ---
-     La collecte ne relève pas sa présence : sur un site en SSH, l'état est
-     honnêtement INCONNU, et les deux actions restent offertes par SSH. Sur un
-     site REST, l'agent est là par construction — c'est lui qui pousse
-     l'inventaire — et les deux gestes passent par l'API REST de WordPress. */
-  items.push({
-    etat: true, ic: 'link', label: 'Agent Dash :',
-    detail: rest
-      ? 'relié — c’est lui qui pousse l’inventaire de ce site'
-      : 'état inconnu — la collecte ne relève pas sa présence',
-  });
-  if (rest) {
-    const bloque = su === true ? '' : 'autorisez d’abord WordPress sur ce site';
-    items.push({
-      label: 'Réinstaller et relier l’agent Dash', ic: 'refresh-cw', attention: true,
-      disabled: !!bloque, raison: bloque,
-      onSelect: () => agentRest(s, true),
-    }, {
-      label: 'Retirer l’agent Dash', ic: 'x', attention: true,
-      disabled: !!bloque, raison: bloque,
-      onSelect: () => agentRest(s, false),
-    });
-  } else {
-    items.push({
-      label: 'Installer l’agent Dash (alertes temps réel)', ic: 'link', attention: true,
-      onSelect: () => dashAgent(s, true),
-    }, {
-      label: 'Dissocier l’agent Dash', ic: 'x', attention: true,
-      onSelect: () => dashAgent(s, false),
-    });
-  }
-
-  items.push({
-    etat: true, ic: 'link', label: 'WordPress :',
-    detail: !rest ? 'sans objet — ce site est piloté en SSH'
-      : cred === WPENCOURS ? 'état en cours de lecture…'
-        : su === null ? 'état indisponible'
-          : su ? 'autorisé' + (cred.user ? ' (' + cred.user + ')' : '') : 'non autorisé',
-  });
-  if (rest && su !== true) {
-    items.push({
-      label: 'Autoriser WordPress (mot de passe d’application)', ic: 'link', attention: true,
-      onSelect: () => cliquerWpCred('[data-wpauth]', 'Autoriser'),
-    });
-  }
-  if (rest && su !== false) {
-    items.push({
-      label: 'Révoquer l’autorisation WordPress', ic: 'trash-2', attention: true,
-      disabled: su !== true, raison: su === true ? '' : 'aucune autorisation enregistrée pour ce site',
-      onSelect: () => cliquerWpCred('[data-wprevoke]', 'Révoquer'),
-    });
-  }
-  return items;
-}
-
-/* État des identifiants WordPress, lu une fois par site REST. Le menu est
-   construit d'un bloc : sans ce cache il ne pourrait pas savoir s'il faut
-   proposer « Autoriser » ou « Révoquer », et les montrerait tous les deux. */
+/* État des identifiants WordPress, lu une fois par site REST. L'onglet
+   Réglages en a besoin pour savoir si l'agent peut être posé d'ici : sans
+   autorisation, les deux boutons de l'agent restent grisés avec leur raison. */
 const WPETAT = new Map();
 const WPENCOURS = 'encours';
 
@@ -514,26 +312,114 @@ async function chargerWpEtat(s) {
   WPETAT.set(s.domain, WPENCOURS);            // en vol : pas de second appel
   const j = await wpCredentials(s.domain);
   WPETAT.set(s.domain, j || null);
-  if (CUR && CUR.domain === s.domain) majBarreActions();
+  if (CUR && CUR.domain === s.domain && ONGLET === 'reglages') dessinerOnglet();
 }
 
-/** Redessine la seule barre d'actions de l'en-tête (pas toute la page). */
-function majBarreActions() {
-  const box = document.querySelector('#page-site .siteact');
-  if (box && CUR) mount(box, actionPrincipale(CUR), menuDuSite(CUR));
-}
-
-/* Les boutons d'autorisation WordPress sont posés par gestion.js dans le bloc
-   « Identifiants WordPress » : le menu ne fait que les actionner, pour ne pas
-   dupliquer le flux d'approbation. */
-function cliquerWpCred(sel, quoi) {
-  const aller = () => {
-    const b = document.querySelector('#site-tab ' + sel);
-    if (b) { b.scrollIntoView({ block: 'center' }); b.click(); return true; }
-    return false;
+/* ---- onglet Réglages -------------------------------------------------------
+   Il remplace le menu « Actions » de l'en-tête. Chaque geste du menu avait déjà
+   son bouton dans le volet qui en parle (mises à jour dans Extensions, scan et
+   baseline dans VizProof, sauvegarde dans Sauvegardes, intégrité dans
+   Sécurité) — sauf ceux qui touchent au RÉGLAGE du site plutôt qu'à son
+   contenu : les auto-MAJ, les liaisons (agent, WordPress) et l'entretien. Un
+   menu replié ne se lit pas ; ces gestes ont maintenant une page, avec l'état
+   de chaque réglage écrit à côté du bouton qui le change. */
+function ongletReglages(s) {
+  const rest = s.via === 'rest';
+  const blocs = [];
+  const bouton = (act, libelle, ic, opts = {}) => {
+    const b = h('button', { type: 'button', class: 'btn sm' + (opts.primary ? ' primary' : ''), title: opts.title || null },
+      ic ? iconEl(ic) : null, libelle);
+    b.dataset.act = act;
+    const raison = rest ? SANS_SSH : (opts.raison || '');
+    if (raison) { b.disabled = true; b.title = raison; }
+    else b.onclick = () => confirmRun(b, libelle);
+    return b;
   };
-  if (ONGLET !== 'apercu') { allerOnglet('apercu'); setTimeout(aller, 400); return; }
-  if (!aller()) askInfo(quoi + ' — indisponible', "Le bloc « Identifiants WordPress » n'est pas encore chargé, ou le site est déjà dans l'état demandé.");
+
+  /* --- auto-MAJ --- */
+  const total = s.plugins_total || 0;
+  const nAuto = s.plugins_auto_update;
+  const etatAuto = (nAuto == null || !total) ? chipEl(total ? 'inconnu' : 'aucune extension', 'mut')
+    : nAuto >= total ? chipEl('toutes (' + nAuto + '/' + total + ')', 'ok')
+      : nAuto === 0 ? chipEl('désactivées (0/' + total + ')', 'mut')
+        : chipEl('partielles (' + nAuto + '/' + total + ')', 'warn');
+  const viz = vizConnected(s);
+  blocs.push(h('section', { class: 'sitesec' },
+    h('h3', { text: 'Mises à jour automatiques' }),
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Extensions' }), ' ', etatAuto),
+      h('span', { class: 'actions' },
+        bouton('autoupdate_on', 'Activer pour toutes' + (total ? ' (' + total + ')' : ''), 'check',
+          { raison: !total ? 'aucune extension installée' : (nAuto != null && nAuto >= total ? 'déjà activées pour toutes les extensions' : '') }),
+        bouton('autoupdate_off', 'Désactiver pour toutes', 'x',
+          { raison: !total ? 'aucune extension installée' : (nAuto === 0 ? 'déjà désactivées' : '') }))),
+    h('p', { class: 'hint hint-tight' },
+      'WordPress applique alors lui-même les nouvelles versions, la nuit, sans passer par le dashboard. ',
+      viz ? h('span', {}, 'VizProof étant relié, chaque mise à jour automatique est suivie d’un ',
+        h('b', { text: 'scan visuel' }), '.')
+        : h('span', {}, h('b', { text: 'Aucun contrôle après coup' }),
+          ' sur ce site : VizProof n’y est pas relié.')),
+));
+
+  /* --- liaisons --- */
+  const t = vizEtatTexte(s);
+  const lignes = [];
+  lignes.push(h('div', { class: 'regl' },
+    h('span', { class: 'regl-l' }, h('b', { text: 'VizProof' }), ' — ', h('span', { class: 'muted', text: t.long })),
+    h('a', { class: 'btn sm', href: '#site/' + encodeURIComponent(CLE) + '/vizproof' }, iconEl('scan-eye'), 'Gérer')));
+
+  const cred = rest ? WPETAT.get(s.domain) : undefined;
+  const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;   // null : pas encore lu
+  const agentBoutons = [];
+  if (rest) {
+    const bloque = su === true ? '' : (cred === WPENCOURS ? 'lecture de l’autorisation WordPress…' : 'autorisez d’abord WordPress ci-dessous');
+    const poser = h('button', { type: 'button', class: 'btn sm' }, iconEl('refresh-cw'), 'Réinstaller et relier');
+    const retirer = h('button', { type: 'button', class: 'btn sm' }, iconEl('x'), 'Retirer');
+    [poser, retirer].forEach(b => { if (bloque) { b.disabled = true; b.title = bloque; } });
+    poser.onclick = () => agentRest(s, true);
+    retirer.onclick = () => agentRest(s, false);
+    agentBoutons.push(poser, retirer);
+  } else {
+    const poser = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), 'Installer');
+    const retirer = h('button', { type: 'button', class: 'btn sm' }, iconEl('x'), 'Dissocier');
+    poser.onclick = () => dashAgent(s, true);
+    retirer.onclick = () => dashAgent(s, false);
+    agentBoutons.push(poser, retirer);
+  }
+  lignes.push(h('div', { class: 'regl' },
+    h('span', { class: 'regl-l' }, h('b', { text: 'Agent Dash' }), ' — ', h('span', { class: 'muted', text: rest
+      ? 'relié : c’est lui qui pousse l’inventaire de ce site'
+      : 'état inconnu (la collecte ne relève pas sa présence) — il envoie les alertes en temps réel' })),
+    h('span', { class: 'actions' }, agentBoutons)));
+
+  blocs.push(h('section', { class: 'sitesec' },
+    h('h3', { text: 'Liaisons' }),
+    lignes,
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Identifiants WordPress' }), ' — ',
+        h('span', { class: 'muted', text: rest
+          ? 'mot de passe d’application : il permet d’agir sur ce site sans SSH'
+          : 'sans objet, ce site est piloté en SSH' })),
+      rest ? h('div', { id: 'wpcred' }, attente()) : null),
+    rest ? h('p', { class: 'hint hint-loose', id: 'rest-note' }) : null));
+
+  /* --- entretien --- */
+  blocs.push(h('section', { class: 'sitesec' },
+    h('h3', { text: 'Entretien' }),
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Caches' }), ' — ',
+        h('span', { class: 'muted', text: 'cache objet WordPress, et les extensions de cache reconnues' })),
+      bouton('cache_flush', 'Vider les caches', 'eraser')),
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Inventaire' }), ' — ',
+        h('span', { class: 'muted', text: 'relevé ' + relTime(s.collected_at || store.fleet?.generated_at) })),
+      (() => {
+        const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('refresh-cw'), 'Re-scanner');
+        b.dataset.act = 'rescan';
+        b.onclick = () => confirmRun(b, 'Re-scan de l’inventaire');
+        return b;
+      })())));
+  return blocs;
 }
 
 async function dashAgent(s, connecter) {
@@ -729,10 +615,11 @@ function dessinerOnglet() {
   else if (ONGLET === 'vizproof') mount(cible, ongletVizproof(s));
   else if (ONGLET === 'sauvegardes') { mount(cible, ongletSauvegardes(s)); bloquerRetablissementSansSsh(s); }
   else if (ONGLET === 'historique') mount(cible, ongletHistorique(s));
+  else if (ONGLET === 'reglages') mount(cible, ongletReglages(s));
   else mount(cible, ongletApercu(s));
   renderPolicy();
   if (ONGLET === 'securite') renderVulnsListe();
-  if (s.via === 'rest' && (ONGLET === 'apercu' || ONGLET === 'vizproof')) loadWpCred(s.srv, s.domain);
+  if (s.via === 'rest' && (ONGLET === 'reglages' || ONGLET === 'vizproof')) loadWpCred(s.srv, s.domain);
   if (ONGLET === 'securite') { chargerAdmins(); chargerChecksums(); chargerPhpErrors(); }
   if (ONGLET === 'historique') loadTimeline(s.srv, s.domain);
   if (ONGLET === 'vizproof') brancherViz();
@@ -827,6 +714,15 @@ function ongletVizproof(s) {
         h('b', { text: 'scan' }), ' compare le rendu actuel à cette référence et signale ce qui a bougé. '
         + 'C’est ce que fait la MAJ sûre avant et après une mise à jour.'),
       h('div', { class: 'actions mt2' }, base, scan)));
+    /* Seul geste de liaison que le bloc d'état ne porte pas (il a déjà « Pages
+       surveillées… » et « Dissocier ») : le menu Actions, supprimé, l'offrait. */
+    const recon = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), 'Reconnecter VizProof…');
+    recon.onclick = () => openVizConnect([s]);
+    blocs.push(h('section', { class: 'sitesec' },
+      h('h3', { text: 'Liaison' }),
+      h('p', { class: 'hint hint-tight', text: 'À refaire si le site a changé de projet VizProof, '
+        + 'ou si le jeton de l’extension a été révoqué.' }),
+      h('div', { class: 'actions mt2' }, recon)));
   }
 
   blocs.push(h('section', { class: 'sitesec' },
@@ -867,13 +763,6 @@ function ongletApercu(s) {
   blocs.push(h('section', { class: 'sitesec', id: 'site-incidents' },
     h('h3', { text: 'À traiter sur ce site' }),
     incidentsEl()));
-
-  if (s.via === 'rest') {
-    blocs.push(h('section', { class: 'sitesec' },
-      h('h3', { text: 'Identifiants WordPress' }),
-      h('div', { id: 'wpcred' }, attente()),
-      h('p', { class: 'hint hint-loose', id: 'rest-note' })));
-  }
 
   if (s._stale) {
     blocs.push(h('div', { class: 'warnbox small' }, iconEl('triangle-alert'), ' ',
@@ -2133,5 +2022,4 @@ async function runAction(btn) {
    liés à l'affichage. */
 export function quitterSite() {
   stopPoll('safe');          // le job continue côté serveur, pas le sondage d'affichage
-  fermerMenus();
 }

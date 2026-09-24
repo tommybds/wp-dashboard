@@ -355,6 +355,12 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 
 /* ---- écran Sécurité ------------------------------------------------------- */
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
+/* Ligne de l'onglet Réglages d'un site : ce qu'on règle et son état à gauche,
+   le geste qui le change à droite. Sous la largeur, les boutons passent dessous. */
+.regl{display:flex;align-items:center;justify-content:space-between;gap:var(--s-8) var(--s-12);
+  padding:var(--s-8) 0;border-top:1px solid var(--line-2);flex-wrap:wrap}
+.sitesec h3+.regl{border-top:0}
+.regl-l{flex:1 1 280px;min-width:0}
 /* Un en-tête de site repliable, puis une ligne par extension (et non par CVE :
    une extension cumule souvent 20 CVE). */
 .vsite{display:flex;align-items:center;gap:var(--s-8);padding:var(--s-8) 6px;cursor:pointer;

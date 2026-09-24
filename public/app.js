@@ -33,7 +33,6 @@ import {
 import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
 import { setVizSettings } from './components/viz.js';
 import { initDebordement } from './components/table.js';
-import { fermerMenus } from './components/actions-menu.js';
 import { wpauthBanner } from './components/wpauth.js';
 
 import { onFleetChange, loadViews, chargerIncidents, filtrerSurExtension } from './screens/parc.js';
@@ -322,10 +321,9 @@ function writeHash(route, push) {
 }
 
 /* Quitter l'écran courant : les sondages qui n'ont de sens que sur cet écran
-   s'arrêtent, les menus déployés se referment. Les JOBS, eux, continuent côté
+   s'arrêtent, une feuille ouverte se referme. Les JOBS, eux, continuent côté
    serveur — c'est tout l'intérêt de la barre de notifications. */
 function quitterEcran(suivant) {
-  fermerMenus();
   fermerFeuille();          // une feuille ouverte n'a plus d'objet sur l'écran suivant
   if (ROUTE === 'site' && suivant !== 'site') quitterSite();
   if (suivant !== 'securite') { stopPoll('vulns'); stopPoll('phe'); }
