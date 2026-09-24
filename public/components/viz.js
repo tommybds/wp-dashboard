@@ -675,10 +675,11 @@ export async function vizInstall(btn, srv, dom) {
       askInfo('Installation impossible', H(t));
       return;
     }
+    NOTIF.update(nid, { detail: 'relecture de l’inventaire…' });
     await api('/api/actions/run', { server: srv, domain: dom, action: 'rescan', arg: null });
-    NOTIF.done(nid, { ok: true, message: 'extension installée et activée' });
     await loadFleet();
     REFRESH();
+    NOTIF.done(nid, { ok: true, message: 'extension installée et activée' });
   } catch (e) {
     NOTIF.done(nid, { ok: false, message: String(e) });
     setIdle(btn);
@@ -946,7 +947,10 @@ async function runVizConnect() {
     let j;
     try { j = await api('/api/actions/viz_connect', corps) || {}; }
     catch (e) { j = { ok: false, rc: '—', error: String(e) }; }
-    if (j.ok) nok++;
+    if (j.ok) {
+      nok++;
+      await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'rescan', arg: null }).catch(() => {});
+    }
     const det = stripPhpNoise(String(j.output || j.error || '')).slice(-200);
     const sid = j.site_id ? ` <span class="muted">${H(j.site_name || j.site_id)}${j.site_created ? ' · créé' : ' · existant'}</span>` : '';
     if (res) {
@@ -973,7 +977,7 @@ async function runVizConnect() {
   go.textContent = lbl; go.disabled = false;
   const an = document.getElementById('vz-cancel');
   an.textContent = 'Fermer'; an.className = 'btn primary';
-  if (nok) loadFleet().then(() => REFRESH()).catch(() => {});
+  if (nok) await loadFleet().then(() => REFRESH()).catch(() => {});
   // La connexion faite, la question suivante est « quelles pages surveiller ? ».
   // On y enchaîne dans la même couche plutôt que de renvoyer l'utilisateur
   // chercher un bouton : c'est exactement là qu'il ne savait plus quoi cliquer.
@@ -991,14 +995,15 @@ export async function vizDisconnect(btn, s) {
   let j;
   try { j = await api('/api/actions/viz_disconnect', { server: s.srv, domain: s.domain }) || {}; }
   catch (e) { j = { ok: false, error: String(e) }; }
+  if (j.ok) {
+    NOTIF.update(nid, { detail: 'relecture de l’inventaire…' });
+    await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'rescan', arg: null }).catch(() => {});
+    await loadFleet().catch(() => {});
+    REFRESH();
+  }
   setIdle(btn);
   NOTIF.done(nid, { ok: !!j.ok, message: j.ok ? '' : stripPhpNoise(String(j.output || j.error || '')).slice(-160) });
-  if (!j.ok) {
-    askInfo('Dissociation impossible', H(stripPhpNoise(String(j.output || j.error || '')).slice(-300) || 'échec'));
-    return;
-  }
-  await loadFleet();
-  REFRESH();
+  if (!j.ok) askInfo('Dissociation impossible', H(stripPhpNoise(String(j.output || j.error || '')).slice(-300) || 'échec'));
 }
 
 /* ---- étape « Pages surveillées » -------------------------------------------

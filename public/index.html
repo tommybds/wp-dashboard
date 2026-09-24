@@ -10,10 +10,10 @@
      et prévient en console. Une police qui change change de nom de fichier. -->
 <link rel="preload" as="font" type="font/woff2" href="fonts/plex-sans-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="fonts/archivo-latin.woff2" crossorigin>
-<link rel="stylesheet" href="css/tokens.css?v=2026-09-24-1904">
-<link rel="stylesheet" href="css/base.css?v=2026-09-24-1904">
-<link rel="stylesheet" href="css/components.css?v=2026-09-24-1904">
-<link rel="stylesheet" href="css/screens.css?v=2026-09-24-1904">
+<link rel="stylesheet" href="css/tokens.css?v=2026-09-24-2010">
+<link rel="stylesheet" href="css/base.css?v=2026-09-24-2010">
+<link rel="stylesheet" href="css/components.css?v=2026-09-24-2010">
+<link rel="stylesheet" href="css/screens.css?v=2026-09-24-2010">
 <!-- Table d'imports : elle porte le suffixe de version sur CHAQUE module, y
      compris ceux importés en relatif depuis un autre module (`../lib/api.js`).
      Sans elle, seul app.js serait versionné et les modules resteraient en
@@ -21,36 +21,37 @@
 <script type="importmap">
 {
   "imports": {
-    "./version.js": "./version.js?v=2026-09-24-1904",
-    "./lib/api.js": "./lib/api.js?v=2026-09-24-1904",
-    "./lib/dom.js": "./lib/dom.js?v=2026-09-24-1904",
-    "./lib/format.js": "./lib/format.js?v=2026-09-24-1904",
-    "./lib/icons.js": "./lib/icons.js?v=2026-09-24-1904",
-    "./lib/poll.js": "./lib/poll.js?v=2026-09-24-1904",
-    "./lib/state.js": "./lib/state.js?v=2026-09-24-1904",
-    "./components/add-site.js": "./components/add-site.js?v=2026-09-24-1904",
-    "./components/button.js": "./components/button.js?v=2026-09-24-1904",
-    "./components/chip.js": "./components/chip.js?v=2026-09-24-1904",
-    "./components/confirm.js": "./components/confirm.js?v=2026-09-24-1904",
-    "./components/incident.js": "./components/incident.js?v=2026-09-24-1904",
-    "./components/job.js": "./components/job.js?v=2026-09-24-1904",
-    "./components/log.js": "./components/log.js?v=2026-09-24-1904",
-    "./components/rollback.js": "./components/rollback.js?v=2026-09-24-1904",
-    "./components/search.js": "./components/search.js?v=2026-09-24-1904",
-    "./components/sheet.js": "./components/sheet.js?v=2026-09-24-1904",
-    "./components/shell.js": "./components/shell.js?v=2026-09-24-1904",
-    "./components/table.js": "./components/table.js?v=2026-09-24-1904",
-    "./components/tip.js": "./components/tip.js?v=2026-09-24-1904",
-    "./components/toast.js": "./components/toast.js?v=2026-09-24-1904",
-    "./components/viz.js": "./components/viz.js?v=2026-09-24-1904",
-    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-24-1904",
-    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-24-1904",
-    "./screens/historique.js": "./screens/historique.js?v=2026-09-24-1904",
-    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-24-1904",
-    "./screens/parc.js": "./screens/parc.js?v=2026-09-24-1904",
-    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-24-1904",
-    "./screens/securite.js": "./screens/securite.js?v=2026-09-24-1904",
-    "./screens/site.js": "./screens/site.js?v=2026-09-24-1904"
+    "./version.js": "./version.js?v=2026-09-24-2010",
+    "./lib/api.js": "./lib/api.js?v=2026-09-24-2010",
+    "./lib/dom.js": "./lib/dom.js?v=2026-09-24-2010",
+    "./lib/format.js": "./lib/format.js?v=2026-09-24-2010",
+    "./lib/icons.js": "./lib/icons.js?v=2026-09-24-2010",
+    "./lib/poll.js": "./lib/poll.js?v=2026-09-24-2010",
+    "./lib/state.js": "./lib/state.js?v=2026-09-24-2010",
+    "./components/add-site.js": "./components/add-site.js?v=2026-09-24-2010",
+    "./components/button.js": "./components/button.js?v=2026-09-24-2010",
+    "./components/chip.js": "./components/chip.js?v=2026-09-24-2010",
+    "./components/confirm.js": "./components/confirm.js?v=2026-09-24-2010",
+    "./components/incident.js": "./components/incident.js?v=2026-09-24-2010",
+    "./components/job.js": "./components/job.js?v=2026-09-24-2010",
+    "./components/log.js": "./components/log.js?v=2026-09-24-2010",
+    "./components/rollback.js": "./components/rollback.js?v=2026-09-24-2010",
+    "./components/search.js": "./components/search.js?v=2026-09-24-2010",
+    "./components/sheet.js": "./components/sheet.js?v=2026-09-24-2010",
+    "./components/shell.js": "./components/shell.js?v=2026-09-24-2010",
+    "./components/table.js": "./components/table.js?v=2026-09-24-2010",
+    "./components/tip.js": "./components/tip.js?v=2026-09-24-2010",
+    "./components/toast.js": "./components/toast.js?v=2026-09-24-2010",
+    "./components/viz.js": "./components/viz.js?v=2026-09-24-2010",
+    "./components/wpauth.js": "./components/wpauth.js?v=2026-09-24-2010",
+    "./screens/aide.js": "./screens/aide.js?v=2026-09-24-2010",
+    "./screens/gestion.js": "./screens/gestion.js?v=2026-09-24-2010",
+    "./screens/historique.js": "./screens/historique.js?v=2026-09-24-2010",
+    "./screens/incidents.js": "./screens/incidents.js?v=2026-09-24-2010",
+    "./screens/parc.js": "./screens/parc.js?v=2026-09-24-2010",
+    "./screens/reglages.js": "./screens/reglages.js?v=2026-09-24-2010",
+    "./screens/securite.js": "./screens/securite.js?v=2026-09-24-2010",
+    "./screens/site.js": "./screens/site.js?v=2026-09-24-2010"
   }
 }
 </script>
@@ -91,6 +92,9 @@
        title="Réglages (collecte, alertes, VizProof, clés SSH, apparence)">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-settings"></use></svg>
       <span class="nav-l">Réglages</span></a>
+    <a class="nav-i" href="#aide" data-dest="aide" title="Aide : comment marche ce dashboard">
+      <svg class="ic ic-20" aria-hidden="true"><use href="#i-circle-help"></use></svg>
+      <span class="nav-l">Aide</span></a>
     <button class="nav-i" type="button" id="logbtn" title="Journal des actions">
       <svg class="ic ic-20" aria-hidden="true"><use href="#i-scroll-text"></use></svg>
       <span class="nav-l">Journal</span></button>
@@ -178,6 +182,10 @@
      Page à ancres (huit sections) construite par screens/reglages.js avec h().
      Ce n'est plus une modale depuis la phase 4. -->
 <div class="page" id="page-reglages"></div>
+
+<!-- ===================== AIDE =====================
+     Page à ancres statique construite par screens/aide.js avec h(). -->
+<div class="page" id="page-aide"></div>
 
 <!-- ===================== CHANGEMENTS (chronologie + tendance) =====================
      Page à ancres construite par screens/historique.js avec h(). -->
@@ -356,6 +364,6 @@
     montrer('promesse rejetée : '+(r&&r.message||String(r))); });
 })();
 </script>
-<script type="module" src="app.js?v=2026-09-24-1904"></script>
+<script type="module" src="app.js?v=2026-09-24-2010"></script>
 </body>
 </html>

@@ -463,6 +463,26 @@ def apply_plugins(site, plugins):
     return site
 
 
+def compter_auto_maj(aup, plugins_list):
+    """Nombre d'extensions INSTALLÉES dont la mise à jour automatique est active.
+
+    L'option `auto_update_plugins` garde les extensions désinstallées depuis :
+    WordPress ne la nettoie pas. La compter telle quelle affichait « 10/7 » sur
+    un site de 7 extensions. On ne retient que les entrées dont le slug (le
+    répertoire, ou le fichier sans « .php ») figure dans l'inventaire ; sans
+    inventaire, on garde l'ancien compte, faute de mieux.
+    """
+    if not isinstance(aup, list):
+        return 0
+    if not isinstance(plugins_list, list):
+        return len(aup)
+    installes = {str(p.get("name")) for p in plugins_list if isinstance(p, dict) and p.get("name")}
+    def slug(entree):
+        e = str(entree or "")
+        return e.split("/", 1)[0] if "/" in e else (e[:-4] if e.endswith(".php") else e)
+    return len({slug(e) for e in aup if slug(e) in installes})
+
+
 def apply_themes(site, themes):
     """Remplit les champs thèmes d'un site — format identique en SSH et en REST.
 
@@ -616,7 +636,7 @@ def postprocess(raw):
     apply_themes(site, extract_json(f.get("themes", "")) if ok("themes") else None)
 
     aup = extract_json(f.get("auto_update_plugins", "")) if ok("auto_update_plugins") else None
-    site["plugins_auto_update"] = len(aup) if isinstance(aup, list) else 0
+    site["plugins_auto_update"] = compter_auto_maj(aup, site.get("plugins_list"))
 
     site["admins"] = map_admins(extract_json(f.get("admins", "")) if ok("admins") else None)
 
@@ -744,7 +764,7 @@ def map_rest_inventory(entry, data, url=None, blog_id=None):
         site["themes_list"] = None
     aup = d.get("auto_update_plugins")
     if isinstance(aup, list):
-        site["plugins_auto_update"] = len(aup)
+        site["plugins_auto_update"] = compter_auto_maj(aup, site.get("plugins_list"))
     else:
         site["plugins_auto_update"] = to_int(d.get("plugins_auto_update"), 0)
     site["admins"] = map_admins(d.get("admins"))

@@ -338,7 +338,7 @@ function ongletReglages(s) {
 
   /* --- auto-MAJ --- */
   const total = s.plugins_total || 0;
-  const nAuto = s.plugins_auto_update;
+  const nAuto = s.plugins_auto_update == null ? null : Math.min(s.plugins_auto_update, total);
   const etatAuto = (nAuto == null || !total) ? chipEl(total ? 'inconnu' : 'aucune extension', 'mut')
     : nAuto >= total ? chipEl('toutes (' + nAuto + '/' + total + ')', 'ok')
       : nAuto === 0 ? chipEl('désactivées (0/' + total + ')', 'mut')
@@ -371,7 +371,13 @@ function ongletReglages(s) {
   const cred = rest ? WPETAT.get(s.domain) : undefined;
   const su = (cred && typeof cred === 'object') ? !!cred.has_password : null;   // null : pas encore lu
   const agentBoutons = [];
+  /* L'agent est un mu-plugin : `wp plugin list` le rend avec le statut
+     « must-use » et sa version. Sans inventaire (liste absente), on ne sait pas. */
+  const liste = Array.isArray(s.plugins_list) ? s.plugins_list : null;
+  const agent = liste ? liste.find(p => p && p.name === 'sumotori-dash-agent') : undefined;
+  let agentTexte;
   if (rest) {
+    agentTexte = 'relié : c’est lui qui pousse l’inventaire de ce site';
     const bloque = su === true ? '' : (cred === WPENCOURS ? 'lecture de l’autorisation WordPress…' : 'autorisez d’abord WordPress ci-dessous');
     const poser = h('button', { type: 'button', class: 'btn sm' }, iconEl('refresh-cw'), 'Réinstaller et relier');
     const retirer = h('button', { type: 'button', class: 'btn sm' }, iconEl('x'), 'Retirer');
@@ -380,16 +386,18 @@ function ongletReglages(s) {
     retirer.onclick = () => agentRest(s, false);
     agentBoutons.push(poser, retirer);
   } else {
-    const poser = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), 'Installer');
+    const poser = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), agent ? 'Réinstaller' : 'Installer');
     const retirer = h('button', { type: 'button', class: 'btn sm' }, iconEl('x'), 'Dissocier');
     poser.onclick = () => dashAgent(s, true);
     retirer.onclick = () => dashAgent(s, false);
+    if (agent === undefined && liste) { retirer.disabled = true; retirer.title = 'l’agent n’est pas installé sur ce site'; }
+    agentTexte = agent ? 'installé' + (agent.version ? ' (v' + agent.version + ')' : '') + ' — il envoie les alertes en temps réel'
+      : liste ? 'absent — sans lui, un nouvel administrateur ne se voit qu’à la collecte suivante'
+        : 'état inconnu : aucun inventaire d’extensions pour ce site';
     agentBoutons.push(poser, retirer);
   }
   lignes.push(h('div', { class: 'regl' },
-    h('span', { class: 'regl-l' }, h('b', { text: 'Agent Dash' }), ' — ', h('span', { class: 'muted', text: rest
-      ? 'relié : c’est lui qui pousse l’inventaire de ce site'
-      : 'état inconnu (la collecte ne relève pas sa présence) — il envoie les alertes en temps réel' })),
+    h('span', { class: 'regl-l' }, h('b', { text: 'Agent Dash' }), ' — ', h('span', { class: 'muted', text: agentTexte })),
     h('span', { class: 'actions' }, agentBoutons)));
 
   blocs.push(h('section', { class: 'sitesec' },
@@ -419,7 +427,7 @@ function ongletReglages(s) {
         b.onclick = () => confirmRun(b, 'Re-scan de l’inventaire');
         return b;
       })())));
-  return blocs;
+  return h('div', { class: 'regl-page' }, blocs);
 }
 
 async function dashAgent(s, connecter) {
@@ -439,6 +447,15 @@ async function dashAgent(s, connecter) {
   }
   catch (e) { j = { ok: false, error: String(e) }; }
   const out = stripPhpNoise(String(j.output ?? j.error ?? '')).slice(-200);
+  if (j.ok) {
+    /* La page doit montrer le nouvel état sans rechargement : l'inventaire est
+       relu (l'agent est un mu-plugin, il y apparaît), puis la page redessinée,
+       et seulement ensuite la notification dit « fait ». */
+    NOTIF.update(nid, { detail: 'relecture de l’inventaire…' });
+    await api('/api/actions/run', { server: s.srv, domain: s.domain, action: 'rescan' }).catch(() => {});
+    await loadFleet().catch(() => {});
+    refreshSite();
+  }
   NOTIF.done(nid, { ok: !!j.ok, message: j.ok ? 'agent ' + (connecter ? 'installé' : 'dissocié') : out });
   if (!j.ok) askInfo(quoi + ' — échec', H(out || 'échec'));
 }
@@ -475,7 +492,8 @@ async function agentRest(s, installer) {
   NOTIF.done(nid, { ok: !!j.ok, message: code ? 'code d’appairage à coller sur le site' : out });
   if (code) { askInfo('Code d’appairage', codeAgentHtml(j, out)); return; }
   if (!j.ok) { askInfo(quoi + ' — échec', H(out || 'échec')); return; }
-  loadFleet();
+  await loadFleet().catch(() => {});
+  refreshSite();
 }
 
 function codeAgentHtml(j, out) {
@@ -499,7 +517,9 @@ function bandeau(s) {
   const core = s.core_version || '?';
   const nEx = s.plugins_updates || 0;
   const auto = (() => {
-    const n = s.plugins_auto_update, t = s.plugins_total;
+    const t = s.plugins_total;
+    // plafonné : les relevés d'avant le 24/09 comptaient les extensions désinstallées
+    const n = (s.plugins_auto_update == null || t == null) ? s.plugins_auto_update : Math.min(s.plugins_auto_update, t);
     if (n == null || t == null) return ['', '?', 'inconnu'];
     if (t === 0) return ['', '—', 'aucune extension'];
     if (n === 0) return ['warn', '0/' + t, 'désactivées'];

@@ -40,6 +40,7 @@ import { renderSite, quitterSite, cleDeSite, siteParCle } from './screens/site.j
 import { loadMgmt } from './screens/gestion.js';
 import { loadSec, majCompteurSec } from './screens/securite.js';
 import { loadHist } from './screens/historique.js';
+import { loadAide } from './screens/aide.js';
 import { loadReglages, ensureSettings } from './screens/reglages.js';
 import { renderIncidents } from './screens/incidents.js';
 
@@ -54,6 +55,7 @@ const DESTINATIONS = [
   { route: 'changements', page: 'hist',      titre: 'Changements', legacy: 'hist' },
   { route: 'gestion',     page: 'mgmt',      titre: 'Gestion',     legacy: 'mgmt' },
   { route: 'reglages',    page: 'reglages',  titre: 'Réglages' },
+  { route: 'aide',        page: 'aide',      titre: 'Aide' },
 ];
 const PAR_ROUTE = Object.fromEntries(DESTINATIONS.map(d => [d.route, d]));
 const PAR_LEGACY = Object.fromEntries(DESTINATIONS.filter(d => d.legacy).map(d => [d.legacy, d]));
@@ -98,6 +100,11 @@ const ANCRES = {
     'cles-ssh': 'set-cles', cles: 'set-cles', sshkeys: 'set-cles',
     apparence: 'set-apparence', theme: 'set-apparence',
     session: 'set-session',
+  },
+  aide: {
+    demarrer: 'aide-demarrer', 'mises-a-jour': 'aide-maj', vizproof: 'aide-vizproof',
+    sauvegardes: 'aide-sauvegardes', alertes: 'aide-alertes', liaisons: 'aide-liaisons',
+    taches: 'aide-taches', glossaire: 'aide-glossaire',
   },
 };
 
@@ -363,6 +370,7 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   if (route === 'changements') loadHist();
   if (route === 'incidents') renderIncidents();
   if (route === 'reglages') loadReglages();
+  if (route === 'aide') loadAide();
   if (ecrire) writeHash(route, push);
   marquerSection('');
   suivreSections();

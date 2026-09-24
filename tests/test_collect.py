@@ -839,6 +839,17 @@ class TestPhpErrors(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 #  digest                                                                     #
 # --------------------------------------------------------------------------- #
+class TestCompterAutoMaj(unittest.TestCase):
+    def test_entrees_desinstallees_ignorees(self):
+        pl = [{"name": "akismet"}, {"name": "hello"}, {"name": "seo"}]
+        aup = ["akismet/akismet.php", "hello.php", "vieux/vieux.php", "akismet/akismet.php"]
+        self.assertEqual(collect.compter_auto_maj(aup, pl), 2)
+
+    def test_sans_inventaire_ancien_compte(self):
+        self.assertEqual(collect.compter_auto_maj(["a/a.php", "b/b.php"], None), 2)
+        self.assertEqual(collect.compter_auto_maj(None, []), 0)
+
+
 class TestDigest(unittest.TestCase):
     def test_load_recent_ignore_ts_null(self):
         maintenant = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")

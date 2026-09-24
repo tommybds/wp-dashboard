@@ -250,6 +250,7 @@ function ouvrirPlus() {
       boutonFeuille({ label: 'Changements', ic: 'history', onSelect: aller('#changements') }),
       boutonFeuille({ label: 'Gestion', ic: 'server', onSelect: aller('#gestion') }),
       boutonFeuille({ label: 'Réglages', ic: 'settings', onSelect: aller('#reglages') }),
+      boutonFeuille({ label: 'Aide', ic: 'circle-help', onSelect: aller('#aide') }),
       boutonFeuille({ label: 'Journal des actions', ic: 'scroll-text', onSelect: cliquer('logbtn') }),
       boutonFeuille({
         label: 'Thème : ' + (THEMES.find(x => x[0] === themeCourant()) || THEMES[0])[1].toLowerCase(),
