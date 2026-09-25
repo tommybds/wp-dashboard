@@ -845,6 +845,12 @@ class TestCompterAutoMaj(unittest.TestCase):
         aup = ["akismet/akismet.php", "hello.php", "vieux/vieux.php", "akismet/akismet.php"]
         self.assertEqual(collect.compter_auto_maj(aup, pl), 2)
 
+    def test_objet_a_cles_trouees(self):
+        # après un retrait, wp option get --format=json rend un objet
+        pl = [{"name": "gravityforms"}, {"name": "redirection"}]
+        aup = {"0": "gravityforms/gravityforms.php", "2": "redirection/redirection.php", "5": "imagify/imagify.php"}
+        self.assertEqual(collect.compter_auto_maj(aup, pl), 2)
+
     def test_sans_inventaire_ancien_compte(self):
         self.assertEqual(collect.compter_auto_maj(["a/a.php", "b/b.php"], None), 2)
         self.assertEqual(collect.compter_auto_maj(None, []), 0)

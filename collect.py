@@ -471,7 +471,14 @@ def compter_auto_maj(aup, plugins_list):
     un site de 7 extensions. On ne retient que les entrées dont le slug (le
     répertoire, ou le fichier sans « .php ») figure dans l'inventaire ; sans
     inventaire, on garde l'ancien compte, faute de mieux.
+
+    Forme : une liste… tant qu'aucune entrée n'a été retirée. Après un retrait,
+    PHP garde des clés à trous et `wp option get --format=json` rend un OBJET
+    (`{"0": …, "2": …}`) : terrainnova affichait 0 extension en auto-MAJ au
+    lieu de 14. On prend les valeurs.
     """
+    if isinstance(aup, dict):
+        aup = list(aup.values())
     if not isinstance(aup, list):
         return 0
     if not isinstance(plugins_list, list):
@@ -763,7 +770,7 @@ def map_rest_inventory(entry, data, url=None, blog_id=None):
         site["themes_updates"] = to_int(d.get("themes_updates"))
         site["themes_list"] = None
     aup = d.get("auto_update_plugins")
-    if isinstance(aup, list):
+    if isinstance(aup, (list, dict)):
         site["plugins_auto_update"] = compter_auto_maj(aup, site.get("plugins_list"))
     else:
         site["plugins_auto_update"] = to_int(d.get("plugins_auto_update"), 0)
