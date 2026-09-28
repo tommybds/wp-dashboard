@@ -206,6 +206,7 @@ FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert
     (("backup_late",), "sauvegarde en retard", "sauvegardes en retard"),
     (("cert_expiring",), "certificat", "certificats"),
     (("admin_unknown",), "admin inconnu", "admins inconnus"),
+    (("viz_auto_update",), "écart après mise à jour auto", "écarts après mise à jour auto"),
 ]
 
 

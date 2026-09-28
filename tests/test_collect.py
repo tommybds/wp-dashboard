@@ -33,6 +33,8 @@ import collect            # noqa: E402
 import dashboard_config   # noqa: E402
 import dashlib            # noqa: E402
 import digest             # noqa: E402
+import viz_nuit           # noqa: E402
+import actions_server as A  # noqa: E402
 import phperrors          # noqa: E402
 import vulns              # noqa: E402
 
@@ -854,6 +856,64 @@ class TestCompterAutoMaj(unittest.TestCase):
     def test_sans_inventaire_ancien_compte(self):
         self.assertEqual(collect.compter_auto_maj(["a/a.php", "b/b.php"], None), 2)
         self.assertEqual(collect.compter_auto_maj(None, []), 0)
+
+
+class TestVizNuit(unittest.TestCase):
+    """Bilan des mises à jour automatiques de la nuit (viz_nuit.py + inc_viz_nuit)."""
+
+    def test_pages_en_ecart_regroupees(self):
+        rap = {"items": [
+            {"page": "Contact", "viewport": "Desktop", "status": "fail"},
+            {"page": "Contact", "viewport": "Mobile", "status": "fail"},
+            {"page": "Accueil", "viewport": "Desktop", "status": "ok"},
+            {"page": "Blog", "viewport": "Desktop", "status": "warn", "http_status": 404},
+            "pas un objet"]}
+        out = sorted(viz_nuit.pages_en_ecart(rap))
+        self.assertEqual(out, [("Blog", ["Desktop"], 404), ("Contact", ["Desktop", "Mobile"], None)])
+
+    def test_mise_a_jour_sans_effet(self):
+        now = time.time()
+        maintenant = time.strftime("%Y-%m-%d %H:%M", time.localtime(now - 1800))
+        with tempfile.TemporaryDirectory() as d:
+            chemin = os.path.join(d, "changes.jsonl")
+            with open(chemin, "w") as fh:
+                fh.write(json.dumps({"ts": maintenant, "domain": "a.fr", "kind": "plugin_update",
+                                     "severity": "info", "detail": "seo 1.0 → 1.1"}) + "\n")
+                fh.write(json.dumps({"ts": maintenant, "domain": "b.fr", "kind": "plugin_update",
+                                     "severity": "info", "detail": "gravityforms 1 → 2"}) + "\n")
+            with mock.patch.object(viz_nuit, "CHANGES_PATH", chemin):
+                vus = viz_nuit.elements_changes("a.fr", now - 7200)
+        self.assertEqual(vus, {"seo"})          # b.fr ne compte pas pour a.fr
+
+    def test_incidents_ecart_et_sans_effet(self):
+        now = time.time()
+        at = datetime.datetime.fromtimestamp(now - 3 * 3600, datetime.timezone.utc).isoformat()
+        data = {"sites": {"a.fr": {"server": "s1", "at": at, "nuits": 3, "items": ["gravityforms"],
+                                    "sans_effet": ["gravityforms"],
+                                    "ecarts": [{"page": "Contact", "formats": ["Desktop"], "http": None}]},
+                          "vieux.fr": {"server": "s1", "at": "2020-01-01T00:00:00+00:00",
+                                       "items": ["x"], "sans_effet": ["x"], "ecarts": []}}}
+        index = {"a.fr": ("s1", {"domain": "a.fr"}), "vieux.fr": ("s1", {"domain": "vieux.fr"})}
+        with mock.patch.object(A, "incident_json", return_value=data):
+            incs = A.inc_viz_nuit(index, now)
+        kinds = sorted(i["kind"] for i in incs)
+        self.assertEqual(kinds, ["auto_update_noop", "viz_auto_update"])
+        ecart = next(i for i in incs if i["kind"] == "viz_auto_update")
+        self.assertEqual((ecart["severity"], ecart["bucket"]), ("warning", "now"))
+        self.assertIn("Contact", ecart["detail"])
+        noop = next(i for i in incs if i["kind"] == "auto_update_noop")
+        self.assertEqual(noop["bucket"], "plan")
+        self.assertIn("gravityforms", noop["detail"])
+
+    def test_erreur_http_critique(self):
+        now = time.time()
+        at = datetime.datetime.fromtimestamp(now - 3600, datetime.timezone.utc).isoformat()
+        data = {"sites": {"a.fr": {"server": "s1", "at": at, "items": ["seo"], "sans_effet": [],
+                                    "ecarts": [{"page": "Blog", "formats": ["Desktop"], "http": 500}]}}}
+        with mock.patch.object(A, "incident_json", return_value=data):
+            incs = A.inc_viz_nuit({"a.fr": ("s1", {})}, now)
+        self.assertEqual([i["severity"] for i in incs], ["critical"])
+        self.assertIn("HTTP 500", incs[0]["detail"])
 
 
 class TestDigest(unittest.TestCase):

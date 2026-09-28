@@ -205,6 +205,8 @@ ALERTS_LOG = os.path.join(DATA, "alerts.log")
 ALERT_COOLDOWN = 24 * 3600  # une même clé d'alerte n'est renvoyée qu'après 24 h
 # Réglages généraux du dashboard (distincts des alertes, qui ont leur fichier).
 SETTINGS_PATH = os.path.join(DATA, "settings.json")
+# Bilan des mises à jour automatiques de la nuit, écrit par viz_nuit.py.
+VIZ_NUIT_PATH = os.path.join(DATA, "viz_nuit.json")
 CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 # Acquittements de la file « à traiter » : une entrée par identifiant
 # d'incident, écrite en 0600 comme tout ce qui vit dans data/ (elle cite des
@@ -5295,6 +5297,53 @@ def inc_backup(sites, rules, now):
     return out
 
 
+def inc_viz_nuit(index, now):
+    """Mises à jour automatiques de la nuit (data/viz_nuit.json, viz_nuit.py).
+
+    Deux incidents distincts, parce qu'ils ne se règlent pas pareil :
+      * `viz_auto_update` — VizProof a vu un écart ou une erreur HTTP après la
+        mise à jour : il faut regarder le site ;
+      * `auto_update_noop` — WordPress « met à jour » un élément dont la version
+        ne bouge pas (licence expirée, paquet refusé) : la mise à jour ne passera
+        jamais seule, et VizProof scanne chaque nuit pour rien.
+    Au-delà de 48 h le bilan est périmé : le script repasse chaque matin.
+    """
+    data = incident_json(VIZ_NUIT_PATH, {})
+    out = []
+    for cle, r in ((data or {}).get("sites") or {}).items():
+        if not isinstance(r, dict) or cle not in index:
+            continue
+        since = None
+        try:
+            since = datetime.datetime.fromisoformat(str(r.get("at")).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            pass
+        if since is None or now - since > 48 * 3600:
+            continue
+        server = r.get("server") or index[cle][0]
+        items = ", ".join(r.get("items") or []) or "?"
+        ecarts = [e for e in (r.get("ecarts") or []) if isinstance(e, dict)]
+        if ecarts:
+            http = any(e.get("http") for e in ecarts)
+            pages = ", ".join(str(e.get("page")) + (f" (HTTP {e['http']})" if e.get("http") else "") for e in ecarts)
+            out.append(make_incident(
+                "viz_auto_update", "critical" if http else "warning", cle,
+                f"Écart visuel après mise à jour automatique sur {cle}",
+                f"{items} → {pages}", site=cle, server=server, since=since, now=now,
+                link={"tab": "parc", "sub": ""},
+                extra={"items": r.get("items") or [], "pages": ecarts, "report_url": r.get("report_url") or ""}))
+        for item in r.get("sans_effet") or []:
+            out.append(make_incident(
+                "auto_update_noop", "warning", cle,
+                f"Mise à jour automatique sans effet sur {cle}",
+                f"{item} : WordPress la tente chaque nuit mais la version ne change pas "
+                "(licence expirée ou téléchargement refusé ?)",
+                site=cle, server=server, arg=str(item), since=since, now=now,
+                link={"tab": "parc", "sub": ""}, bucket="plan",
+                extra={"item": item, "nuits": r.get("nuits")}))
+    return out
+
+
 # Émetteurs qui renouvellent seuls, sans intervention humaine. Pour eux
 # l'échéance n'est pas l'information utile : elle ne se rapproche que si le
 # renouvellement automatique est déjà en panne. L'alerte ne dit donc pas
@@ -5434,6 +5483,7 @@ def incidents_snapshot(now=None):
     source("admins", lambda: inc_admins(sites, now))
     source("fleet_servers", lambda: inc_server_stale(servers, now))
     source("updraft", lambda: inc_backup(sites, rules, now))
+    source("viz_nuit", lambda: inc_viz_nuit(index, now))
     source("certs", lambda: inc_certs(index, rules, now))
     source("php_eol", lambda: inc_php_eol(sites, rules, now))
 

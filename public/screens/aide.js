@@ -164,6 +164,7 @@ function taches() {
       [b('Erreurs PHP'), ' — lecture des journaux des serveurs, toutes les 2 h.'],
       [b('Scan des fichiers'), ' — recherche de portes dérobées, chaque nuit à 3 h 20.'],
       [b('Vulnérabilités'), ' — mise à jour de la base publique et croisement, chaque jour à 6 h.'],
+      [b('Mises à jour de la nuit'), ' — verdict VizProof de toutes les pages et mises à jour « sans effet », chaque jour à 6 h 45.'],
       [b('Bilan Telegram'), ' — chaque jour à 8 h.'],
       [b('Rotation des journaux'), ' — le dimanche à 4 h 30.']),
     p('Aucune de ces tâches ne modifie un site.'));
