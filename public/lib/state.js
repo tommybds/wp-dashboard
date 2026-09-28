@@ -227,7 +227,7 @@ export function etatSite(d) {
   const p = d && d.probe;
   if (p && typeof p === 'object' && typeof p.ok === 'boolean') {
     const bouts = [];
-    if (p.status) bouts.push('HTTP ' + p.status);
+    if (p.status) bouts.push('HTTP ' + p.status + (p.protected ? ' (protégé par mot de passe)' : ''));
     if (p.ms) bouts.push(Math.round(p.ms) + ' ms');
     if (!p.ok && p.error) bouts.push(String(p.error).slice(0, 120));
     const quand = p.checked_at ? relTime(p.checked_at) : '';

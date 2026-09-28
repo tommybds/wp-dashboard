@@ -900,6 +900,7 @@ def probe_site(url, timeout=PROBE_TIMEOUT, max_redirects=PROBE_REDIRECTS):
     debut, cur, hops = str(url or ""), str(url or ""), 0
     opener = urllib.request.build_opener(_NoRedirect)
     statut, erreur, methode, get_essaye = None, "", "HEAD", False
+    protege = False
 
     # Borne dure : la chaîne HEAD puis la chaîne GET, chacune avec ses
     # redirections. Sans elle, un site qui renvoie sans cesse vers lui-même
@@ -938,6 +939,13 @@ def probe_site(url, timeout=PROBE_TIMEOUT, max_redirects=PROBE_REDIRECTS):
                         break
                     cur, hops, statut = urllib.parse.urljoin(cur, loc), hops + 1, None
                     continue
+                # Préprod derrière une authentification HTTP (Basic/Digest) : le
+                # 401 AVEC son en-tête WWW-Authenticate prouve que le serveur
+                # répond et sert le site — il demande seulement un mot de passe.
+                # Sans cet en-tête, un 401 reste une anomalie.
+                if e.code == 401 and e.headers and e.headers.get("WWW-Authenticate"):
+                    protege, erreur = True, ""
+                    break
                 if not get_essaye and methode == "HEAD" and e.code >= 400:
                     methode, get_essaye, statut, cur = "GET", True, None, debut
                     hops = 0
@@ -960,8 +968,8 @@ def probe_site(url, timeout=PROBE_TIMEOUT, max_redirects=PROBE_REDIRECTS):
         erreur, statut = erreur or f"aucune réponse en {etapes} étapes", None
 
     ms = int((time.time() - t0) * 1000)
-    ok = bool(statut is not None and 200 <= int(statut) < 400 and not erreur)
-    return {"ok": ok, "status": statut, "ms": ms,
+    ok = bool(statut is not None and (200 <= int(statut) < 400 or protege) and not erreur)
+    return {"ok": ok, "status": statut, "ms": ms, "protected": protege,
             "error": erreur or ("" if ok else (f"réponse HTTP {statut}" if statut else "injoignable")),
             "checked_at": probe_now()}
 

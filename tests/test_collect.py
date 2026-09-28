@@ -1111,6 +1111,21 @@ class TestSondeHttp(unittest.TestCase):
         self.assertEqual(res["status"], 500)
         self.assertIn("500", res["error"])
 
+    def test_preprod_protegee_par_mot_de_passe(self):
+        """401 + WWW-Authenticate : le serveur répond, il demande un mot de passe."""
+        srv = self.servir(lambda m, p: (401, {"WWW-Authenticate": 'Basic realm="preprod"'}, b""))
+        res = collect.probe_site(srv.url)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["protected"])
+        self.assertEqual((res["status"], res["error"]), (401, ""))
+
+    def test_401_sans_demande_d_authentification(self):
+        srv = self.servir(lambda m, p: (401, {}, b""))
+        res = collect.probe_site(srv.url)
+        self.assertFalse(res["ok"])
+        self.assertFalse(res["protected"])
+        self.assertIn("401", res["error"])
+
     def test_repli_get_quand_head_est_refuse(self):
         """Beaucoup d'hébergements répondent 405 à un HEAD et servent le GET."""
         srv = self.servir(lambda m, p: (405, {}, b"") if m == "HEAD" else (200, {}, b"ok"))
