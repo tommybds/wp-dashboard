@@ -208,8 +208,9 @@ export function vizCellEl(s) {
       b.onclick = ev => { ev.stopPropagation(); openVizConnect([s]); };
       frag.append(b);
     }
-    const a = lienEl(vizAdminUrl(s), 'wp-admin');
-    if (a) frag.append(a);
+    // Le lien wp-admin n'est plus répété ici : il élargissait la colonne de
+    // 110 px et poussait le tableau du Parc hors de l'écran. La modale de
+    // connexion et la page du site le proposent.
     return frag;
   }
   return h('span', { class: 'vizwrap' },

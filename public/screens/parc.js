@@ -28,7 +28,7 @@ import { setIncidentCount } from '../components/shell.js';
 import { SEVLABEL } from './securite.js';
 import { ouvrirFeuille, boutonFeuille } from '../components/sheet.js';
 import { openVizConnect, vizCellEl, vizInfo, vizOf, vizVal } from '../components/viz.js';
-import { estNow } from '../components/incident.js';
+import { estNow, sourceIncompleteEl } from '../components/incident.js';
 import { incidentLigne, cleDeSite, estMajTheme, nomTheme } from './site.js';
 
 /* ---- colonnes -------------------------------------------------------------
@@ -44,7 +44,7 @@ const COLS = [
   { k: 'viz', lbl: 'VizProof' },
   { k: 'php', lbl: 'PHP' },
   { k: 'backup', lbl: 'Sauvegarde' },
-  { k: 'vuln', lbl: 'Vulnérabilités' },
+  { k: 'vuln', lbl: 'Failles' },
   { k: 'server', lbl: 'Serveur' },
   { k: 'err', lbl: 'Erreurs' },
 ];
@@ -376,9 +376,7 @@ function renderTodo() {
         '+ ' + reste + ' autre' + (reste > 1 ? 's' : ''), h('span', { class: 'sep', text: ' · ' }), 'voir tout'));
     }
   }
-  INCERR.forEach(e => liste.append(h('p', { class: 'hint hint-tight' },
-    h('span', { class: 'pill warn', text: 'source incomplète' }), ' ',
-    h('span', { class: 'muted small', text: (e.source || '?') + ' : ' + (e.error || '') }))));
+  INCERR.forEach(e => liste.append(sourceIncompleteEl(e)));
 
   bt.onclick = () => {
     const o = liste.hidden;

@@ -988,7 +988,7 @@ function renderInstalls() {
        `cartoffset.sumoto.fr` est une préprod que son nom ne trahit pas, un
        `test-pilates.fr` de client serait un vrai site : la main tranche. */
     const env = h('select', { class: 'w-xs', 'aria-label': 'Environnement de ' + s.domain },
-      h('option', { value: 'auto', text: 'auto (d’après le nom)' }),
+      h('option', { value: 'auto', text: 'automatique', title: 'déduit du nom du site (dev., preprod., staging.…)' }),
       h('option', { value: 'prod', text: 'production' }),
       h('option', { value: 'preprod', text: 'préproduction' }));
     env.value = ov.preprod === true ? 'preprod' : ov.preprod === false ? 'prod' : 'auto';

@@ -97,6 +97,10 @@
 
   --ok:#1A7454;      --ok-bg:#E1F3EA;
   --warn:#8E6109;    --warn-bg:#FBF0D3;
+  /* Trait de gravité (bord gauche d'une ligne) : l'ambre du TEXTE, sombre pour
+     tenir 4.5:1, se lisait brun olive en filet de 3 px. Un filet n'est pas du
+     texte : il peut prendre la teinte vive. */
+  --warn-edge:#D39A12;
   --err:#B23B36;     --err-bg:#F9E2E0;
   --neutral-bg:#EEF1F4;    /* fond des chips « inconnu » et du code */
   --code-bg:#EEF1F4;
@@ -149,7 +153,7 @@
     --line:#2A343E; --line-2:#222B34;
     --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B; --on-accent:#0F1418;
     --ok:#5CC29A;   --ok-bg:#15302A;
-    --warn:#E0B24C; --warn-bg:#3A2E12;
+    --warn:#E0B24C; --warn-bg:#3A2E12; --warn-edge:#E0B24C;
     --err:#EF8580;  --err-bg:#3D1F1E;
     --neutral-bg:#1D252D; --code-bg:#1D252D;
     --overlay:rgba(0,0,0,.6);
@@ -166,7 +170,7 @@
   --line:#2A343E; --line-2:#222B34;
   --accent:#6FA8DE; --accent-ink:#A9CCEE; --accent-bg:#1B2A3B; --on-accent:#0F1418;
   --ok:#5CC29A;   --ok-bg:#15302A;
-  --warn:#E0B24C; --warn-bg:#3A2E12;
+  --warn:#E0B24C; --warn-bg:#3A2E12; --warn-edge:#E0B24C;
   --err:#EF8580;  --err-bg:#3D1F1E;
   --neutral-bg:#1D252D; --code-bg:#1D252D;
   --overlay:rgba(0,0,0,.6);

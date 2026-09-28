@@ -493,12 +493,25 @@ function renderTendance(hist) {
     MESURES.forEach(m => { COURBES[m.k] = creerCourbe(m); });
     mount(charts, h('div', { class: 'histgrid' }, MESURES.map(m => COURBES[m.k].noeud)));
   }
+  // Un trait vertical par rupture, c'était un trait par relevé dès que le
+  // nombre de sites oscillait (un site qui disparaît et revient d'une collecte
+  // à l'autre) : un moiré qui mangeait la courbe. On ne trace que les ruptures
+  // espacées d'au moins 4 % de la largeur, et plus aucune au-delà de six — la
+  // courbe « Sites suivis » dit alors elle-même que le périmètre bouge. Le
+  // survol, lui, continue de nommer chaque rupture.
+  const traits = [];
+  RUPTURES.forEach(r => {
+    const x = pctX(fx((HIST_MS[r.i - 1] + HIST_MS[r.i]) / 2));
+    if (x < 0 || x > 100) return;
+    if (!traits.length || x - traits[traits.length - 1].x >= 4) traits.push({ x, txt: r.txt });
+  });
+  const aTracer = traits.length > 6 ? [] : traits;
   MESURES.forEach(m => {
     const c = COURBES[m.k];
     c.plot.querySelectorAll('.spk-mark').forEach(x => x.remove());
-    RUPTURES.forEach(r => c.plot.insertBefore(h('div', {
+    aTracer.forEach(r => c.plot.insertBefore(h('div', {
       class: 'spk-mark', title: r.txt,
-      style: { left: pctX(fx((HIST_MS[r.i - 1] + HIST_MS[r.i]) / 2)) + '%' },
+      style: { left: r.x + '%' },
     }), c.curseur));
     animer(c, HIST_MS, hist.map(x => x[m.k] ?? 0));
     [T0, (T0 + T1) / 2, T1].forEach((t, i) => { c.axe[i].textContent = fmtMs(t, true); });

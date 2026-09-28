@@ -5125,8 +5125,12 @@ def inc_vulns(index, rules, now):
             else:
                 action = {"label": f"MAJ {comp} → {vers}",
                           "act": "plugin_update", "arg": comp}
+            # La gravité en français : « critical corrigeable » s'affichait tel
+            # quel dans la file et dans les alertes Telegram.
+            grav = {"critical": "critique", "high": "élevée", "medium": "moyenne",
+                    "low": "faible"}.get(str(v.get("severity") or ""), str(v.get("severity") or ""))
             titre = (f"{'thème ' if genre == 'theme' else ''}{comp} "
-                     f"{v.get('version') or ''} · {v.get('severity')} corrigeable")
+                     f"{v.get('version') or ''} · faille {grav} corrigeable")
             detail = str(v.get("title") or "vulnérabilité")
             if v.get("cve"):
                 detail += f" ({v['cve']})"

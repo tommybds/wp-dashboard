@@ -16,6 +16,7 @@
    sous-onglet dans l'application : `buildSubtabs` et `SUBSLUG` ont disparu, et
    tout sous-slug d'URL désigne une ancre. */
 
+import { initAides } from './components/aides.js';
 import { esc as H } from './lib/dom.js';
 import { initIcons } from './lib/icons.js';
 import { stopPoll } from './lib/poll.js';
@@ -28,7 +29,7 @@ import { initTips } from './components/tip.js';
 import { initJob, setSecRefresh, reouvrirBulk } from './components/job.js';
 import { setOuvreurs } from './components/toast.js';
 import {
-  initShell, loadSched, updMeta, setScreenTitle, majCompteurs, majCompteursServeur, pollCollect,
+  initShell, loadSched, updMeta, setScreenTitle, setMetaSite, majCompteurs, majCompteursServeur, pollCollect,
 } from './components/shell.js';
 import { initSearch, ouvrirRecherche, raccourciLabel } from './components/search.js';
 import { setVizSettings } from './components/viz.js';
@@ -363,6 +364,7 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   masquerPages();
   document.getElementById('page-' + d.page).classList.add('active');
   setScreenTitle(d.titre);
+  setMetaSite(null);
   const premier = !RENDUES.has(route);
   RENDUES.add(route);
   if (route === 'gestion') loadMgmt();
@@ -447,6 +449,7 @@ async function boot() {
   await initIcons('icons.svg?v=' + V);
 
   initTips();
+  initAides();
   initModals();
   // La feuille basse est une couche comme les autres pour Échap ; c'est ici
   // qu'on le déclare, pour ne pas créer de cycle sheet ↔ confirm ↔ menu.

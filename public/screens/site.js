@@ -34,6 +34,7 @@ import { erreurPhpEl, incidentEl } from '../components/incident.js';
 import { askConfirm, askInfo, askOpen } from '../components/confirm.js';
 import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '../components/rollback.js';
 import { NOTIF } from '../components/toast.js';
+import { setMetaSite, setScreenTitle } from '../components/shell.js';
 import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
@@ -254,17 +255,18 @@ function entete(s) {
     text: s.via === 'rest' ? 'via REST' : 'via SSH',
   }));
 
+  /* Le nom du site et sa méta vivent dans l'en-tête d'écran, qui colle en haut
+     pendant le défilement : le domaine s'écrivait trois fois (en-tête, fil
+     d'Ariane, titre de page), et l'en-tête affichait la méta du PARC. « Parc »
+     reste surligné dans la barre latérale pour le chemin du retour. */
   const nom = nomDeSite(s);
-  const fil = h('nav', { class: 'fil', 'aria-label': "Fil d'Ariane" },
-    h('a', { href: '#parc', text: 'Parc' }),
-    h('span', { class: 'sep', text: '›' }),
-    h('span', { 'aria-current': 'page', text: nom }));
+  setScreenTitle(nom);
+  setMetaSite(meta);
 
   /* Le bloc de statut live suit la MÊME règle que la colonne État du Parc :
      Kuma s'il surveille ce site, sinon la sonde du dashboard, et l'infobulle
      dit laquelle des deux a parlé. */
   const titre = h('div', { class: 'sitetitle' },
-    h('h1', { text: nom }),
     chipEtat(e),
     pucePreprod(s),
     s._stale ? chipEl('données du ' + (s._srvAt || 'relevé précédent'), 'warn', {
@@ -272,8 +274,8 @@ function entete(s) {
         + (s._srvErr ? ' : ' + s._srvErr : '') + ' — les chiffres datent du relevé précédent.',
     }) : null);
 
-  return h('header', { class: 'sitehead' },
-    fil, titre, meta,
+  return h('div', { class: 'sitehead' },
+    titre,
     h('div', { class: 'siteact' }, actionPrincipale(s)));
 }
 
@@ -558,7 +560,10 @@ function renderVulnsSite() {
   const n = v ? v.count : null;
   const worst = v ? v.worst : '';
   cell.className = 'ib' + (n === null ? '' : (worst === 'critical' || worst === 'high' ? ' err' : n ? ' warn' : ' ok'));
-  cell.querySelector('.ib-v').textContent = n === null ? '…' : String(n || 0);
+  // Le chiffre reste dans son <b> : c'est lui que colore `.ib.err .ib-v b`.
+  // Réécrire le texte de `.ib-v` effaçait le <b>, et « 3 · élevée » s'affichait
+  // en noir à côté d'un PHP en ambre — la plus grave des deux, la moins vue.
+  cell.querySelector('.ib-v').replaceChildren(h('b', { text: n === null ? '…' : String(n || 0) }));
   cell.querySelector('.ib-s').textContent = n === null ? 'analyse…' : (n ? (SEVLABEL[worst] || worst || 'connues') : 'aucune');
 }
 

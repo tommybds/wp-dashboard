@@ -27,7 +27,7 @@ import { h, mount, occupe } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
 import { debounce } from '../lib/format.js';
 import { chipEl } from '../components/chip.js';
-import { estNow, incidentEl, kindLabel } from '../components/incident.js';
+import { estNow, incidentEl, kindLabel, sourceIncompleteEl } from '../components/incident.js';
 import { setIncidentCount } from '../components/shell.js';
 import { siteParCle, cleDeSite, lancerSur } from './site.js';
 
@@ -204,9 +204,7 @@ function render() {
 
   // Sources en échec : dites AVANT la liste — une file vide n'a pas le même
   // sens si l'une de ses sources n'a pas répondu.
-  mount('inc-errors', ERREURS.map(e => h('p', { class: 'hint hint-tight' },
-    chipEl('source incomplète', 'warn'), ' ',
-    h('span', { class: 'muted small', text: (e.source || '?') + ' : ' + (e.error || '') }))));
+  mount('inc-errors', ERREURS.map(sourceIncompleteEl));
 
   if (!CHARGE) { mount(body, h('p', { class: 'hint hint-tight', text: 'chargement…' })); return; }
   const ack = blocAcquittes();
@@ -221,9 +219,12 @@ function render() {
     return;
   }
   const vus = filtres();
-  cnt.textContent = vus.length === INCIDENTS.length
-    ? vus.length + ' incident' + (vus.length > 1 ? 's' : '')
-    : vus.length + ' / ' + INCIDENTS.length;
+  // Le compte dit les DEUX blocs séparément : « 10 incidents » à côté d'une
+  // pastille à 6 laissait croire que l'un des deux chiffres était faux.
+  const nNow = vus.filter(estNow).length, nPlan = vus.length - nNow;
+  cnt.textContent = [nNow + ' à traiter', nPlan ? nPlan + ' à planifier' : '']
+    .filter(Boolean).join(' · ')
+    + (vus.length === INCIDENTS.length ? '' : ' (filtre : ' + vus.length + ' / ' + INCIDENTS.length + ')');
   if (!vus.length) {
     mount(body, h('p', { class: 'hint hint-tight', text: 'aucun incident ne correspond au filtre.' }), ack);
     return;

@@ -350,6 +350,14 @@ function renderVulnsParSite(filtres) {
   }
   let nGrp = 0;
   const noeuds = [];
+  // La gravité d'un site se déduit des failles AFFICHÉES : la valeur `worst`
+  // du rapport vaut pour toutes ses failles, et pouvait contredire l'en-tête
+  // ou le filtre de gravité. Même raison pour l'ordre : le plus grave d'abord,
+  // puis le plus chargé.
+  const pire = f => f.reduce((m, v) => ((SEVRANK[v.severity] || 0) > (SEVRANK[m] || 0) ? v.severity : m), '');
+  filtres = filtres.map(s => ({ ...s, worst: pire(s.findings) }))
+    .sort((a, b) => (SEVRANK[b.worst] || 0) - (SEVRANK[a.worst] || 0)
+      || b.findings.length - a.findings.length || String(a.domain).localeCompare(String(b.domain)));
   filtres.forEach(s => {
     const grp = grouperParExtension(s.findings);
     nGrp += grp.length;
@@ -372,7 +380,7 @@ function renderVulnsParSite(filtres) {
         h('b', { text: e.component }), kindChip(e.kind),
         h('span', { class: 'muted', text: e.version || '' }),
         chipEl(pluriel(e.n, 'faille'), 'mut'),
-        e.update_to ? chipEl('MAJ ' + e.update_to, 'ok') : chipEl('aucun correctif', 'err'),
+        e.update_to ? chipEl('correctif ' + e.update_to, 'mut', { point: false }) : chipEl('aucun correctif', 'err'),
         refs.length ? cves : null));
     });
     const tete = entetePliable(ouvert, el => {
@@ -385,7 +393,8 @@ function renderVulnsParSite(filtres) {
       lienSite(s.domain),
       sevChip(s.worst),
       h('span', { class: 'muted small', text: pluriel(grp.length, 'composant') + ' · ' + pluriel(s.findings.length, 'faille') }),
-      corrigeables ? chipEl(pluriel(corrigeables, 'corrigeable'), 'ok') : chipEl('aucun correctif', 'mut'));
+      corrigeables ? chipEl(pluriel(corrigeables, 'corrigeable') + ' par une MAJ', 'mut', { point: false })
+        : chipEl('aucun correctif', 'err'));
     noeuds.push(tete, liste);
   });
   cnt.textContent = nGrp ? pluriel(filtres.length, 'site') + ' · ' + pluriel(nGrp, 'composant') : '';
@@ -412,7 +421,7 @@ function renderVulnsParExtension(filtres) {
         sevChip(d.worst), lienSite(d.domain),
         h('span', { class: 'muted', text: d.version || '' }),
         chipEl(pluriel(d.n, 'faille'), 'mut'),
-        d.update_to ? chipEl('MAJ ' + d.update_to, 'ok') : chipEl('aucun correctif', 'err'),
+        d.update_to ? chipEl('correctif ' + d.update_to, 'mut', { point: false }) : chipEl('aucun correctif', 'err'),
         d.via === 'rest'
           ? chipEl('REST', 'mut', { title: 'site géré sans SSH : action distante indisponible' })
           : null));
@@ -539,7 +548,7 @@ async function loadVulns(force) {
       mount(sum,
         chipEl(`${VULNS.sites_affected}/${VULNS.sites_scanned} sites — ${bits.join(', ') || '—'}`,
           t.critical ? 'err' : t.high ? 'warn' : 'mut'), ' ',
-        chipEl(corrigeables + ' corrigeables par une MAJ', 'ok'), ' ',
+        chipEl(corrigeables + ' corrigeables par une MAJ', 'mut', { point: false }), ' ',
         chipEl(sansFix + ' sans correctif', 'mut'));
     } else mount(sum, VULNS.sites_scanned ? chipEl('parc sain', 'ok') : null);
     renderVulns();
@@ -1151,7 +1160,7 @@ function renderCerts() {
       h('td', {}, chipEl(d === null || d === undefined ? '?' : d + ' j', niv)),
       h('td', { class: 'sub', text: x.valid_to || '' }),
       h('td', {}, x.issuer
-        ? chipEl(x.issuer, certAuto(x) ? 'ok' : 'mut', { point: false,
+        ? chipEl(x.issuer, 'mut', { point: false,
             title: certAuto(x)
               ? 'renouvellement automatique : sous 30 jours, il est en échec'
               : 'renouvellement manuel : la date compte' })

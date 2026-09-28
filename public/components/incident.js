@@ -27,8 +27,9 @@ import { chipEl } from '../components/chip.js';
 import { askInfo, askOpen } from '../components/confirm.js';
 import { NOTIF } from '../components/toast.js';
 
-/* `kind` → ce que la ligne dit à un humain. Un type inconnu garde sa clé :
-   mieux vaut un mot technique qu'une ligne muette. */
+/* `kind` → ce que la ligne dit à un humain. Un type inconnu (backend plus
+   récent que l'interface) se lit « autre » : sa clé technique (`type_inconnu`)
+   n'apprenait rien à l'écran — elle reste dans l'infobulle de la chip. */
 const KINDS = {
   down: 'site injoignable',
   php_fatal: 'erreur PHP fatale',
@@ -43,7 +44,68 @@ const KINDS = {
   scan_suspect: 'fichier suspect',
 };
 
-export const kindLabel = k => KINDS[k] || String(k || 'incident');
+export const kindLabel = k => KINDS[k] || (k ? 'autre' : 'incident');
+
+/* ---- le titre sans le nom du site ------------------------------------------
+   Le serveur écrit des titres autonomes (« Sauvegarde en retard sur
+   site-03.fr »), lisibles dans une alerte Telegram. Dans une ligne qui NOMME
+   déjà le site juste avant, ou sur la page de ce site, le domaine se lisait
+   deux fois. On le retire des tournures connues ; une tournure inconnue garde
+   son titre entier plutôt que d'être mutilée. */
+function echapRe(t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function titreSansCible(titre, cible) {
+  const brut = String(titre || ''), c = String(cible || '');
+  if (!c || !brut.includes(c)) return brut;
+  const e = echapRe(c);
+  const t = brut
+    .replace(new RegExp('^(Serveur|Site)\\s+' + e + '\\s+'), '$1 ')
+    .replace(new RegExp('^' + e + '\\s*(?::|—|-)?\\s*'), '')
+    .replace(new RegExp('\\s*(?:—|-|:)\\s*' + e + '$'), '')
+    .replace(new RegExp('\\s+(?:sur|de|du site|pour)\\s+' + e + '(?=\\s|$)'), '')
+    .trim();
+  if (!t || t.includes(c)) return brut;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/* ---- une source de la file qui n'a pas répondu ----------------------------
+   Elle se DIT — une file vide n'a pas le même sens si l'une de ses sources n'a
+   pas répondu — mais en français : « certs : RuntimeError: docker exec:
+   conteneur uptime-kuma absent » s'affichait tel quel. L'exception reste
+   lisible dans la bulle « ? », pour qui doit la diagnostiquer. */
+const SOURCES = {
+  fleet: 'inventaire du parc', disponibilite: 'disponibilité des sites',
+  php_errors: 'erreurs PHP', vulns: 'vulnérabilités', vulns_sans_correctif: 'vulnérabilités',
+  checksums: 'intégrité du cœur', scan: 'scan des fichiers', admins: 'administrateurs',
+  fleet_servers: 'serveurs', updraft: 'sauvegardes', viz_nuit: 'contrôle visuel de la nuit',
+  certs: 'certificats', php_eol: 'versions de PHP', counters: 'compteurs', 'réseau': 'réseau',
+};
+
+function causeLisible(err) {
+  const e = String(err || '');
+  if (/uptime-kuma|kuma/i.test(e) && /absent|no such container|not running|introuvable/i.test(e)) {
+    return 'Uptime Kuma ne répond pas (conteneur introuvable)';
+  }
+  if (/file indisponible/.test(e)) return 'le serveur du dashboard ne répond pas';
+  if (/timed? ?out|timeout|délai/i.test(e)) return 'délai de réponse dépassé';
+  if (/FileNotFoundError|No such file/i.test(e)) return 'fichier de données absent (analyse jamais lancée ?)';
+  if (/JSONDecodeError|Expecting value/i.test(e)) return 'fichier de données illisible';
+  if (/Permission denied|PermissionError/i.test(e)) return 'accès refusé au fichier de données';
+  if (/ConnectionRefused|Connection refused/i.test(e)) return 'connexion refusée';
+  return 'lecture impossible';
+}
+
+export function sourceIncompleteEl(e) {
+  const src = String((e && e.source) || '');
+  const brut = String((e && e.error) || '');
+  return h('p', { class: 'hint hint-tight' },
+    chipEl('source incomplète', 'warn'), ' ',
+    h('span', { class: 'muted small', text: (SOURCES[src] || src || 'source inconnue') + ' : ' + causeLisible(brut) }),
+    brut ? h('span', {
+      class: 'info', role: 'button', tabindex: '0', 'data-tip': brut,
+      'aria-label': 'Erreur technique', text: '?',
+    }) : null);
+}
 
 const FATALES = /^(Fatal error|Parse error)$/;
 
@@ -480,12 +542,19 @@ export function incidentEl(inc, {
     count: x.count || 0, first: x.first || '', last: x.last || '',
     trace: x.trace, tronquee: !!x.trace_truncated, extra: x,
   }, boutonsAcquittement(inc, { onAck, acquitte }));
+  // Le site (ou le serveur) est nommé avant le titre, ou c'est la page du site :
+  // le titre n'a pas à le répéter. Sur l'écran Incidents, la chip de type dit
+  // souvent déjà tout le titre (« sauvegarde en retard ») : on ne l'écrit
+  // alors qu'une fois.
+  let titre = titreSansCible(inc.title || '', inc.site || inc.server || '');
+  const kl = kindLabel(inc.kind).toLowerCase(), tl = titre.toLowerCase();
+  if (chipKind && tl && (tl === kl || kl.endsWith(tl))) titre = '';
   const resume = [
     h('div', { class: 'inc-m' },
       h('div', { class: 'inc-t' },
-        chipKind ? chipEl(kindLabel(inc.kind), 'mut') : null,
+        chipKind ? chipEl(kindLabel(inc.kind), 'mut', { title: KINDS[inc.kind] ? '' : String(inc.kind || '') }) : null,
         siteEl,
-        h('span', { class: 'inc-h', text: inc.title || '' })),
+        titre ? h('span', { class: 'inc-h', text: titre }) : null),
       inc.detail ? h('div', { class: 'muted small inc-d', text: inc.detail }) : null,
       bandeauAck(inc)),
     quand ? h('span', {

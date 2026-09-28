@@ -103,15 +103,37 @@
    pensait pas à les ouvrir. Ils passent donc à la taille d'un vrai contrôle
    de navigation — texte à 13 px, hauteur doublée, et un onglet actif qui se
    voit d'un bout à l'autre de la page. */
+/* RÈGLE DE FORME (une seule, tenue partout) : la PILULE est réservée aux
+   chips d'état, qui ne se cliquent pas pour agir. Tout contrôle — bouton,
+   onglet, sommaire, compteur-filtre, sélecteur de période — prend le rayon de
+   contrôle (`--r-ctl`). Les grosses pilules pleines de 40 px juraient avec les
+   boutons à coins droits qui les entouraient.
+
+   Deux formes d'onglets, selon leur rôle :
+   - `role="tablist"` (les volets de la page site) : onglets SOULIGNÉS, posés
+     sur un filet — ils commandent tout ce qui suit, sans peser plus que le
+     titre ;
+   - `role="group"` (période des courbes, filtre de l'historique) : un
+     sélecteur SEGMENTÉ compact, parce que c'est un réglage, pas une
+     navigation. */
 .tabs{display:flex;gap:var(--s-8);flex-wrap:wrap;margin:0 0 var(--s-16)}
-.tab{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;
-  border:1px solid var(--line);background:var(--surface);
-  color:var(--muted);border-radius:var(--r-pill);cursor:pointer;
+.tab{display:inline-flex;align-items:center;gap:6px;
+  border:0;background:none;color:var(--muted);cursor:pointer;
   font-family:var(--f-display);font-size:var(--t-13);font-weight:500;white-space:nowrap;
   transition:background .12s ease,border-color .12s ease,color .12s ease}
-.tab:hover{border-color:var(--accent);color:var(--ink)}
-.tab.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent);
-  font-weight:600}
+.tab:hover{color:var(--ink)}
+
+.tabs[role="tablist"]{gap:var(--s-4);border-bottom:1px solid var(--line)}
+.tabs[role="tablist"] .tab{padding:9px var(--s-12) 8px;margin-bottom:-1px;
+  border-bottom:2px solid transparent;border-radius:var(--r-ctl) var(--r-ctl) 0 0}
+.tabs[role="tablist"] .tab:hover{background:var(--surface-2)}
+.tabs[role="tablist"] .tab.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+
+.tabs[role="group"]{display:inline-flex;flex-wrap:nowrap;gap:0;padding:2px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-ctl)}
+.tabs[role="group"] .tab{padding:3px 10px;font-size:var(--t-12);border-radius:var(--r-ctl)}
+.tabs[role="group"] .tab.active{background:var(--surface);color:var(--ink);font-weight:600;
+  box-shadow:0 0 0 1px var(--line)}
 /* Pastille d'état d'un onglet (VizProof) : elle doit se lire sur le fond de
    l'onglet ACTIF comme sur celui des autres, d'où la couleur portée par le
    texte et non par le fond seul. */
@@ -146,7 +168,7 @@
   border-top:1px solid var(--line-2);border-left:3px solid var(--line)}
 .inc:first-child{border-top:0}
 .inc.err{border-left-color:var(--err)}
-.inc.warn{border-left-color:var(--warn)}
+.inc.warn{border-left-color:var(--warn-edge)}
 /* « À planifier » : la MÊME ligne, sans le trait de gravité. Une section entière
    en rouge crie autant que la file d'urgences, et c'est justement ce qu'on en a
    sorti. */
@@ -206,7 +228,7 @@
 /* Compteurs cliquables : une ligne, pas six cartes. */
 .counters{display:flex;gap:var(--s-4);flex-wrap:wrap;margin-bottom:var(--s-12)}
 .cnt{display:flex;align-items:baseline;gap:6px;background:var(--surface);
-  border:1px solid var(--line);border-radius:var(--r-pill);padding:3px 12px;cursor:pointer}
+  border:1px solid var(--line);border-radius:var(--r-ctl);padding:3px 10px;cursor:pointer}
 .cnt:hover{border-color:var(--accent)}
 .cnt.sel{border-color:var(--accent);background:var(--accent-bg);color:var(--accent-ink)}
 .cnt b{font-family:var(--f-display);font-size:var(--t-16);font-variant-numeric:tabular-nums}
@@ -261,6 +283,18 @@
 .scard-vide{padding:var(--s-16);color:var(--muted);font-size:var(--t-13);
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r-surf)}
 
+/* ---- l'état normal ne se peint pas -----------------------------------------
+   Dans la liste des sites, presque chaque cellule était une chip colorée, y
+   compris pour dire « ok » ou « en ligne » : trois sites injoignables pesaient
+   visuellement autant que quinze sites sains. Ici, l'état normal et l'inconnu
+   perdent leur fond — il reste le point, qui garde la couleur de l'état, et le
+   libellé en texte discret. Seuls les écarts (attention, critique) gardent un
+   aplat, et sautent donc aux yeux. */
+#tbl td .chip.ok,#tbl td .chip.mut,#tbl td .pill.ok,#tbl td .pill.mut,
+.scard .chip.ok,.scard .pill.ok,.scard .pill.mut{background:none;padding-left:0;padding-right:0}
+#tbl td .chip.ok,#tbl td .pill.ok,.scard .chip.ok,.scard .pill.ok{color:var(--ink-2)}
+#tbl td .chip.ok>.pt,.scard .chip.ok>.pt{background:var(--ok)}
+
 .vizrun{text-decoration:none;vertical-align:middle}
 .vizrun:hover{text-decoration:none}
 /* La colonne VizProof tient sur UNE ligne : la pastille de scan renvoyée
@@ -269,17 +303,16 @@
 
 /* ---- page site -------------------------------------------------------------
    En-tête, bandeau d'indicateurs (label/valeur, pas des cartes), onglets. */
-.sitehead{display:grid;grid-template-columns:1fr auto;gap:var(--s-4) var(--s-12);
-  align-items:start;margin-bottom:var(--s-12)}
-.fil{grid-column:1;font-size:var(--t-12);color:var(--muted)}
-.fil .sep{margin:0 5px;opacity:.6}
-.sitetitle{grid-column:1;display:flex;align-items:center;gap:var(--s-8);flex-wrap:wrap}
-.sitetitle h1{font-size:var(--t-26);letter-spacing:-.015em}
-.sitemeta{grid-column:1;font-size:var(--t-12);color:var(--muted);
-  display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-.sitemeta .sep{opacity:.45}
-.siteact{grid-column:2;grid-row:1 / span 3;display:flex;align-items:center;gap:var(--s-8);
-  justify-content:flex-end;flex-wrap:wrap}
+/* Le nom du site et sa méta sont dans l'en-tête d'écran (collant) : la page
+   s'ouvre sur l'état live et l'action principale, sur une seule ligne. */
+.sitehead{display:flex;align-items:center;justify-content:space-between;gap:var(--s-8) var(--s-12);
+  flex-wrap:wrap;margin-bottom:var(--s-12)}
+.sitetitle{display:flex;align-items:center;gap:var(--s-8);flex-wrap:wrap;min-width:0}
+.siteact{display:flex;align-items:center;gap:var(--s-8);justify-content:flex-end;flex-wrap:wrap}
+/* Méta du site posée dans l'en-tête à la place de celle du parc. */
+#meta.meta-site{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+#meta.meta-site .sep{opacity:.45;margin:0}
+#meta.meta-site code{font-size:var(--t-12)}
 
 .iband{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;
   background:var(--line-2);border:1px solid var(--line);border-radius:var(--r-surf);
@@ -475,9 +508,15 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
   .page{padding:var(--s-12) var(--s-12) calc(76px + env(safe-area-inset-bottom))}
   .shead{padding:var(--s-8) var(--s-12);gap:var(--s-8);row-gap:var(--s-4)}
   .shead h1{font-size:var(--t-16)}
-  /* Titre + méta sur deux lignes, la méta passe à la ligne en entier. */
-  .shead-t{flex:1 1 100%;order:-1}
-  .shead .meta{white-space:normal}
+  /* Titre et boutons sur UNE ligne, méta tronquée sur une ligne dessous :
+     sur deux rangées (titre, puis boutons seuls), l'en-tête collant mangeait
+     120 px de l'écran. La méta complète reste dans l'infobulle et sur Parc. */
+  .shead{flex-wrap:nowrap}
+  .shead-t{flex:1 1 0;min-width:0}
+  .shead h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .shead .meta{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #meta.meta-site{flex-wrap:nowrap;overflow:hidden}
+  .shead .spacer{display:none}
   .collectbox{margin-left:var(--s-12);margin-right:var(--s-12)}
   #searchkbd{display:none}
   #collectbtn .btn-l,#searchbtn .btn-l{position:absolute;width:1px;height:1px;padding:0;
@@ -512,18 +551,26 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
   .bulkbar-mob,.selmode-btn{display:inline-flex}
 
   /* ---- file « à traiter » : une carte par incident ---- */
-  .inc{flex-wrap:wrap;padding:var(--s-8) var(--s-8) var(--s-8) 10px}
-  .inc-a{order:2}
-  .inc-b{order:3;width:100%;margin-top:6px}
-  .inc-b .btn{flex:1;justify-content:center}
+  /* Deux rangées : le texte, puis l'ancienneté à gauche et les boutons à
+     droite, à leur largeur. En pleine largeur, deux boutons de 44 px par
+     incident ne laissaient que deux incidents visibles par écran. */
+  .inc{flex-wrap:wrap;row-gap:6px;padding:var(--s-8) var(--s-8) var(--s-8) 10px}
+  .inc-m{flex:1 1 calc(100% - 38px)}
+  .inc-a{order:2;margin-left:30px}
+  .inc-b{order:3;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
   .inc-d{white-space:normal;max-width:none}
   .incgrp .inclist{padding:0 var(--s-4)}
 
   /* ---- page site ---- */
-  .sitehead{grid-template-columns:minmax(0,1fr)}
-  .sitetitle h1{font-size:var(--t-20)}
-  .siteact{grid-column:1;grid-row:auto;flex-direction:column;align-items:stretch;
-    justify-content:flex-start;gap:6px;margin-top:var(--s-8)}
+  .siteact{flex:1 1 100%;flex-direction:column;align-items:stretch;
+    justify-content:flex-start;gap:6px}
+  /* La méta du site (chemin, serveur, relevé) est longue : en étroit, on garde
+     la ligne utile — client et serveur — et le reste se lit sur la page. */
+  #meta.meta-site code,#meta.meta-site code+.sep,#meta.meta-site .pill,
+  #meta.meta-site .sep:has(+.pill){display:none}
+  /* Le re-scan reste à portée, mais à hauteur de ligne : à 44 px il doublait
+     la hauteur de l'en-tête collant. */
+  #meta.meta-site .btn{min-height:28px;padding:2px 8px}
   .siteact>.btn,.siteact .menu,.siteact .menu>.btn{width:100%;justify-content:center}
   .iband{grid-template-columns:repeat(2,minmax(0,1fr))}
   #site-console{margin-left:calc(-1 * var(--s-12));margin-right:calc(-1 * var(--s-12));

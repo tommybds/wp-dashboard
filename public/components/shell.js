@@ -68,10 +68,25 @@ export async function loadSched() {
   updMeta();
 }
 
-/* ---- méta de l'en-tête d'écran ------------------------------------------- */
+/* ---- méta de l'en-tête d'écran -------------------------------------------
+   Sur la page d'un site, la ligne « 18 sites suivis · collecté… » ne parlait
+   pas du site affiché. Cette page pose donc SA méta (client, serveur, chemin,
+   relevé) à la place, et `updMeta()` la respecte jusqu'au changement d'écran. */
+let META_SITE = null;
+
+/** Méta propre à l'écran courant (nœud), ou `null` pour revenir à celle du parc. */
+export function setMetaSite(noeud) {
+  META_SITE = noeud || null;
+  const el = document.getElementById('meta');
+  if (!el) return;
+  el.classList.toggle('meta-site', !!META_SITE);
+  if (META_SITE) { el.removeAttribute('title'); el.replaceChildren(...META_SITE.childNodes); }
+  else updMeta();
+}
+
 export function updMeta() {
   const el = document.getElementById('meta');
-  if (!el || !store.fleet) return;
+  if (!el || !store.fleet || META_SITE) return;
   const rel = relTime(store.fleet.generated_at), n = allSites().length;
   const ko = (store.fleet?.servers || []).filter(x => x && x.stale);
   const koTip = ko.map(x => x.name + (x.last_attempt ? ' (essai du ' + x.last_attempt + ')' : '') + (x.error ? ' : ' + x.error : '')).join(' · ');
