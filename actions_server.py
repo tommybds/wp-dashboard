@@ -2888,6 +2888,19 @@ def viz_report_read(server_name, domain, run=""):
                error=str(out or "")[-800:])
 
 
+def liste_maj_bash(kind):
+    """Script distant : noms des extensions (ou thèmes) à mettre à jour.
+
+    D'abord avec les extensions chargées, VizProof excepté ; si la commande
+    échoue (une extension en erreur fatale, revslider sur ffhbi), repli sur la
+    lecture sans rien charger. Le repli perd les extensions premium, mais la
+    MAJ sûre continue sur le reste.
+    """
+    cmd = f"wp {kind} list --update=available --field=name --format=csv"
+    return (f'out=$(asuser "$base {cmd} --skip-plugins=vizproof-timeline $extra --no-color") '
+            f'&& printf "%s" "$out" || asuser "$base {cmd} --skip-plugins --skip-themes $extra --no-color"')
+
+
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
                     with_core=False, dry_run=False, viz_rollback=None,
                     themes=None, with_themes=True, with_plugins=True):
@@ -2945,9 +2958,10 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #    --skip-plugins/--skip-themes : lire l'inventaire n'exige pas de charger
         #    le code des extensions, et l'une d'elles peut être en erreur fatale
         #    (revslider sur ffhbi.fr fait échouer la commande sans ces options).
-        rc, out = remote_bash(srv, site,
-                              'asuser "$base wp plugin list --update=available --field=name '
-                              '--format=csv --skip-plugins --skip-themes $extra --no-color"', timeout=120)
+        #    Extensions CHARGÉES d'abord (sauf VizProof) : une extension premium
+        #    annonce elle-même sa mise à jour, et restait sinon invisible (Gravity
+        #    Forms sur ecuriestemel, 28/09). Repli sans elles si l'une plante.
+        rc, out = remote_bash(srv, site, liste_maj_bash("plugin"), timeout=180)
         if rc != 0:
             safe_step("Liste des mises à jour", False,
                       "impossible d'obtenir la liste des extensions à mettre à jour : "
@@ -2971,10 +2985,7 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #        (`--update=available`), restriction éventuelle, gel appliqué.
         pending_th = []
         if with_themes:
-            rct, outt = remote_bash(srv, site,
-                                    'asuser "$base wp theme list --update=available --field=name '
-                                    '--format=csv --skip-plugins --skip-themes $extra --no-color"',
-                                    timeout=120)
+            rct, outt = remote_bash(srv, site, liste_maj_bash("theme"), timeout=180)
             if rct != 0:
                 # Non bloquant : un site peut n'avoir aucun thème à jour et
                 # l'opération sur les extensions reste parfaitement valable.

@@ -184,17 +184,31 @@ wp_call() {
 run_wp() { wp_call "--skip-plugins --skip-themes" "$@"; }
 # variante sans skip : indispensable pour une commande CLI fournie par un plugin
 run_wp_plugins() { wp_call "" "$@"; }
+# listes d'extensions / de thèmes : extensions CHARGÉES d'abord (sauf VizProof),
+# repli sans elles si l'une plante. Une extension premium (Gravity Forms,
+# UpdraftPlus Premium, WP Rocket, Divi…) annonce ELLE-MÊME sa mise à jour : non
+# chargée, elle paraissait à jour et la MAJ sûre l'ignorait.
+run_wp_repli() {
+  local out rc
+  out=$(wp_call "--skip-plugins=vizproof-timeline" "$@"); rc=$?
+  if [ $rc -eq 0 ]; then printf '%s' "$out"; return 0; fi
+  run_wp "$@"
+}
 
-# emitfield <nom> <commande wp…> ; un nom préfixé par « + » charge les plugins.
+# emitfield <nom> <commande wp…> ; un nom préfixé par « + » charge les plugins,
+# par « ~ » les charge avec repli sans eux (run_wp_repli).
 emitfield() {
   local name="$1"; shift
   local withplugins=0
   case "$name" in
     +*) withplugins=1; name="${name#+}" ;;
+    \~*) withplugins=2; name="${name#\~}" ;;
   esac
   printf '@@F@@%s\n' "$name"
   local out rc
-  if [ "$withplugins" = "1" ]; then out=$(run_wp_plugins "$@"); else out=$(run_wp "$@"); fi
+  if [ "$withplugins" = "1" ]; then out=$(run_wp_plugins "$@")
+  elif [ "$withplugins" = "2" ]; then out=$(run_wp_repli "$@")
+  else out=$(run_wp "$@"); fi
   rc=$?
   printf '%s\n' "$out"
   printf '@@ENDF@@%s\n' "$rc"
@@ -214,12 +228,12 @@ emit_site() {
     emitfield core_update core check-update --format=json --fields=version,update_type
     emitfield siteurl option get siteurl
     emitfield blogname option get blogname
-    emitfield plugins plugin list --format=json --fields=name,status,version,update_version,update
+    emitfield ~plugins plugin list --format=json --fields=name,status,version,update_version,update
     # `parent` n'est PAS un champ de `wp theme list` (même en 2.12) : le demander
     # fait échouer la commande entière (« Invalid field: parent »), donc plus aucun
     # thème. La parenté se lit de toute façon dans `status`, que wp-cli met à
     # « parent » pour le thème parent d'un enfant actif.
-    emitfield themes theme list --format=json --fields=name,title,status,version,update_version,update
+    emitfield ~themes theme list --format=json --fields=name,title,status,version,update_version,update
     emitfield auto_update_plugins option get auto_update_plugins --format=json
     emitfield admins user list --role=administrator --fields=ID,user_login,user_email,user_registered --format=json
     emitfield updraft_interval option get updraft_interval

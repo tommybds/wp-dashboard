@@ -56,7 +56,7 @@ class TestCollecteThemes(unittest.TestCase):
         à « parent » pour le parent d'un thème enfant actif.
         """
         ligne = [l for l in collect.REMOTE_SCRIPT.splitlines()
-                 if "emitfield themes" in l]
+                 if "emitfield ~themes" in l]
         self.assertEqual(len(ligne), 1, "commande `theme list` introuvable")
         for champ in ("name", "title", "status", "version",
                       "update_version", "update"):
