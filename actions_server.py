@@ -2237,6 +2237,64 @@ def viz_after_update(server, domain, action, rc, t0=None):
     return dict(info)
 
 
+def pct_fr(v):
+    """1.4848 → « 1,48 % » (4 décimales sous 0,01 %, comme l'écran VizProof)."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "?"
+    return (f"{n:.4f}" if n and abs(n) < 0.01 else f"{n:.2f}").replace(".", ",") + " %"
+
+
+def texte_ecart_visuel(domain, titre, mises_a_jour=None, rapport=None, report_url="",
+                       suite="", pages=None):
+    """Alerte Telegram d'un écart visuel : quoi, où, combien, et où regarder.
+
+    L'ancien texte (« VizProof signale des anomalies visuelles : à vérifier à
+    l'œil ») obligeait à ouvrir le dashboard pour savoir QUELLE page avait bougé,
+    de combien, et après QUELLE mise à jour. Tout ce qu'on sait est ici :
+    `rapport` = payload de viz_report_payload (items, totals) ; `pages` = lignes
+    déjà rédigées quand l'appelant n'a pas de rapport complet.
+    """
+    lignes = [f"🟠 <b>{esc_html(nom_usage(domain))}</b> · {esc_html(titre)}"]
+    if mises_a_jour:
+        lignes.append("Mis à jour : " + esc_html(", ".join(mises_a_jour)))
+    items = [x for x in ((rapport or {}).get("items") or []) if isinstance(x, dict)]
+    ecarts = [x for x in items
+              if x.get("status") in ("fail", "warn")
+              or (isinstance(x.get("http_status"), int) and x["http_status"] >= 400)]
+    par_page = {}
+    for x in ecarts:
+        par_page.setdefault(str(x.get("page") or "?"), []).append(x)
+    for page, xs in list(par_page.items())[:6]:
+        bouts = []
+        for x in xs:
+            fmt = str(x.get("viewport") or "").lower() or "?"
+            http = x.get("http_status")
+            bouts.append(f"{fmt} HTTP {http}" if isinstance(http, int) and http >= 400
+                         else f"{fmt} {pct_fr(x.get('diff_percent'))}")
+        lignes.append(f"• {esc_html(page)} : {esc_html(', '.join(bouts))}")
+    if len(par_page) > 6:
+        lignes.append(f"• … +{len(par_page) - 6} page(s)")
+    for l in (pages or [])[:6]:
+        lignes.append("• " + esc_html(l))
+    identiques = sum(1 for x in items if x.get("status") == "ok")
+    if identiques:
+        lignes.append(f"{identiques} autre(s) capture(s) identique(s).")
+    if suite:
+        lignes.append(esc_html(suite))
+    liens = []
+    base = str(settings_cfg().get("public_url") or "").rstrip("/")
+    if base:
+        cible = urllib.parse.quote(str(domain), safe="")
+        liens.append(f'<a href="{esc_html(base)}/#site/{cible}/vizproof">Voir dans le dashboard</a>')
+    if report_url and str(report_url).startswith("https://"):
+        liens.append(f'<a href="{esc_html(report_url)}">Rapport VizProof</a>')
+    if liens:
+        lignes.append(" · ".join(liens))
+    return "\n".join(lignes)
+
+
 def viz_verdict_publish(server, domain, action, res, duree=0):
     """Suites d'un verdict : journal `viz_verdict` et alerte sur anomalies.
 
@@ -2249,10 +2307,11 @@ def viz_verdict_publish(server, domain, action, res, duree=0):
         libelle = ACTIONS.get(action, (action,))[0]
         if "{arg}" in libelle:
             libelle = action
-        alert(f"viz_anomaly:{domain}", "viz_anomaly",
-              f"👁 <b>Anomalies visuelles</b> après « {esc_html(libelle)} »"
-              f"\nSite : <b>{esc_html(nom_usage(domain))}</b> ({esc_html(server)})"
-              + (f"\n{esc_html(res['report_url'])}" if res.get("report_url") else ""))
+        alert(f"viz_anomaly:{domain}", "viz_anomaly", texte_ecart_visuel(
+            domain, f"écart visuel après « {libelle} »",
+            rapport=res.get("report") if isinstance(res.get("report"), dict) else None,
+            report_url=res.get("report_url") or "",
+            suite="Rien n'a été annulé : la mise à jour simple ne garde pas d'archive."))
 
 
 def viz_after_update_worker(server, domain, action, t0=None, prev_id=""):
@@ -3399,9 +3458,14 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             SAFE["verdict"] = ("réussie avec anomalies visuelles" if viz_anomaly
                                else "réussi")
             if viz_anomaly:
-                alert(f"viz_anomaly:{domain}", "viz_anomaly",
-                      f"⚠️ <b>{esc_html(domain)}</b> — mise à jour conservée, mais VizProof "
-                      "signale des anomalies visuelles : à vérifier à l'œil.")
+                cibles = {x.get("name"): x for x in (site.get("plugins_updates_list") or [])
+                          if isinstance(x, dict)}
+                faites = [f"{p} {versions_avant.get(p) or '?'} → {(cibles.get(p) or {}).get('to') or '?'}"
+                          for p in pending] + list(pending_th) + (["WordPress"] if core_target else [])
+                alert(f"viz_anomaly:{domain}", "viz_anomaly", texte_ecart_visuel(
+                    domain, "écart visuel après la MAJ sûre", mises_a_jour=faites,
+                    rapport=rapp, report_url=rapport or "",
+                    suite="Mise à jour conservée (réglage) · point de restauration dans l'onglet Sauvegardes."))
         else:
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
@@ -3831,9 +3895,8 @@ def _bulk_worker(job):
             task["viz"] = viz_status(rcs, outs)
             # les anomalies visuelles ne font pas échouer la tâche : elles alertent
             if task["viz"] == "anomalies":
-                alert(f"viz_anomaly:{task['domain']}", "viz_anomaly",
-                      f"👁 <b>Anomalies visuelles</b> après « {ACTIONS.get(task['action'], (task['action'],))[0]} »"
-                      f"\nSite : <b>{esc_html(nom_usage(task['domain']))}</b> ({esc_html(task['server'])})")
+                alert(f"viz_anomaly:{task['domain']}", "viz_anomaly", texte_ecart_visuel(
+                    task["domain"], f"écart visuel après « {ACTIONS.get(task['action'], (task['action'],))[0]} » (lot)"))
         job["done"] += 1
         if rc != 0 and job["mode"] == "stop":
             job["stopped"] = True

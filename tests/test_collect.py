@@ -916,6 +916,32 @@ class TestVizNuit(unittest.TestCase):
         self.assertIn("HTTP 500", incs[0]["detail"])
 
 
+class TestTexteEcartVisuel(unittest.TestCase):
+    RAPPORT = {"items": [
+        {"page": "Contact", "viewport": "Mobile", "status": "fail", "diff_percent": 6.117},
+        {"page": "Contact", "viewport": "Desktop", "status": "ok", "diff_percent": 0},
+        {"page": "Blog", "viewport": "Desktop", "status": "warn", "diff_percent": 0.4, "http_status": 404},
+        {"page": "Accueil", "viewport": "Desktop", "status": "ok", "diff_percent": 0}]}
+
+    def test_dit_quoi_ou_combien_et_ou_regarder(self):
+        with mock.patch.object(A, "settings_cfg", return_value={"public_url": "https://dash.exemple/"}):
+            txt = A.texte_ecart_visuel("a.fr", "écart visuel après la MAJ sûre",
+                                       mises_a_jour=["gravityforms 2.10.5 → 3.1.2"], rapport=self.RAPPORT,
+                                       report_url="https://a.fr/wp-admin/x", suite="Mise à jour conservée.")
+        self.assertIn("gravityforms 2.10.5 → 3.1.2", txt)
+        self.assertIn("• Contact : mobile 6,12 %", txt)
+        self.assertIn("• Blog : desktop HTTP 404", txt)
+        self.assertIn("2 autre(s) capture(s) identique(s)", txt)
+        self.assertIn('href="https://dash.exemple/#site/a.fr/vizproof"', txt)
+        self.assertIn('href="https://a.fr/wp-admin/x"', txt)
+
+    def test_lien_non_https_ecarte_et_html_echappe(self):
+        with mock.patch.object(A, "settings_cfg", return_value={"public_url": ""}):
+            txt = A.texte_ecart_visuel("a.fr", "t", pages=["<b>x</b>"], report_url="javascript:alert(1)")
+        self.assertNotIn("javascript", txt)
+        self.assertIn("&lt;b&gt;x&lt;/b&gt;", txt)
+
+
 class TestDigest(unittest.TestCase):
     def test_load_recent_ignore_ts_null(self):
         maintenant = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")

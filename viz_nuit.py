@@ -148,11 +148,11 @@ def examiner(srv_name, s, now):
 
 
 def texte_alerte(r):
-    pages = ", ".join(e["page"] + (f" (HTTP {e['http']})" if e.get("http") else "") for e in r["ecarts"])
-    return (f"🌙 <b>Mise à jour automatique : écart visuel</b>\n"
-            f"Site : <b>{A.esc_html(r['site'])}</b>\n"
-            f"Mis à jour : {A.esc_html(', '.join(r['items']) or '?')}\n"
-            f"Pages : {A.esc_html(pages)}")
+    pages = [e["page"] + " : " + (f"HTTP {e['http']}" if e.get("http") else "écart")
+             + (f" ({', '.join(f.lower() for f in e.get('formats') or [])})" if e.get("formats") else "")
+             for e in r["ecarts"]]
+    return A.texte_ecart_visuel(r["domain"] or r["site"], "écart visuel après la mise à jour automatique de la nuit",
+                                mises_a_jour=r["items"], pages=pages, report_url=r.get("report_url") or "")
 
 
 def main():
