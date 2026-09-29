@@ -92,6 +92,8 @@ const ACT_LIB = {
   theme_update: 'MAJ thème',
   updraft_backup: 'Sauvegarde UpdraftPlus', cache_flush: 'Vidage des caches',
   autoupdate_on: 'Activation des auto-MAJ', autoupdate_off: 'Désactivation des auto-MAJ',
+  themes_autoupdate_on: 'Activation des auto-MAJ des thèmes',
+  themes_autoupdate_off: 'Désactivation des auto-MAJ des thèmes',
   verify_checksums: 'Intégrité du cœur', vizproof_install: 'Installation VizProof',
   viz_baseline: 'Baseline visuelle', viz_scan: 'Scan visuel', viz_disconnect: 'Dissociation VizProof',
   rescan: 'Re-scan',

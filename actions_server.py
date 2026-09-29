@@ -260,6 +260,10 @@ ACTIONS = {
     "cache_flush":        ("Vider caches + rewrite", False, "cache flush && WPRUN rewrite flush"),
     "autoupdate_on":      ("Activer auto-updates plugins", False, "plugin auto-updates enable --all"),
     "autoupdate_off":     ("Désactiver auto-updates plugins", False, "plugin auto-updates disable --all"),
+    # Les thèmes ont leur propre réglage dans WordPress : sans eux, un site
+    # « en mise à jour automatique » gardait son thème figé.
+    "themes_autoupdate_on":  ("Activer auto-updates thèmes", False, "theme auto-updates enable --all"),
+    "themes_autoupdate_off": ("Désactiver auto-updates thèmes", False, "theme auto-updates disable --all"),
     "verify_checksums":   ("Vérifier checksums du core", False, "core verify-checksums"),
     "vizproof_install":   ("Installer vizproof-timeline", False, "plugin install vizproof-timeline --activate"),
     "viz_baseline":       ("Baseline visuelle VizProof", False, "vizproof baseline --wait --format=json"),
