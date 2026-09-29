@@ -148,12 +148,29 @@ def resume_changements(changes):
         txt = f"• {pluriel(len(maj), 'extension')} à jour sur {pluriel(len(sites), 'site')}"
         lignes.append(txt + (f" ({', '.join(top)})" if top else ""))
 
-    # 4. PHP
+    # 4. PHP. Un correctif de l'hébergeur (8.3.33 → 8.3.35) touche vingt sites
+    #    d'un coup et n'appelle aucun geste : il est regroupé par transition. Un
+    #    changement de BRANCHE (8.2 → 8.3), lui, peut casser un site : il reste
+    #    détaillé site par site.
     php = versions_nettes(changes, "php", RE_PHP)
     if php:
-        det = " · ".join(f"{A.esc_html(d)} {A.esc_html(de)} → {A.esc_html(v)}"
-                         for (d, _), (de, v) in sorted(php.items()))
-        lignes.append(f"• PHP : {det}")
+        branche = lambda v: ".".join(str(v).split(".")[:2])
+        correctifs = collections.OrderedDict()
+        bascules = []
+        for (d, _), (de, v) in sorted(php.items()):
+            if branche(de) == branche(v):
+                correctifs.setdefault((de, v), []).append(d)
+            else:
+                bascules.append(f"{A.esc_html(d)} {A.esc_html(de)} → {A.esc_html(v)}")
+        if bascules:
+            lignes.append("• PHP : " + " · ".join(bascules))
+        if correctifs:
+            det = []
+            for (de, v), doms in sorted(correctifs.items(), key=lambda x: -len(x[1])):
+                qui = (", ".join(A.esc_html(x) for x in doms) if len(doms) <= 2
+                       else pluriel(len(doms), "site"))
+                det.append(f"{A.esc_html(de)} → {A.esc_html(v)} ({qui})")
+            lignes.append("• PHP, correctifs de l’hébergeur : " + " · ".join(det))
 
     # 5. le reste, compté
     compte = collections.Counter(c.get("kind") for c in changes
@@ -210,6 +227,54 @@ FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert
 ]
 
 
+def suffixe(iid):
+    """« kind:site:composant » → « site:composant » (ce qui désigne la faille)."""
+    parts = str(iid).split(":", 1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def correctifs_publies(nouveaux, previous):
+    """Une faille critique « sans correctif » au bilan précédent qui revient
+    « corrigeable » n'est ni un nouveau problème ni un problème réglé : c'est la
+    MÊME faille, pour laquelle l'éditeur vient de publier la version corrigée.
+    L'annoncer comme « 🔴 nouveau problème » + « ✅ réglé » disait deux fois
+    faux ; elle a sa propre section, qui dit le geste à faire.
+
+    → (incidents « correctif publié », ids anciens à retirer des réglés)."""
+    anciens = {suffixe(iid): iid for iid in (previous or {})
+               if str(iid).startswith("vuln_critical_unfixed:")}
+    paires, retires = [], set()
+    for i in nouveaux:
+        if i.get("kind") != "vuln_critical_fixable":
+            continue
+        vieux = anciens.get(suffixe(i.get("id")))
+        if vieux:
+            paires.append(i)
+            retires.add(vieux)
+    return paires, retires
+
+
+def libelle_correctif(i):
+    x = i.get("extra") if isinstance(i.get("extra"), dict) else {}
+    site = i.get("site") or ""
+    slug, de, vers = str(x.get("slug") or ""), str(x.get("from") or ""), str(x.get("to") or "")
+    if slug and vers:
+        quoi = f"{slug} {de} → {vers}".replace("  ", " ")
+    else:
+        quoi = re.sub(r" · .*$", "", str(i.get("title") or ""))
+    return f"<b>{A.esc_html(site)}</b> : {A.esc_html(quoi)}"
+
+
+# Telegram transforme en lien tout ce qui ressemble à une adresse IPv4 : une
+# version à quatre nombres (gravityforms 3.1.0.2) s'affichait en bleu,
+# cliquable vers http://3.1.0.2. En <code>, elle reste du texte.
+RE_IPV4 = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])")
+
+
+def sans_lien_ip(ligne):
+    return RE_IPV4.sub(r"<code>\1</code>", ligne)
+
+
 def resume_familles(incidents):
     compte = collections.Counter(i.get("kind") for i in incidents)
     out, vus = [], set()
@@ -259,20 +324,26 @@ def build_message(changes, hours=24, incidents=None, previous=None,
     etat = {"ts": now.strftime("%Y-%m-%d %H:%M"),
             "incidents": {i["id"]: libelle(i) for i in inc_prod}}
     if previous is None:
-        nouveaux, regles = [], []
+        nouveaux, regles, publies = [], [], []
     else:
         nouveaux = [i for i in inc_prod if i["id"] not in previous]
-        regles = [lib for iid, lib in previous.items() if iid not in etat["incidents"]]
-    ids_nouveaux = {i["id"] for i in nouveaux}
+        publies, retires = correctifs_publies(nouveaux, previous)
+        ids_publies = {i["id"] for i in publies}
+        nouveaux = [i for i in nouveaux if i["id"] not in ids_publies]
+        regles = [lib for iid, lib in previous.items()
+                  if iid not in etat["incidents"] and iid not in retires]
+    ids_nouveaux = {i["id"] for i in nouveaux} | {i["id"] for i in publies}
     ouverts = [i for i in inc_prod if i["id"] not in ids_nouveaux]
 
     resume = resume_changements(ch_prod)
-    if not (nouveaux or regles or resume or (previous is None and inc_prod)):
+    if not (nouveaux or publies or regles or resume or (previous is None and inc_prod)):
         return None, etat
 
     lignes = [f"📊 <b>Parc WordPress · {JOURS[now.weekday()]} {now.strftime('%d/%m')}</b>"]
     if nouveaux:
         verdict = "🔴 " + pluriel(len(nouveaux), "nouveau problème", "nouveaux problèmes")
+    elif publies:
+        verdict = "🟠 " + pluriel(len(publies), "correctif à appliquer", "correctifs à appliquer")
     elif regles and not inc_prod:
         verdict = "✅ Tout est réglé"
     else:
@@ -286,6 +357,12 @@ def build_message(changes, hours=24, incidents=None, previous=None,
         lignes += [f"  {libelle(i)}" for i in nouveaux[:MAX_NOUVEAUX]]
         if len(nouveaux) > MAX_NOUVEAUX:
             lignes.append(f"  … +{len(nouveaux) - MAX_NOUVEAUX}")
+        lignes.append("")
+    if publies:
+        lignes.append("🔧 <b>Correctif publié</b> — faille critique, mise à jour à lancer")
+        lignes += [f"  {libelle_correctif(i)}" for i in publies[:MAX_NOUVEAUX]]
+        if len(publies) > MAX_NOUVEAUX:
+            lignes.append(f"  … +{len(publies) - MAX_NOUVEAUX}")
         lignes.append("")
     if regles:
         lignes.append(f"✅ <b>Réglé</b> ({len(regles)})")
@@ -312,6 +389,7 @@ def build_message(changes, hours=24, incidents=None, previous=None,
         cites = ", ".join(noms[:4]) + (" …" if len(noms) > 4 else "")
         lignes += [f"🧪 Préprod : {' · '.join(bouts)} ({A.esc_html(cites)})", ""]
 
+    lignes = [sans_lien_ip(x) for x in lignes]
     if url:
         lignes.append(f'<a href="{html.escape(url, quote=True)}">Ouvrir le dashboard</a>')
     return "\n".join(lignes).rstrip(), etat

@@ -1045,6 +1045,36 @@ class TestDigest(unittest.TestCase):
         self.assertNotIn("À vérifier", texte)
         self.assertIn("1 extension retirée", texte)
 
+    def test_correctif_publie_ni_nouveau_ni_regle(self):
+        # La faille « sans correctif » d'hier revient « corrigeable » : même faille,
+        # correctif sorti. Ni 🔴 nouveau problème, ni ✅ réglé.
+        fix = {"id": "vuln_critical_fixable:a.fr:gravityforms", "site": "a.fr",
+               "kind": "vuln_critical_fixable", "severity": "critical", "bucket": "now",
+               "title": "gravityforms 3.1.0.2 · faille critique corrigeable",
+               "extra": {"slug": "gravityforms", "from": "3.1.0.2", "to": "3.1.0.3"}}
+        prev = {"vuln_critical_unfixed:a.fr:gravityforms": "<b>a.fr</b> : gravityforms 3.1.0.2 · 1 faille",
+                "vieux": "<b>b.fr</b> : réparé"}
+        texte, _ = digest.build_message([], 24, [fix], prev)
+        self.assertIn("🟠 1 correctif à appliquer", texte)
+        self.assertIn("Correctif publié", texte)
+        self.assertIn("<b>a.fr</b> : gravityforms <code>3.1.0.2</code> → <code>3.1.0.3</code>", texte)
+        self.assertNotIn("Depuis hier", texte)
+        self.assertIn("✅ <b>Réglé</b> (1)", texte)     # seul b.fr
+        self.assertNotIn("1 faille", texte)
+
+    def test_version_a_quatre_nombres_pas_un_lien(self):
+        self.assertEqual(digest.sans_lien_ip("gf 3.1.0.2 · 2.10.2 · v1.2.3.4a"),
+                         "gf <code>3.1.0.2</code> · 2.10.2 · v1.2.3.4a")
+
+    def test_php_correctifs_regroupes_bascule_detaillee(self):
+        ch = [self.maj(d, "PHP 8.3.33 → 8.3.35", kind="php") for d in ("a.fr", "b.fr", "c.fr")]
+        ch.append(self.maj("d.fr", "PHP 8.5.10 → 8.5.11", kind="php"))
+        ch.append(self.maj("e.fr", "PHP 8.2.29 → 8.3.35", kind="php"))
+        lignes = digest.resume_changements(ch)
+        self.assertIn("• PHP : e.fr 8.2.29 → 8.3.35", lignes)
+        self.assertIn("• PHP, correctifs de l’hébergeur : 8.3.33 → 8.3.35 (3 sites)"
+                      " · 8.5.10 → 8.5.11 (d.fr)", lignes)
+
     def test_lien_echappe(self):
         texte, _ = digest.build_message([self.maj("a.fr", "x 1 → 2")], 24, [], {},
                                         url='https://d.fr/?a="b"')
