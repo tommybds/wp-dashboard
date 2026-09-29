@@ -454,6 +454,21 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(s["plugins_total"], 1)
         self.assertEqual(s["errors"], {})
 
+    def test_auto_maj_des_themes_comptee_sur_les_themes_installes(self):
+        themes = json.dumps([{"name": "divi", "status": "parent", "version": "4"},
+                             {"name": "divi-enfant", "status": "active", "version": "1"}])
+        raw = {"domain": "a.fr", "path": "/p", "owner": "www",
+               "fields": {"themes": themes,
+                          "auto_update_themes": json.dumps(["divi", "twentytwenty"])},
+               "rcs": {"themes": 0, "auto_update_themes": 0}}
+        self.assertEqual(collect.postprocess(raw)["themes_auto_update"], 1)
+        # option absente (jamais activée) : 0, pas « inconnu »
+        raw["rcs"]["auto_update_themes"] = 1
+        self.assertEqual(collect.postprocess(raw)["themes_auto_update"], 0)
+        # liste des thèmes illisible : on ne sait pas
+        raw["rcs"]["themes"] = 1
+        self.assertIsNone(collect.postprocess(raw)["themes_auto_update"])
+
     def test_postprocess_core_update_non_dict(self):
         """`wp core check-update` renvoyant autre chose qu'une liste d'objets."""
         raw = {"domain": "a.fr", "path": "/p", "owner": "www",

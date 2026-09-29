@@ -111,7 +111,8 @@ function notifLabel(act, arg, s) { return actLib(act, arg) + ' · ' + ((s && (kN
 /* Seules les actions qui MODIFIENT le site demandent confirmation : tout
    confirmer revient à ne plus rien signaler. */
 const ACT_RISQUE = new Set(['core_update', 'plugins_update_all', 'plugin_update',
-  'themes_update_all', 'theme_update', 'autoupdate_on', 'autoupdate_off', 'vizproof_install']);
+  'themes_update_all', 'theme_update', 'autoupdate_on', 'autoupdate_off',
+  'themes_autoupdate_on', 'themes_autoupdate_off', 'vizproof_install']);
 const MAJ_ACTS = new Set(['core_update', 'plugins_update_all', 'plugins_update_except',
   'plugin_update', 'themes_update_all', 'theme_update']);
 
@@ -347,6 +348,14 @@ function ongletReglages(s) {
     : nAuto >= total ? chipEl('toutes (' + nAuto + '/' + total + ')', 'ok')
       : nAuto === 0 ? chipEl('désactivées (0/' + total + ')', 'mut')
         : chipEl('partielles (' + nAuto + '/' + total + ')', 'warn');
+  // Thèmes : réglage distinct dans WordPress. Sans lui, un site « en mise à
+  // jour automatique » gardait son thème figé.
+  const tTotal = Array.isArray(s.themes_list) ? s.themes_list.length : 0;
+  const tAuto = s.themes_auto_update == null ? null : Math.min(s.themes_auto_update, tTotal);
+  const etatAutoTh = (tAuto == null || !tTotal) ? chipEl(tTotal ? 'inconnu' : 'thèmes non relevés', 'mut')
+    : tAuto >= tTotal ? chipEl('tous (' + tAuto + '/' + tTotal + ')', 'ok')
+      : tAuto === 0 ? chipEl('désactivées (0/' + tTotal + ')', 'mut')
+        : chipEl('partielles (' + tAuto + '/' + tTotal + ')', 'warn');
   const viz = vizConnected(s);
   blocs.push(h('section', { class: 'sitesec' },
     h('h3', { text: 'Mises à jour automatiques' }),
@@ -357,6 +366,13 @@ function ongletReglages(s) {
           { raison: !total ? 'aucune extension installée' : (nAuto != null && nAuto >= total ? 'déjà activées pour toutes les extensions' : '') }),
         bouton('autoupdate_off', 'Désactiver pour toutes', 'x',
           { raison: !total ? 'aucune extension installée' : (nAuto === 0 ? 'déjà désactivées' : '') }))),
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Thèmes' }), ' ', etatAutoTh),
+      h('span', { class: 'actions' },
+        bouton('themes_autoupdate_on', 'Activer pour tous' + (tTotal ? ' (' + tTotal + ')' : ''), 'check',
+          { raison: tAuto != null && tTotal && tAuto >= tTotal ? 'déjà activées pour tous les thèmes' : '' }),
+        bouton('themes_autoupdate_off', 'Désactiver pour tous', 'x',
+          { raison: tAuto === 0 ? 'déjà désactivées' : '' }))),
     h('p', { class: 'hint hint-tight' },
       'WordPress applique alors lui-même les nouvelles versions, la nuit, sans passer par le dashboard. ',
       viz ? h('span', {}, 'VizProof étant relié, chaque mise à jour automatique est suivie d’un ',

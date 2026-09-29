@@ -201,6 +201,8 @@ def faux_site(i, srv, rng):
     # `None` est une VALEUR ici, pas une absence : la page site doit distinguer
     # « aucun thème » de « ce site ne remonte pas ses thèmes ».
     s["themes_list"] = themes
+    # Comme la collecte : un compte seulement quand la liste des thèmes est connue.
+    s["themes_auto_update"] = (i % 3 and len(themes)) if isinstance(themes, list) else None
     return s
 
 

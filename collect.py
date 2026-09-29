@@ -235,6 +235,7 @@ emit_site() {
     # « parent » pour le thème parent d'un enfant actif.
     emitfield ~themes theme list --format=json --fields=name,title,status,version,update_version,update
     emitfield auto_update_plugins option get auto_update_plugins --format=json
+    emitfield auto_update_themes option get auto_update_themes --format=json
     emitfield admins user list --role=administrator --fields=ID,user_login,user_email,user_registered --format=json
     emitfield updraft_interval option get updraft_interval
     emitfield updraft_interval_db option get updraft_interval_database
@@ -658,6 +659,11 @@ def postprocess(raw):
 
     aup = extract_json(f.get("auto_update_plugins", "")) if ok("auto_update_plugins") else None
     site["plugins_auto_update"] = compter_auto_maj(aup, site.get("plugins_list"))
+    # Même règle pour les thèmes (`auto_update_themes` porte des slugs de
+    # thème) ; option absente = aucune MAJ auto, comme pour les extensions.
+    aut = extract_json(f.get("auto_update_themes", "")) if ok("auto_update_themes") else None
+    site["themes_auto_update"] = (compter_auto_maj(aut, site.get("themes_list"))
+                                  if isinstance(site.get("themes_list"), list) else None)
 
     site["admins"] = map_admins(extract_json(f.get("admins", "")) if ok("admins") else None)
 
@@ -788,6 +794,11 @@ def map_rest_inventory(entry, data, url=None, blog_id=None):
         site["plugins_auto_update"] = compter_auto_maj(aup, site.get("plugins_list"))
     else:
         site["plugins_auto_update"] = to_int(d.get("plugins_auto_update"), 0)
+    # L'agent n'envoie pas (encore) l'option des thèmes : on ne sait pas.
+    aut = d.get("auto_update_themes")
+    site["themes_auto_update"] = (compter_auto_maj(aut, site.get("themes_list"))
+                                  if isinstance(aut, (list, dict)) and isinstance(site.get("themes_list"), list)
+                                  else None)
     site["admins"] = map_admins(d.get("admins"))
     site["updraft"] = normalize_updraft(d.get("updraft"))
     site["vizproof"] = vizproof_summary(d.get("vizproof"))
