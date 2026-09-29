@@ -102,13 +102,18 @@ def faux_site(i, srv, rng):
         plugins.append({"name": "vizproof-timeline", "version": "1.0.3", "status": "active", "update": "available", "to": "1.3.9"})
     elif i % 4 == 2:
         plugins.append({"name": "vizproof-timeline", "version": "1.3.9", "status": "inactive", "update": "none"})
+    # Un must-use sur un site sur trois : il figure dans la liste mais n'a pas
+    # de mise à jour automatique possible (le décompte ne doit pas le compter).
+    majables = len(plugins)
+    if i % 3 == 1:
+        plugins.append({"name": "zzz-incident-harden", "version": "", "status": "must-use", "update": "none"})
     s = {
         "domain": dom, "kuma": dom, "kuma_group": rng.choice(["Sumotori", "Client A", "Client B"]),
         "blogname": f"Site {i}", "siteurl": f"https://{dom}",
         "path": f"/var/www/vhosts/{dom}/httpdocs",
         "core_version": core, "core_update": "7.1" if core != "7.1" else "",
         "plugins_total": len(plugins), "plugins_active": len(plugins),
-        "plugins_updates": maj, "plugins_auto_update": rng.choice([0, len(plugins)]),
+        "plugins_updates": maj, "plugins_auto_update": rng.choice([0, majables]),
         "themes_updates": faux_themes(i)[1],
         "php_version": rng.choice(["8.1.2", "8.2.7", "8.3.1", "7.4.33"]),
         "admins": [{"login": "admin", "email": "a@b.fr", "registered": "2024-01-01"}],

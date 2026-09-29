@@ -328,6 +328,19 @@ async function chargerWpEtat(s) {
    contenu : les auto-MAJ, les liaisons (agent, WordPress) et l'entretien. Un
    menu replié ne se lit pas ; ces gestes ont maintenant une page, avec l'état
    de chaque réglage écrit à côté du bouton qui le change. */
+/* Extensions que WordPress sait mettre à jour. Les must-use (wp-content/
+   mu-plugins) et les drop-ins (advanced-cache.php, maintenance.php…) figurent
+   dans `wp plugin list` mais n'ont PAS de mise à jour automatique possible :
+   comptés dans le total, ils affichaient « partielles (15/22) » sur un site
+   où tout ce qui pouvait l'être était activé. Sans inventaire détaillé (site
+   REST), on garde le total, faute de mieux. */
+function extensionsMajables(s) {
+  if (!Array.isArray(s.plugins_list)) return { n: s.plugins_total ?? null, horsMaj: 0 };
+  const horsMaj = s.plugins_list.filter(p => p && (p.status === 'must-use' || p.status === 'dropin')).length;
+  return { n: s.plugins_list.length - horsMaj, horsMaj };
+}
+const horsMajTexte = k => k ? k + ' must-use / drop-in non concerné' + (k > 1 ? 's' : '') + ' : WordPress ne les met jamais à jour' : '';
+
 function ongletReglages(s) {
   const rest = s.via === 'rest';
   const blocs = [];
@@ -342,12 +355,14 @@ function ongletReglages(s) {
   };
 
   /* --- auto-MAJ --- */
-  const total = s.plugins_total || 0;
+  const { n: majables, horsMaj } = extensionsMajables(s);
+  const total = majables || 0;
   const nAuto = s.plugins_auto_update == null ? null : Math.min(s.plugins_auto_update, total);
+  const tipHors = { title: horsMajTexte(horsMaj) };
   const etatAuto = (nAuto == null || !total) ? chipEl(total ? 'inconnu' : 'aucune extension', 'mut')
-    : nAuto >= total ? chipEl('toutes (' + nAuto + '/' + total + ')', 'ok')
-      : nAuto === 0 ? chipEl('désactivées (0/' + total + ')', 'mut')
-        : chipEl('partielles (' + nAuto + '/' + total + ')', 'warn');
+    : nAuto >= total ? chipEl('toutes (' + nAuto + '/' + total + ')', 'ok', tipHors)
+      : nAuto === 0 ? chipEl('désactivées (0/' + total + ')', 'mut', tipHors)
+        : chipEl('partielles (' + nAuto + '/' + total + ')', 'warn', tipHors);
   // Thèmes : réglage distinct dans WordPress. Sans lui, un site « en mise à
   // jour automatique » gardait son thème figé.
   const tTotal = Array.isArray(s.themes_list) ? s.themes_list.length : 0;
@@ -537,7 +552,7 @@ function bandeau(s) {
   const core = s.core_version || '?';
   const nEx = s.plugins_updates || 0;
   const auto = (() => {
-    const t = s.plugins_total;
+    const t = extensionsMajables(s).n;
     // plafonné : les relevés d'avant le 24/09 comptaient les extensions désinstallées
     const n = (s.plugins_auto_update == null || t == null) ? s.plugins_auto_update : Math.min(s.plugins_auto_update, t);
     if (n == null || t == null) return ['', '?', 'inconnu'];
@@ -565,7 +580,7 @@ function bandeau(s) {
     ib('Extensions', h('b', { text: String(nEx) }), 'sur ' + (s.plugins_total ?? '?') + ' installées', nEx ? 'warn' : 'ok'),
     ib('PHP', h('b', { text: s.php_version || '?' }), eol ? 'fin de support' : 'suivie', eol ? 'warn' : ''),
     ib('Sauvegarde', h('b', { text: bk[1] }), bk[2], bk[0], tipBk),
-    ib('Auto-MAJ', h('b', { text: auto[1] }), auto[2], auto[0]),
+    ib('Auto-MAJ', h('b', { text: auto[1] }), auto[2], auto[0], horsMajTexte(extensionsMajables(s).horsMaj)),
     ib('Vulnérabilités', h('b', { text: '…' }), 'analyse…', '', ''));
 }
 
