@@ -181,6 +181,17 @@ class TestDiffFleets(unittest.TestCase):
         self.assertEqual(ch[0]["severity"], "warn")
         self.assertIn("inconnu", ch[0]["detail"])
 
+    def test_theme_mis_a_jour_est_journalise(self):
+        th = lambda v: [{"name": "astra", "status": "active", "version": v}]
+        avant = fleet(srv("s1", [site("a.fr", themes_list=th("4.13.0"))]))
+        apres = fleet(srv("s1", [site("a.fr", themes_list=th("4.14.0"))]))
+        ch = collect.diff_fleets(avant, apres, "t")
+        self.assertEqual([(c["kind"], c["detail"]) for c in ch],
+                         [("theme_update", "astra 4.13.0 → 4.14.0")])
+        # liste des thèmes inconnue d'un côté : rien n'est inventé
+        sans = fleet(srv("s1", [site("a.fr", themes_list=None)]))
+        self.assertEqual(collect.diff_fleets(sans, apres, "t"), [])
+
     def test_installation_remplacee_une_seule_ligne(self):
         """Même domaine, autre serveur (reconstruction) : pas de faux « + admin »."""
         avant = fleet(srv("legacy", [site("a.fr")]))
@@ -733,6 +744,26 @@ class TestPhpErrors(unittest.TestCase):
         self.assertEqual(len(lignes), 1)
         self.assertNotIn("trace", lignes[0])
 
+    def test_nginx_nom_cite_entre_guillemets(self):
+        """PHP 8 cite les noms : le premier guillemet n'est pas la fin du message."""
+        tn = horodate("nginx")
+        corps = "\n".join([
+            f'@@NGINX@@b.fr\t{tn} [error] 1#1: *2 FastCGI sent in stderr: "PHP message: '
+            f'PHP Fatal error:  Uncaught Error: Undefined constant "ABSPATH" '
+            f'in /var/www/b.fr/htdocs/wp-settings.php:34',
+            f'@@NGINX@@b.fr\t{tn} [error] 1#1: *3 FastCGI sent in stderr: "PHP message: '
+            f'PHP Warning:  Undefined array key "id" in /var/www/b.fr/htdocs/wp-content/themes/t/f.php '
+            f'on line 7" while reading response header from upstream, client: 203.0.113.9',
+            "@@FIN@@"])
+        lignes, _, _ = self.scan(corps)
+        par = {l["severity"]: l for l in lignes}
+        self.assertEqual(par["Fatal error"]["message"], 'Uncaught Error: Undefined constant "ABSPATH"')
+        self.assertEqual((par["Fatal error"]["file"], par["Fatal error"]["line"]),
+                         ("/var/www/b.fr/htdocs/wp-settings.php", 34))
+        self.assertEqual(phperrors.famille_bruit(par["Fatal error"]), "acces_direct")
+        self.assertEqual(par["Warning"]["message"], 'Undefined array key "id"')
+        self.assertEqual(par["Warning"]["line"], 7)
+
     def test_pile_sur_une_seule_ligne_nginx(self):
         tn = horodate("nginx")
         corps = (f'@@NGINX@@b.fr\t{tn} [error] 1#1: *2 FastCGI sent in stderr: '
@@ -1007,6 +1038,25 @@ class TestDigest(unittest.TestCase):
         ch.append(self.maj("a.fr", "seo 1 → 2"))
         lignes = digest.resume_changements(ch)
         self.assertEqual(lignes, ["• 4 extensions à jour sur 3 sites (updraftplus ×3)"])
+
+    def test_fatale_dite_en_clair(self):
+        def f(fichier, message, n=1):
+            i = self.inc("x", "a.fr", detail=message + " — f.php")
+            i["extra"] = {"file": fichier, "message": message, "count": n}
+            return digest.libelle(i)
+        self.assertEqual(
+            f("wp-content/plugins/divi-builder/core/Utils.php", "Maximum execution time of 30 seconds exceeded", 4),
+            "<b>a.fr</b> : erreur fatale dans l’extension divi-builder (délai d’exécution dépassé), 4 fois")
+        self.assertEqual(
+            f("wp-content/themes/Divi/404.php", "Uncaught Error: Call to undefined function get_header()"),
+            "<b>a.fr</b> : erreur fatale dans le thème Divi (fonction introuvable)")
+        # rien de reconnu : on garde le message brut, faute de mieux
+        self.assertEqual(f("", "Uncaught Error: Bidule"), "<b>a.fr</b> : erreur fatale : Uncaught Error: Bidule")
+
+    def test_themes_comptes(self):
+        ch = [self.maj("a.fr", "astra 4.13 → 4.14", kind="theme_update"),
+              self.maj("b.fr", "astra 4.13 → 4.14", kind="theme_update")]
+        self.assertEqual(digest.resume_changements(ch), ["• 2 thèmes à jour sur 2 sites"])
 
     def test_rien_de_neuf_pas_de_message(self):
         inc = [self.inc("i1", "a.fr")]

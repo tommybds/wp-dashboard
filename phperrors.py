@@ -72,7 +72,13 @@ RE_PLESK = re.compile(
 RE_NGINX = re.compile(
     r"^(?P<ts>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}).*?"
     r"PHP message:\s*PHP\s+(?P<sev>Fatal error|Parse error|Warning|Notice|Deprecated|Strict Standards):\s*"
-    r"(?P<msg>.*?)(?:\s+in\s+(?P<file>/[^\s]+?)\s+on line\s+(?P<line>\d+))?(?:\"|\s+while\s|$)")
+    # La fin du message est le guillemet FERMANT de nginx (suivi de « while … »
+    # ou de la fin de ligne), pas le premier guillemet rencontré : PHP 8 cite
+    # les noms (« Undefined constant "ABSPATH" », « Undefined array key "id" »),
+    # et s'arrêter au premier coupait le message ET perdait le fichier — une
+    # fatale sans nom ni chemin, impossible à classer comme à corriger.
+    r"(?P<msg>.*?)(?:\s+in\s+(?P<file>/[^\s]+?)\s+on line\s+(?P<line>\d+))?"
+    r"(?:\"\s+while\s|\"\s*$|\s+while\s+reading\s|$)")
 
 # Une exception non capturée écrit sa PILE D'APPELS après le message. Sur
 # Plesk/FPM, chaque cadre arrive sur sa propre ligne de journal, sans
@@ -119,7 +125,12 @@ def normalise(msg):
     Sans cela, « Undefined array key 417 » et « ... 993 » comptent pour deux
     erreurs distinctes alors que c'est le même défaut.
     """
-    m = str(msg or "").strip().strip('"')
+    m = str(msg or "").strip().lstrip('"')
+    # Guillemet final : on ne retire que celui de l'enveloppe FPM/nginx. Celui
+    # qui ferme un nom cité par PHP (« … constant "ABSPATH" ») fait partie du
+    # message — d'où le test de parité.
+    if m.endswith('"') and m.count('"') % 2:
+        m = m[:-1]
     m = re.sub(r"\b\d{3,}\b", "N", m)
     m = re.sub(r"0x[0-9a-f]+", "0xN", m, flags=re.I)
     m = re.sub(r"\s+", " ", m)
@@ -450,6 +461,11 @@ def remote_scan(server, domains, hours):
 # ---------------------------------------------------------------------------
 RE_CŒUR = re.compile(r"(^|/)(wp-includes|wp-admin)/|/wp-[a-z-]+\.php$")
 RE_MAIN = re.compile(r"^#0\s*\{main\}$")
+RE_CONTENU = re.compile(r"(^|/)wp-content/(themes|plugins)/")
+RE_WP_ABSENT = re.compile(
+    r"Call to undefined function\s+\\?(get_|wp_|add_|do_|apply_|is_|the_|esc_|__\(|_e\(|register_|load_)"
+    r"|Undefined constant\s+\"?(ABSPATH|WPINC|WP_CONTENT_DIR|WP_PLUGIN_DIR)"
+    r"|Class \"?\\?WP_\w+\"? not found", re.I)
 RE_BATCH = re.compile(r"serve_batch_request_v1|/batch/v1", re.I)
 RE_HORS_WP = re.compile(
     r"Undefined constant\s+\"?ABSPATH"          # wp-settings.php appelé seul
@@ -471,6 +487,15 @@ def famille_bruit(groupe):
     if RE_BATCH.search(message) or any(RE_BATCH.search(c) for c in cadres):
         return "rest_batch"
     if not RE_CŒUR.search(fichier):
+        # Même mécanique hors du cœur : un gabarit de thème ou un fichier
+        # d'extension demandé par son URL (…/themes/Divi/404.php) s'exécute
+        # sans WordPress, et tombe sur la première fonction du cœur qu'il
+        # appelle. Trois signes, tous exigés : un fichier de wp-content, une
+        # pile réduite à « #0 {main} » (PRÉSENTE — sans pile on ne sait pas),
+        # et un message qui dit que WordPress n'est pas chargé.
+        if (RE_CONTENU.search(fichier) and cadres and all(RE_MAIN.match(c) for c in cadres)
+                and RE_WP_ABSENT.search(message)):
+            return "acces_direct"
         return ""
     # Aucun appelant : la requête n'est pas passée par index.php.
     if not cadres or all(RE_MAIN.match(c) for c in cadres):

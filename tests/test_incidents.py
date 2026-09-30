@@ -1765,6 +1765,44 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
             "/x/wp-includes/class-wp-hook.php", "Uncaught TypeError: foo()",
             ["#0 /x/wp-content/plugins/truc/a.php(12): foo()", "#1 {main}"]), "")
 
+    def test_gabarit_de_theme_appele_en_direct(self):
+        """…/themes/Divi/404.php demandé par son URL : WordPress n'est pas chargé."""
+        f = "/x/wp-content/themes/Divi/404.php"
+        msg = "Uncaught Error: Call to undefined function get_header()"
+        self.assertEqual(self._famille(f, msg, ["#0 {main}"]), "acces_direct")
+        # sans pile, on ne sait pas ; avec un appelant, c'est un défaut du site
+        self.assertEqual(self._famille(f, msg), "")
+        self.assertEqual(self._famille(f, msg, ["#0 /x/index.php(17): require()", "#1 {main}"]), "")
+        # une fonction qui n'est pas du cœur : vrai défaut de l'extension
+        self.assertEqual(self._famille("/x/wp-content/plugins/a/b.php",
+                                       "Uncaught Error: Call to undefined function mon_truc()",
+                                       ["#0 {main}"]), "")
+
+    def test_fatale_passagere_d_une_mise_a_jour(self):
+        """Fichier introuvable pendant le remplacement d'une extension : déclassé
+        si une MAJ de CE composant est journalisée autour, et seulement si
+        l'erreur ne se répète pas."""
+        def grp(n, fichier="/x/wp-content/plugins/seo/seo.php"):
+            return {"severity": "Fatal error", "file": fichier, "short": "seo.php", "line": 210,
+                    "message": "Uncaught Error: Failed opening required '/x/wp-content/plugins/seo/a.php'",
+                    "count": n, "first": "2026-09-30 05:01:01", "last": "2026-09-30 05:01:01"}
+        t = A.parse_ts("2026-09-30 05:00")
+        index = {"a.fr": ("srv1", {"domain": "a.fr", "via": "ssh"})}
+
+        def familles(groupes, majs):
+            with mock.patch.object(A, "incident_json",
+                                   return_value={"sites": [{"domain": "a.fr", "groups": groupes}]}), \
+                 mock.patch.object(A, "maj_recentes", return_value=majs):
+                return [(i["extra"]["famille"], i["bucket"]) for i in A.inc_php_fatal(index, time.time())]
+
+        self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t]}), [("maj_en_cours", "plan")])
+        # aucune mise à jour de ce composant : vrai problème
+        self.assertEqual(familles([grp(1)], {("a.fr", "autre"): [t]}), [("", "now")])
+        # mise à jour trop loin dans le temps
+        self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t - 6 * 3600]}), [("", "now")])
+        # l'erreur se répète : le site est cassé pour de bon
+        self.assertEqual(familles([grp(40)], {("a.fr", "seo"): [t]}), [("", "now")])
+
     def test_incident_declasse_mais_conserve(self):
         """Déclassée, pas supprimée : le volume dit quelque chose du bruit
         encaissé, mais il quitte la file des urgences."""

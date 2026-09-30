@@ -1516,6 +1516,10 @@ def _ou_txt(ou):
 def _plugin_map(site):
     return {p.get("name"): p for p in (site.get("plugins_list") or []) if p.get("name")}
 
+def _theme_map(site):
+    return {t.get("name"): t for t in (site.get("themes_list") or [])
+            if isinstance(t, dict) and t.get("name")}
+
 def _admin_map(site):
     return {a.get("login"): a for a in (site.get("admins") or []) if a.get("login")}
 
@@ -1571,6 +1575,17 @@ def diff_fleets(old, new, ts):
             for name in op:
                 if name not in np_:
                     mk(dom, "plugin_remove", "info", f"− extension {name}")
+
+        # Thèmes : seules les versions sont journalisées (pas les ajouts ni les
+        # activations, que rien ne lit). Sans cette ligne, un thème mis à jour
+        # la nuit ne laissait aucune trace, et le bilan des mises à jour
+        # automatiques le rangeait à tort dans « sans effet ».
+        ot, nt = _theme_map(prev), _theme_map(ns)
+        if ot and nt:
+            for name, t in nt.items():
+                pv, nvv = (ot.get(name) or {}).get("version"), t.get("version")
+                if pv and nvv and pv != nvv:
+                    mk(dom, "theme_update", "info", f"{name} {pv} → {nvv}")
 
         oa, na = _admin_map(prev), _admin_map(ns)
         if oa and na:

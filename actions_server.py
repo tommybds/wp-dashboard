@@ -236,6 +236,7 @@ CHANGE_LABELS = {
     "core": "cœur WordPress", "php": "PHP",
     "plugin_add": "extension ajoutée", "plugin_remove": "extension retirée",
     "plugin_update": "extension mise à jour", "plugin_status": "extension activée/désactivée",
+    "theme_update": "thème mis à jour",
     "admin_add": "admin ajouté", "admin_remove": "admin retiré", "updraft": "réglage sauvegarde",
     "install_new": "installation suivie", "install_moved": "installation remplacée",
     "install_gone": "installation plus suivie",
@@ -5024,6 +5025,52 @@ def inc_down_probe(server, s, now):
                "source": "sonde", "since": str(p.get("checked_at") or "")})]
 
 
+# Fatale PASSAGÈRE d'une mise à jour. WordPress remplace une extension fichier
+# par fichier, sans mode maintenance pour les requêtes déjà en vol : pendant une
+# ou deux secondes, un `require` vise un fichier pas encore reposé. La fatale
+# est réelle, mais elle ne dit rien de l'état du site une fois la mise à jour
+# finie. Depuis que des sites se mettent à jour seuls la nuit, il en tombait
+# chaque matin dans « nouveaux problèmes ».
+RE_FICHIER_MANQUANT = re.compile(r"Failed opening required|failed to open stream", re.I)
+RE_SLUG_CONTENU = re.compile(r"(?:^|/)wp-content/(?:plugins|themes)/([^/]+)/")
+MAJ_FENETRE_S = 3 * 3600      # écart toléré entre la fatale et la MAJ journalisée
+MAJ_MAX_OCCURRENCES = 5       # au-delà, ce n'est plus passager : le site est cassé
+
+
+def maj_recentes(now, jours=3):
+    """{(domaine, slug): [instants]} des mises à jour journalisées récemment."""
+    out = {}
+    for c in read_jsonl_tail(CHANGES_PATH, 4000):
+        if c.get("kind") not in ("plugin_update", "theme_update"):
+            continue
+        try:
+            t = time.mktime(time.strptime(str(c.get("ts")), "%Y-%m-%d %H:%M"))
+        except (ValueError, TypeError):
+            continue
+        if t < now - jours * 86400:
+            continue
+        slug = str(c.get("detail") or "").split(" ", 1)[0]
+        out.setdefault((c.get("domain"), slug), []).append(t)
+    return out
+
+
+def fatale_de_mise_a_jour(dom, g, n, majs):
+    """Vrai si ce groupe d'erreurs est le passage d'une mise à jour.
+
+    Quatre conditions, toutes exigées : un fichier introuvable, dans une
+    extension ou un thème, PEU de fois (un site cassé pour de bon échoue à
+    chaque visite), et une mise à jour de CE composant journalisée autour."""
+    if n > MAJ_MAX_OCCURRENCES or not RE_FICHIER_MANQUANT.search(str(g.get("message") or "")):
+        return False
+    m = RE_SLUG_CONTENU.search(str(g.get("file") or g.get("short") or ""))
+    if not m:
+        return False
+    quand = parse_ts(g.get("last") or g.get("first"))
+    if not quand:
+        return False
+    return any(abs(t - quand) <= MAJ_FENETRE_S for t in majs.get((dom, m.group(1)), ()))
+
+
 def inc_php_fatal(index, now):
     """Erreurs PHP fatales de la fenêtre courante de php_errors.json.
 
@@ -5034,6 +5081,10 @@ def inc_php_fatal(index, now):
     """
     res = incident_json(PHPERR_PATH, {})
     out = []
+    try:
+        majs = maj_recentes(now)
+    except Exception:
+        majs = {}                         # journal illisible : rien n'est déclassé
     for s in (res.get("sites") or []):
         dom = s.get("domain") or ""
         if dom not in index:
@@ -5057,6 +5108,8 @@ def inc_php_fatal(index, now):
             # dit quelque chose du bruit que le site encaisse — mais elle cesse
             # d'occuper la file des urgences, où elle ne pouvait qu'user.
             famille = str(g.get("famille") or "")
+            if not famille and fatale_de_mise_a_jour(dom, g, n, majs):
+                famille = "maj_en_cours"
             out.append(make_incident(
                 "php_fatal", "warning" if famille else "critical", dom,
                 f"{g.get('severity') or 'Fatal error'} sur {dom}",

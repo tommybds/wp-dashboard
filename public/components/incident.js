@@ -187,13 +187,21 @@ function queFaire(kind, d) {
    un coupable qui n'existe pas. */
 const PHP_BRUIT = {
   acces_direct:
-    "Personne n'a cassé quoi que ce soit : un robot a demandé ce fichier du cœur "
-    + "DIRECTEMENT, sans passer par WordPress. Hors de son contexte, ABSPATH n'existe "
-    + "pas, aucune fonction n'est chargée, et PHP s'arrête — la page publique, elle, "
-    + "n'a jamais été touchée. Rien à corriger dans le site. Pour faire taire le bruit, "
-    + "refusez l'accès direct aux fichiers du cœur au niveau du serveur web "
-    + "(wp-includes/ et wp-admin/includes/ n'ont aucune raison d'être appelés depuis "
-    + "l'extérieur).",
+    "Personne n'a cassé quoi que ce soit : un robot a demandé ce fichier PHP "
+    + "DIRECTEMENT par son adresse (un fichier du cœur, un gabarit de thème), sans "
+    + "passer par WordPress. Hors de son contexte, ABSPATH n'existe pas, aucune "
+    + "fonction n'est chargée, et PHP s'arrête — la page publique, elle, n'a jamais "
+    + "été touchée. Rien à corriger dans le site. Pour faire taire le bruit, refusez "
+    + "l'accès direct à ces fichiers au niveau du serveur web (wp-includes/, "
+    + "wp-admin/includes/ et les .php des thèmes n'ont aucune raison d'être appelés "
+    + "depuis l'extérieur).",
+  maj_en_cours:
+    "Erreur passagère d'une mise à jour : WordPress remplace une extension fichier par "
+    + "fichier, et une visite arrivée pendant ces quelques secondes a demandé un fichier "
+    + "pas encore reposé. Une mise à jour de ce composant est journalisée au même moment, "
+    + "et l'erreur ne s'est pas répétée. Rien à corriger ; vérifiez seulement que le site "
+    + "s'affiche. Si le compteur grimpe aux relevés suivants, ce n'est plus passager : "
+    + "la mise à jour a laissé l'extension incomplète, réinstallez-la.",
   rest_batch:
     "Un robot sonde la route REST /batch/v1. Le cœur lui renvoie une erreur, puis la "
     + "traite comme une requête — d'où la fatale. Elle vient de l'extérieur : le site "

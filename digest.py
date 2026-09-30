@@ -148,6 +148,12 @@ def resume_changements(changes):
         txt = f"• {pluriel(len(maj), 'extension')} à jour sur {pluriel(len(sites), 'site')}"
         lignes.append(txt + (f" ({', '.join(top)})" if top else ""))
 
+    # 3 bis. thèmes (journalisés depuis le 30/09)
+    themes = versions_nettes(changes, "theme_update", RE_MAJ)
+    if themes:
+        lignes.append(f"• {pluriel(len(themes), 'thème')} à jour sur "
+                      f"{pluriel(len({d for d, _ in themes}), 'site')}")
+
     # 4. PHP. Un correctif de l'hébergeur (8.3.33 → 8.3.35) touche vingt sites
     #    d'un coup et n'appelle aucun geste : il est regroupé par transition. Un
     #    changement de BRANCHE (8.2 → 8.3), lui, peut casser un site : il reste
@@ -194,12 +200,49 @@ def resume_changements(changes):
 # ---------------------------------------------------------------------------
 #  Incidents : nouveaux / réglés depuis le bilan précédent
 # ---------------------------------------------------------------------------
+# Causes de fatale qu'on sait dire en une expression. Le message PHP brut,
+# coupé à 60 caractères (« Uncaught Error: Failed opening required
+# '/var/www/vhosts/les »), ne disait ni QUI est en cause ni si c'est grave.
+CAUSES_FATALE = [
+    (re.compile(r"Maximum execution time", re.I), "délai d’exécution dépassé"),
+    (re.compile(r"Allowed memory size", re.I), "mémoire insuffisante"),
+    (re.compile(r"Failed opening required|failed to open stream", re.I), "fichier introuvable"),
+    (re.compile(r"Call to undefined (function|method)", re.I), "fonction introuvable"),
+    (re.compile(r"Class .* not found", re.I), "classe introuvable"),
+    (re.compile(r"syntax error|Parse error", re.I), "erreur de syntaxe PHP"),
+    (re.compile(r"Undefined constant", re.I), "constante non définie"),
+]
+
+
+def libelle_fatale(i, detail):
+    """« erreur fatale dans l'extension wp-seopress (fichier introuvable), 12 fois »."""
+    x = i.get("extra") if isinstance(i.get("extra"), dict) else {}
+    fichier = str(x.get("file") or "")
+    message = str(x.get("message") or detail)
+    m = re.search(r"wp-content/(plugins|themes)/([^/]+)", fichier)
+    if m:
+        ou = ("l’extension " if m.group(1) == "plugins" else "le thème ") + m.group(2)
+    elif re.search(r"(^|/)(wp-includes|wp-admin)/", fichier):
+        ou = "le cœur WordPress"
+    else:
+        ou = ""
+    cause = next((txt for motif, txt in CAUSES_FATALE if motif.search(message)), "")
+    if not ou and not cause:                  # rien de reconnu : le message, faute de mieux
+        return "erreur fatale : " + detail.split(" — ")[0][:60]
+    quoi = "erreur fatale" + (f" dans {ou}" if ou else "") + (f" ({cause})" if cause else "")
+    try:
+        n = int(x.get("count") or 1)
+    except (TypeError, ValueError):
+        n = 1
+    return quoi + (f", {n} fois" if n > 1 else "")
+
+
 def libelle(i):
     """« site : quoi » en une ligne courte, sans répéter le nom du site."""
     site = i.get("site") or i.get("server") or ""
     kind, detail = i.get("kind"), str(i.get("detail") or "")
     if kind == "php_fatal":
-        quoi = "erreur fatale : " + detail.split(" — ")[0][:60]
+        quoi = libelle_fatale(i, detail)
     elif kind in ("down", "down_probe"):
         quoi = "injoignable (" + detail[:50] + ")"
     elif kind == "cert_expiring":
