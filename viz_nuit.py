@@ -47,6 +47,7 @@ import actions_server as A  # noqa: E402
 
 PATH = os.path.join(DATA, "viz_nuit.json")
 CHANGES_PATH = os.path.join(DATA, "changes.jsonl")
+MAJ_NUIT = os.path.join(DATA, "maj_nuit.json")
 FENETRE_H = 26
 # Un scan du plugin « couvre » une mise à jour journalisée s'il a eu lieu au plus
 # tard 3 h avant la ligne de journal : la collecte (toutes les 30 min) relève la
@@ -371,6 +372,12 @@ def main():
     dry = "--dry-run" in sys.argv[1:]
     now = time.time()
     precedent = (load_json(PATH, {}) or {}).get("sites") or {}
+    # Sites que le dashboard a mis à jour lui-même cette nuit (maj_nuit.py,
+    # 4 h) : la chaîne Contrôlée a déjà scanné, jugé et, au besoin, annulé.
+    # Repasser derrière ferait un second retour arrière et une seconde alerte.
+    faits = {d for d, r in ((load_json(MAJ_NUIT, {}) or {}).get("sites") or {}).items()
+             if isinstance(r, dict) and now - (r.get("ts") or 0) < 12 * 3600
+             and r.get("verdict") not in ("rien à faire", "bloqué", "simulation")}
     resultats = {}
     for srv_name, s in A.visible_sites():
         if s.get("via") == "rest" or s.get("preprod"):
@@ -379,6 +386,8 @@ def main():
         if not (v.get("connected") and v.get("has_cli")):
             continue
         cle = s.get("kuma") or s.get("domain")
+        if s.get("domain") in faits:
+            continue
         try:
             r = examiner(srv_name, s, now, rattraper=not dry)
             if not r and isinstance(precedent.get(cle), dict) and precedent[cle].get("ecarts"):

@@ -60,7 +60,8 @@ class IncidentsBase(unittest.TestCase):
         self._sauv = {k: getattr(A, k) for k in
                       ("BASE", "DATA", "FLEET_PATH", "PHPERR_PATH", "VULNS_FOUND_PATH",
                        "CHECKSUMS_PATH", "SETTINGS_PATH", "SESSION_SECRET_PATH", "LOG",
-                       "ACKS_PATH", "SEEN_PATH")}
+                       "ACKS_PATH", "SEEN_PATH", "MAJ_NUIT_PATH", "AUTO_MODE_PATH",
+                       "VIZ_NUIT_PATH")}
         A.BASE = self.root
         A.DATA = self.data
         A.FLEET_PATH = os.path.join(self.data, "fleet.json")
@@ -72,6 +73,9 @@ class IncidentsBase(unittest.TestCase):
         A.LOG = os.path.join(self.data, "actions.log")
         A.ACKS_PATH = os.path.join(self.data, "incident_acks.json")
         A.SEEN_PATH = os.path.join(self.data, "incident_seen.json")
+        A.MAJ_NUIT_PATH = os.path.join(self.data, "maj_nuit.json")
+        A.AUTO_MODE_PATH = os.path.join(self.data, "auto_mode.json")
+        A.VIZ_NUIT_PATH = os.path.join(self.data, "viz_nuit.json")
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         self.addCleanup(self._restaurer)

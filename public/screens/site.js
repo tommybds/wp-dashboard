@@ -96,6 +96,7 @@ const ACT_LIB = {
   themes_autoupdate_off: 'Désactivation des auto-MAJ des thèmes',
   auto_rollback_on: 'Retour arrière automatique activé',
   auto_rollback_off: 'Retour arrière automatique désactivé',
+  auto_mode_on: 'Mode automatique activé', auto_mode_off: 'Mode automatique désactivé',
   verify_checksums: 'Intégrité du cœur', vizproof_install: 'Installation VizProof',
   viz_baseline: 'Baseline visuelle', viz_scan: 'Scan visuel', viz_disconnect: 'Dissociation VizProof',
   rescan: 'Re-scan',
@@ -375,7 +376,7 @@ function ongletReglages(s) {
         : chipEl('partielles (' + tAuto + '/' + tTotal + ')', 'warn');
   const viz = vizConnected(s);
   blocs.push(h('section', { class: 'sitesec' },
-    h('h3', { text: 'Mises à jour automatiques' }),
+    h('h3', { text: 'Mises à jour automatiques natives (WordPress, hébergeur)' }),
     h('div', { class: 'regl' },
       h('span', { class: 'regl-l' }, h('b', { text: 'Extensions' }), ' ', etatAuto),
       h('span', { class: 'actions' },
@@ -391,15 +392,15 @@ function ongletReglages(s) {
         bouton('themes_autoupdate_off', 'Désactiver pour tous', 'x',
           { raison: tAuto === 0 ? 'déjà désactivées' : '' }))),
     h('div', { class: 'regl' },
-      h('span', { class: 'regl-l' }, h('b', { text: 'Retour arrière automatique' }), ' ',
-        h('span', { class: 'muted', text: 'et bilan des nuits : réglés dans l’écran Mises à jour' })),
+      h('span', { class: 'regl-l' }, h('b', { text: 'Mode automatique du dashboard' }), ' ',
+        h('span', { class: 'muted', text: 'mise à jour Contrôlée chaque nuit, retour arrière : écran Mises à jour' })),
       h('a', { class: 'btn sm', href: '#maj' }, iconEl('zap'), 'Mises à jour')),
     h('p', { class: 'hint hint-tight' },
-      'Les nouvelles versions s’appliquent alors la nuit (l’hébergeur ou WordPress), sans passer par le dashboard. ',
-      viz ? h('span', {}, 'VizProof étant relié, chaque mise à jour automatique est suivie d’un ',
-        h('b', { text: 'scan visuel' }), '.')
-        : h('span', {}, h('b', { text: 'Aucun contrôle après coup' }),
-          ' sur ce site : VizProof n’y est pas relié.')),
+      'Ces réglages-ci laissent WordPress ou l’hébergeur appliquer les nouvelles versions seuls, '
+      + 'sans référence d’avant ni retour arrière depuis une archive',
+      viz ? ' (VizProof scanne après coup).' : h('span', {}, ' — et ', h('b', { text: 'sans aucun contrôle' }),
+        ' ici : VizProof n’est pas relié.'),
+      ' Le mode automatique du dashboard les coupe et prend le relais.'),
 ));
 
   /* --- liaisons --- */

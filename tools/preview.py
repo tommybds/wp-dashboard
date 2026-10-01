@@ -608,7 +608,9 @@ def ack_vu(e):
 
 # Mode automatique bouchonné : le retour arrière se coche depuis l'écran
 # Mises à jour, et la case doit rester cochée au rechargement.
-AUTO_MODES = {"site-00.exemple.fr": {"rollback": True, "depuis": "2026-09-29 10:00"}}
+AUTO_MODES = {"site-00.exemple.fr": {"rollback": True, "depuis": "2026-09-29 10:00"},
+              "site-03.exemple.fr": {"rollback": True, "depuis": "2026-10-01 15:00"},
+              "site-06.exemple.fr": {"rollback": False, "depuis": "2026-10-01 15:00"}}
 
 
 def auto_state():
@@ -616,10 +618,22 @@ def auto_state():
     scan du plugin sans écart, scan rattrapé par le dashboard avec une page en
     échec, et mise à jour annulée par le retour arrière automatique."""
     at = datetime.utcnow().replace(hour=3, minute=0, second=0).isoformat() + "+00:00"
-    return {"modes": AUTO_MODES, "nuit": {"generated_at": now(1)[:16], "sites": {
-        "site-00.exemple.fr": {"site": "site-00.exemple.fr", "domain": "site-00.exemple.fr", "at": at,
-                               "items": ["wp-mail-smtp", "wordfence"], "sans_effet": [], "non_couvertes": [],
-                               "ecarts": [], "report_url": "https://vizproof.example/r/1"},
+    t4 = time.time() - 3 * 3600
+    maj = {"generated_at": now(3)[:16], "ts": t4, "refus": {}, "sites": {
+        "site-00.exemple.fr": {"domain": "site-00.exemple.fr", "server": "plesk-mutu", "ts": t4,
+                               "items": ["wp-mail-smtp", "wordfence"], "ecartees": [], "verdict": "réussi",
+                               "report_url": "https://vizproof.example/r/1"},
+        "site-03.exemple.fr": {"domain": "site-03.exemple.fr", "server": "plesk-mutu", "ts": t4,
+                               "items": ["elementor", "thème astra"], "ecartees": [],
+                               "verdict": "annulé (retour arrière)", "ecarts_apres": 0,
+                               "cause": "Contrôle visuel VizProof : 1 page en échec (Contact, mobile)",
+                               "report_url": "https://vizproof.example/r/3"},
+        "site-06.exemple.fr": {"domain": "site-06.exemple.fr", "server": "vps-1", "ts": t4,
+                               "items": ["gravityforms"], "ecartees": ["elementor 3.30.1"], "verdict": "bloqué",
+                               "cause": "écart VizProof non réglé (Accueil) : mettre à jour par-dessus en "
+                                        "ferait la nouvelle référence — à régler ou accepter dans VizProof"},
+    }}
+    return {"modes": AUTO_MODES, "maj": maj, "nuit": {"generated_at": now(1)[:16], "sites": {
         "site-04.exemple.fr": {"site": "site-04.exemple.fr", "domain": "site-04.exemple.fr", "at": at,
                                "items": ["elementor"], "sans_effet": ["astra-addon"],
                                "non_couvertes": ["elementor"], "rattrapage": 2,
@@ -1394,12 +1408,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json(200, {"ok": True, "id": corps.get("id"), "removed": True})
         if chemin == "/api/mgmt/auto_mode":
             dom = str(corps.get("domain") or "")
-            if corps.get("rollback") not in (True, False):
-                return self._json(400, {"error": "rollback doit valoir true ou false"})
-            if corps["rollback"]:
-                AUTO_MODES[dom] = {"rollback": True, "depuis": now(0)[:16]}
-            else:
+            if corps.get("auto") is False:
                 AUTO_MODES.pop(dom, None)
+            else:
+                e = AUTO_MODES.setdefault(dom, {"rollback": False, "depuis": now(0)[:16]})
+                if corps.get("rollback") in (True, False):
+                    e["rollback"] = corps["rollback"]
             return self._json(200, {"ok": True, "modes": AUTO_MODES})
         gere = self._mgmt_post(chemin, corps)
         if gere is not None:

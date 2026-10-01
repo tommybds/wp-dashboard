@@ -47,6 +47,8 @@ const KINDS = {
   viz_not_scanned: 'MAJ auto sans contrôle visuel',
   auto_update_noop: 'MAJ auto sans effet',
   auto_rollback: 'MAJ auto annulée',
+  auto_update_blocked: 'MAJ auto en attente',
+  auto_update_failed: 'MAJ auto non faite',
 };
 
 export const kindLabel = k => KINDS[k] || (k ? 'autre' : 'incident');
@@ -179,14 +181,22 @@ function queFaire(kind, d) {
       + "validation, DNS changé, tâche planifiée arrêtée. Renouvelez à la main si "
       + "l'échéance est proche, puis réparez le renouvellement automatique — sinon "
       + "l'alerte reviendra à l'identique.",
-    auto_rollback: "VizProof a vu une page en échec après la mise à jour automatique de la "
-      + "nuit, et le dashboard a remis les composants concernés à leur version d'avant. "
-      + "Ils sont sortis des mises à jour automatiques : sans cela, la même version "
-      + "repasserait la nuit suivante. Regardez le rapport VizProof pour comprendre ce qui "
-      + "cassait, puis reprenez la mise à jour à la main (mise à jour contrôlée) quand "
-      + "l'éditeur a corrigé, ou après avoir adapté le site. Le retour arrière remet les "
-      + "fichiers, pas les données : une extension qui a migré ses tables peut demander "
-      + "une vérification.",
+    auto_rollback: "La mise à jour de la nuit a cassé quelque chose (page en échec pour "
+      + "VizProof, accueil en erreur, WordPress tombé) et le site a été remis dans son état "
+      + "d'avant. Les versions refusées ne seront pas retentées : la mise à jour repartira "
+      + "d'elle-même à la version suivante de l'éditeur. Regardez le rapport VizProof pour "
+      + "comprendre ce qui cassait ; pour forcer cette version-là malgré tout, faites une "
+      + "mise à jour contrôlée depuis la page du site. Le retour arrière remet les fichiers, "
+      + "pas les données : une extension qui a migré ses tables peut demander une vérification.",
+    auto_update_blocked: "Le site est en mise à jour automatique, mais le dernier rapport "
+      + "VizProof montre des pages en échec. Mettre à jour par-dessus prendrait l'état cassé "
+      + "comme nouvelle référence : la nuit attend. Ouvrez le rapport : si l'écart est voulu "
+      + "(contenu modifié, carrousel), acceptez-le comme référence dans VizProof ; sinon, "
+      + "réparez la page. Les mises à jour reprennent la nuit suivante.",
+    auto_update_failed: "La mise à jour de la nuit s'est arrêtée avant de toucher au site : "
+      + "site déjà en erreur au départ, référence VizProof impossible alors qu'elle est "
+      + "exigée, ou erreur du dashboard. Rien n'a changé sur le site ; la cause est ci-dessus. "
+      + "La nuit suivante retentera d'elle-même.",
     php_eol: "Ces sites tournent sur une version de PHP qui ne reçoit plus de correctifs "
       + "de sécurité. Le changement se prépare : vérifier la compatibilité des extensions "
       + "et du thème, puis basculer site par site avec une sauvegarde fraîche. Commencez "

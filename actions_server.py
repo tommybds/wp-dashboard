@@ -230,6 +230,9 @@ ROLLBACK_INDEX_PATH = os.path.join(DATA, "rollback_index.json")
 # collecte) ; ce fichier ne porte que ce que WordPress ne sait pas faire.
 #   {domaine: {"rollback": true, "depuis": "AAAA-MM-JJ HH:MM"}}
 AUTO_MODE_PATH = os.path.join(DATA, "auto_mode.json")
+# Mises à jour de la nuit faites PAR LE DASHBOARD (maj_nuit.py, 4 h) sur les
+# sites en mode automatique : verdict par site + versions refusées.
+MAJ_NUIT_PATH = os.path.join(DATA, "maj_nuit.json")
 # Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
 # extension gelée (parce qu'une version casse le site, ou qu'un client valide
 # avant) reste installée mais n'est jamais mise à jour par le dashboard.
@@ -3682,7 +3685,12 @@ def wporg_versions(slug, limit=40, kind="plugin"):
 
 
 def auto_mode_load():
-    """{domaine: {rollback, depuis}} — réglages du mode automatique."""
+    """{domaine: {rollback, depuis}} — sites en mode automatique.
+
+    Depuis le 01/10, la PRÉSENCE d'un site ici veut dire « le dashboard le met à
+    jour chaque nuit » (maj_nuit.py) ; `rollback` dit si une page en échec
+    annule la mise à jour. Les MAJ automatiques natives (WordPress, et donc WP
+    Toolkit qui les lit) sont coupées sur ces sites à l'activation."""
     d = load_json(AUTO_MODE_PATH, {})
     return d if isinstance(d, dict) else {}
 
@@ -5641,6 +5649,66 @@ def inc_viz_nuit(index, now):
     return out
 
 
+def inc_maj_nuit(index, now):
+    """Mises à jour de la nuit faites par le dashboard (data/maj_nuit.json).
+
+      * `auto_rollback`        — la chaîne a annulé la mise à jour (page en
+        échec, accueil cassé) : les versions refusées ne seront pas retentées ;
+      * `viz_auto_update`      — mise à jour conservée malgré un écart visuel
+        (retour arrière automatique non coché) : il faut regarder le site ;
+      * `auto_update_blocked`  — rien n'a été fait parce qu'un écart VizProof
+        n'est pas réglé : mettre à jour par-dessus en ferait la référence ;
+      * `auto_update_failed`   — la chaîne s'est arrêtée avant de mettre à jour
+        (site déjà en erreur, baseline exigée impossible, erreur interne).
+    Un bilan de plus de 30 h est périmé : le script repasse chaque nuit.
+    """
+    data = incident_json(MAJ_NUIT_PATH, {})
+    out = []
+    for dom, r in ((data or {}).get("sites") or {}).items():
+        if not isinstance(r, dict):
+            continue
+        cle = dom if dom in index else next((k for k, v in index.items()
+                                             if (v[1] or {}).get("domain") == dom), None)
+        if not cle:
+            continue
+        since = to_number(r.get("ts"))
+        if since is None or now - since > 30 * 3600:
+            continue
+        server = r.get("server") or index[cle][0]
+        verdict = str(r.get("verdict") or "")
+        items = ", ".join(r.get("items") or []) or "?"
+        cause = str(r.get("cause") or "")
+        x = {"items": r.get("items") or [], "verdict": verdict, "report_url": r.get("report_url") or "",
+             "cause": cause}
+        lien = {"tab": "maj", "sub": ""}
+        if verdict.startswith("annulé (retour"):
+            out.append(make_incident(
+                "auto_rollback", "warning", cle, f"Mise à jour de nuit annulée sur {cle}",
+                f"{items} remis en version précédente" + (f" — {cause}" if cause else "")
+                + " · ces versions ne seront pas retentées",
+                site=cle, server=server, since=since, now=now, link=lien, extra=x))
+        elif verdict.startswith("ÉCHEC"):
+            out.append(make_incident(
+                "auto_rollback", "critical", cle, f"Mise à jour de nuit en échec sur {cle}",
+                f"{items} — le retour arrière n'a pas rendu un site sain" + (f" ({cause})" if cause else ""),
+                site=cle, server=server, since=since, now=now, link=lien, extra=x))
+        elif verdict == "réussie avec anomalies visuelles":
+            out.append(make_incident(
+                "viz_auto_update", "warning", cle, f"Écart visuel après la mise à jour de nuit sur {cle}",
+                f"{items} → mise à jour conservée, écart à regarder",
+                site=cle, server=server, since=since, now=now, link=lien, extra=x))
+        elif verdict == "bloqué":
+            out.append(make_incident(
+                "auto_update_blocked", "warning", cle, f"Mises à jour de nuit en attente sur {cle}",
+                cause or "un écart VizProof n'est pas réglé",
+                site=cle, server=server, since=since, now=now, link=lien, bucket="plan", extra=x))
+        elif verdict in ("annulé", "impossible", "erreur"):
+            out.append(make_incident(
+                "auto_update_failed", "warning", cle, f"Mise à jour de nuit non faite sur {cle}",
+                cause or verdict, site=cle, server=server, since=since, now=now, link=lien, extra=x))
+    return out
+
+
 # Émetteurs qui renouvellent seuls, sans intervention humaine. Pour eux
 # l'échéance n'est pas l'information utile : elle ne se rapproche que si le
 # renouvellement automatique est déjà en panne. L'alerte ne dit donc pas
@@ -5781,6 +5849,7 @@ def incidents_snapshot(now=None):
     source("fleet_servers", lambda: inc_server_stale(servers, now))
     source("updraft", lambda: inc_backup(sites, rules, now))
     source("viz_nuit", lambda: inc_viz_nuit(index, now))
+    source("maj_nuit", lambda: inc_maj_nuit(index, now))
     source("certs", lambda: inc_certs(index, rules, now))
     source("php_eol", lambda: inc_php_eol(sites, rules, now))
 
@@ -7772,8 +7841,10 @@ class Handler(BaseHTTPRequestHandler):
             # la nuit (viz_nuit.json). Les compteurs de MAJ auto par site sont
             # déjà dans fleet.json, que l'interface a sous la main.
             nuit = load_json(VIZ_NUIT_PATH, {})
+            maj = load_json(MAJ_NUIT_PATH, {})
             self._send(200, {"modes": auto_mode_load(),
-                             "nuit": nuit if isinstance(nuit, dict) else {}})
+                             "nuit": nuit if isinstance(nuit, dict) else {},
+                             "maj": maj if isinstance(maj, dict) else {}})
         elif p == "/api/mgmt/counts":
             # Pastilles de la barre latérale : même agrégat, mis en cache 30 s.
             self._send(200, sidebar_counts())
@@ -8208,29 +8279,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": bool(job)})
 
         if p == "/api/mgmt/auto_mode":
+            # {auto: bool, rollback: bool} — `auto` absent = on ne touche qu'au
+            # retour arrière d'un site déjà en automatique.
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
             if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
                 return self._send(400, {"error": "cible invalide"})
-            if body.get("rollback") not in (True, False):
+            if "auto" in body and body.get("auto") not in (True, False):
+                return self._send(400, {"error": "auto doit valoir true ou false"})
+            if "rollback" in body and body.get("rollback") not in (True, False):
                 return self._send(400, {"error": "rollback doit valoir true ou false"})
             srv, site = find_site(server, domain)
             if not srv or not site:
                 return self._send(404, {"error": "site inconnu"})
-            actif = bool(body["rollback"])
+            if "auto" not in body and domain not in auto_mode_load():
+                return self._send(409, {"error": "le site n'est pas en mode automatique"})
+            auto = body.get("auto", True)
 
             def _muter(d):
                 d = d if isinstance(d, dict) else {}
-                if actif:
-                    d[domain] = {"rollback": True, "depuis": _now_s()[:16]}
-                else:
+                if not auto:
                     d.pop(domain, None)
+                    return d
+                e = d.get(domain) if isinstance(d.get(domain), dict) else {"depuis": _now_s()[:16]}
+                if "rollback" in body:
+                    e["rollback"] = bool(body["rollback"])
+                e.setdefault("rollback", False)
+                d[domain] = e
                 return d
 
             modes = update_json(AUTO_MODE_PATH, _muter, {})
+            if "auto" in body:
+                act, txt = (("auto_mode_on", "mode automatique activé (MAJ de nuit par le dashboard)")
+                            if auto else ("auto_mode_off", "mode automatique désactivé"))
+            else:
+                act = "auto_rollback_on" if body["rollback"] else "auto_rollback_off"
+                txt = "retour arrière automatique " + ("activé" if body["rollback"] else "désactivé")
             append_log({"ts": _now_s(), "source": "manuel", "server": server, "domain": domain,
-                        "action": "auto_rollback_on" if actif else "auto_rollback_off",
-                        "arg": None, "rc": 0, "duration_s": 0,
-                        "output_tail": "retour arrière automatique " + ("activé" if actif else "désactivé")})
+                        "action": act, "arg": None, "rc": 0, "duration_s": 0, "output_tail": txt})
             return self._send(200, {"ok": True, "modes": modes})
 
         if p == "/api/mgmt/override":
