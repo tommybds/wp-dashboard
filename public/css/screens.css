@@ -425,6 +425,27 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 td.wrapcell{white-space:normal;max-width:38ch}
 @media(max-width:560px){ .majmodes{grid-template-columns:1fr} .majmodes dd{margin-bottom:var(--s-8)} }
 
+/* ---- écran Gestion : installs ---------------------------------------------
+   Une liste à lire ; les champs vivent dans la fenêtre « Modifier ». Un install
+   non affiché dans le Parc se lit en retrait, sans disparaître. */
+.insttbl td{vertical-align:middle}
+.insttbl tr.inst-masque .inst-site b{color:var(--ink-2);font-weight:500}
+.insttbl .inst-suivi{margin:0 var(--s-8) 0 0}
+.insttbl td.inst-act{text-align:right;white-space:nowrap}
+.inst-h3{margin:var(--s-16) 0 var(--s-4);font-size:var(--t-14)}
+.inst-liaisons{align-items:start}
+.inst-liaisons dd{margin:0}
+@media(max-width:560px){
+  .insttbl thead{display:none}
+  .insttbl,.insttbl tbody{display:block}
+  .insttbl tr{display:flex;flex-wrap:wrap;align-items:center;gap:4px var(--s-12);
+    padding:var(--s-8) var(--s-12);border-bottom:1px solid var(--line-2)}
+  .insttbl td{border:0;padding:0;white-space:normal}
+  .insttbl td.inst-site{flex-basis:100%}
+  .insttbl td[data-l]::before{content:attr(data-l) " ";font-size:var(--t-12);color:var(--muted)}
+  .insttbl td.inst-act{margin-left:auto}
+}
+
 /* ---- écran Sécurité ------------------------------------------------------- */
 /* Sections repliables : le titre est un bouton (dans le h2, motif accordéon),
    suivi du compteur ; les gestes de la section n'apparaissent qu'ouverte. */
@@ -433,6 +454,7 @@ td.wrapcell{white-space:normal;max-width:38ch}
   font:inherit;color:inherit;cursor:pointer;text-align:left}
 .sec-pli:hover{color:var(--accent)}
 .sec-pliable.ouvert .sec-pli .tlchev{transform:rotate(90deg)}
+.sec-n{font-size:var(--t-12);font-weight:400;color:var(--muted)}
 .sec-n .chip{font-family:var(--f-body)}
 .sec-pliable:not(.ouvert){padding-top:var(--s-12);padding-bottom:var(--s-12);margin-bottom:var(--s-8)}
 .sec-pliable:not(.ouvert) .sechead{margin-bottom:0}

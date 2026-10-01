@@ -34,6 +34,7 @@ import { chipEl } from '../components/chip.js';
 import { vizOf, vizInfo } from '../components/viz.js';
 import { WPAUTH_ENABLED, WPAUTH_HELP, wpAuthorize, wpCredentials } from '../components/wpauth.js';
 import { openAdd, setAddHooks, restList, restDomain } from '../components/add-site.js';
+import { accordeon } from '../components/pliable.js';
 import { confirmRun } from './site.js';
 
 /* ---- état du module -------------------------------------------------------- */
@@ -63,29 +64,16 @@ function kumaAbsentEl(quoi) {
 }
 
 /* ============================================================================
-   Squelette : sommaire + six sections. Monté une seule fois ; ensuite seul le
-   CONTENU de chaque section est redessiné.
+   Squelette : six sections REPLIABLES (components/pliable.js). Repliée, une
+   section tient sur une ligne avec son compteur. Montée une seule fois ;
+   ensuite seul le CONTENU de chaque section est redessiné.
    ========================================================================== */
-const ANCRES = [
-  ['mgmt-serveurs', 'serveurs', 'Serveurs'],
-  ['mgmt-installs', 'installs', 'Installs découverts'],
-  ['mgmt-rest', 'mode-rest', 'Sites sans SSH'],
-  ['mgmt-moniteurs', 'moniteurs', 'Moniteurs Kuma'],
-  ['mgmt-docroots', 'docroots', 'Docroots'],
-  ['mgmt-nongeres', 'sites-non-geres', 'Non gérés'],
-];
-
-function sectionEl(id, titre, tete, ...corps) {
-  return h('section', { class: 'section secsec', id },
-    h('div', { class: 'sechead' }, h('h2', { text: titre }), tete),
-    ...corps);
-}
+const { section: sectionEl, resumer, basculer } = accordeon('dashMgmtOuvertes', 'mgmt-', ['mgmt-installs']);
 
 function monterMgmt() {
   if (MONTE) return;
   MONTE = true;
   mount('page-mgmt',
-    h('nav', { class: 'anchors', id: 'mgmt-somm', 'aria-label': 'Sections de la page Gestion' }),
     sectionServeurs(),
     sectionInstalls(),
     sectionRest(),
@@ -105,7 +93,7 @@ function compteursSommaire() {
   const aSuivre = toutes.filter(s => !suivi(s)).length;
   return {
     'mgmt-serveurs': [(m.servers || []).length, stale ? 'err' : 'mut'],
-    'mgmt-installs': [installs, aSuivre ? 'warn' : 'mut'],
+    'mgmt-installs': [installs, 'mut', aSuivre ? pluriel(aSuivre, 'non suivi') : ''],
     'mgmt-rest': [RESTSITES.length, 'mut'],
     'mgmt-moniteurs': [(m.kuma_monitors || []).filter(x => x && x.parent).length, 'mut'],
     'mgmt-docroots': [(m.extra_docroots || []).length, 'mut'],
@@ -114,15 +102,9 @@ function compteursSommaire() {
 }
 
 function majSommaire() {
-  const box = document.getElementById('mgmt-somm');
-  if (!box) return;
   const c = compteursSommaire();
-  mount(box, ANCRES.map(([id, slug, lbl]) => {
-    const n = c[id];
-    return h('a', { class: 'anchor', href: '#gestion/' + slug },
-      h('span', { text: lbl }),
-      n && n[0] ? chipEl(String(n[0]), n[1]) : null);
-  }));
+  Object.entries(c).forEach(([id, [n, niv, alerte]]) => resumer(id,
+    n ? chipEl(String(n), niv) : null, alerte ? [' ', chipEl(alerte, 'warn')] : null));
 }
 
 /** Toutes les installs découvertes, masquées comprises (ce n'est pas le parc). */
@@ -681,39 +663,30 @@ function sectionInstalls() {
   });
   q.oninput = debounce(renderInstalls, 200);
 
-  return sectionEl('mgmt-installs', 'Installs découverts',
-    [h('span', { class: 'small', id: 'mgmt-count' })],
+  return sectionEl('mgmt-installs', 'Installs découverts', null,
     h('p', { class: 'hint' },
       'Tous les WordPress trouvés en SSH. ',
       h('b', { text: 'Un install n’apparaît dans le Parc que s’il est suivi' }),
-      ' : le scan découvre, vous décidez. « Affichage » force la règle dans un sens ou dans l’autre '
-      + 'et prime alors sur le suivi. Le nom affiché est celui du moniteur Kuma quand il y en a un, '
-      + 'sinon le libellé saisi ici, sinon le domaine.'),
-    h('p', { class: 'hint' },
-      'Connecter un site installe la liaison temps réel : il pousse ses évènements (nouvel administrateur, '
-      + 'activation d’extension) sans attendre la collecte. Le dashboard ne garde PAS de témoin de cette '
-      + 'liaison pour un site en SSH : la colonne « Dashboard » montre le résultat de la dernière action '
-      + 'lancée d’ici, pas un état relu.'),
+      ' : le scan découvre, vous décidez — la case « Suivi » s’enregistre aussitôt. « Modifier » ouvre le '
+      + 'reste : nom affiché, client, environnement, affichage forcé, et les liaisons (moniteur Kuma, '
+      + 'liaison temps réel, identifiants WordPress).'),
     h('div', { class: 'filters' }, q, srv, vue,
       h('span', { class: 'spacer' }), h('span', { class: 'muted small', id: 'inst-count' })),
     h('div', { class: 'wrap' },
-      h('table', {},
+      h('table', { class: 'insttbl' },
         h('thead', {}, h('tr', { id: 'mgmt-th' })),
         h('tbody', { id: 'mgmt-tb' }))));
 }
 
-/* Colonnes des installs. Celles qui parlent de Kuma disparaissent quand Kuma
-   n'est pas branché — une colonne « Moniteur » vide sur toutes les lignes ne
-   dit rien, sinon que l'écran n'a pas été relu depuis. */
+/* Colonnes des installs : une liste à LIRE. Les champs à saisir vivent dans
+   la fenêtre « Modifier » — onze colonnes de champs ouverts faisaient un
+   formulaire de 40 lignes où l'on ne retrouvait plus l'état des sites. La
+   colonne Kuma disparaît quand Kuma n'est pas branché : vide sur toutes les
+   lignes, elle ne dirait rien. */
 function colonnesInstalls() {
-  const k = kumaActif();
-  return [
-    'Install (vhost)', 'Serveur', 'Nom affiché', 'Client',
-    ...(k ? ['Moniteur Kuma'] : []),
-    'Visibilité', 'Environnement',
-    ...(k ? ['Alias'] : []),
-    'Dashboard', 'WordPress', null,
-  ];
+  return ['Site', 'Serveur', 'Client', 'Environnement',
+    ...(kumaActif() ? ['Moniteur Kuma'] : []),
+    'WordPress', 'Suivi', null];
 }
 
 /* Le squelette de la page est monté AVANT que /api/mgmt/state n'ait dit si Kuma
@@ -735,7 +708,7 @@ function renderTeteInstalls() {
   if (!tr) return;
   mount(tr, colonnesInstalls().map(lbl => (lbl
     ? h('th', { text: lbl })
-    : h('th', {}, h('span', { class: 'sr-only', text: 'Enregistrer' })))));
+    : h('th', {}, h('span', { class: 'sr-only', text: 'Modifier' })))));
 }
 
 function remplirSelectServeurs() {
@@ -801,15 +774,16 @@ function depiler() {
   }
 }
 
-/** Cellule « WordPress » : identifiants d'application, remplie en différé. */
-function celluleWp(dom, srv) {
+/** Cellule « WordPress » : identifiants d'application, remplie en différé.
+    `compact` = l'état seul (liste) ; sinon avec ses boutons (fenêtre Modifier). */
+function celluleWp(dom, srv, compact = false) {
   const cell = h('span', { class: 'small' }, h('span', { class: 'muted', text: '…' }));
-  if (CRED.has(dom)) remplirWp(cell, dom, srv);
-  else fileCred(() => remplirWp(cell, dom, srv));
+  if (CRED.has(dom)) remplirWp(cell, dom, srv, compact);
+  else fileCred(() => remplirWp(cell, dom, srv, compact));
   return cell;
 }
 
-async function remplirWp(cell, dom, srv) {
+async function remplirWp(cell, dom, srv, compact = false) {
   if (!dom) { mount(cell, h('span', { class: 'muted', text: '—' })); return; }
   let j = CRED.get(dom);
   if (j === undefined) {
@@ -817,6 +791,13 @@ async function remplirWp(cell, dom, srv) {
     CRED.set(dom, j);
   }
   if (!j) { mount(cell, h('span', { class: 'muted', text: '—' })); return; }
+  if (compact) {
+    mount(cell, j.has_password
+      ? chipEl(j.verified === false ? 'à vérifier' : 'autorisé', j.verified === false ? 'warn' : 'ok',
+        { title: j.user ? 'compte ' + j.user : null })
+      : chipEl(WPAUTH_ENABLED ? 'non autorisé' : 'sans SSH', 'mut'));
+    return;
+  }
   if (j.has_password) {
     const rev = h('button', { type: 'button', class: 'btn sm', text: 'Révoquer' });
     const msg = h('span', { class: 'small' });
@@ -869,14 +850,13 @@ function installAvecOverride(s, m) {
 }
 
 /* ---- interrupteur « Suivi » ------------------------------------------------
-   Le suivi est la SEULE chose qui s'enregistre toute seule, sans le bouton de
-   la ligne : c'est un geste unique, sans rien à saisir à côté, et le Parc doit
-   refléter la décision tout de suite. En cas d'échec la case revient d'elle-même
-   à sa position : ne jamais montrer un réglage qui n'a pas été écrit. */
-function celluleVisibilite(s, redessiner) {
-  const on = suivi(s);
+   Le suivi est la SEULE chose qui s'enregistre depuis la liste, sans passer par
+   « Modifier » : c'est un geste unique, sans rien à saisir à côté, et le Parc
+   doit refléter la décision tout de suite. En cas d'échec la case revient
+   d'elle-même à sa position : ne jamais montrer un réglage qui n'a pas été écrit. */
+function celluleSuivi(s) {
   const cb = h('input', { type: 'checkbox', 'aria-label': 'Suivre ' + s.domain });
-  cb.checked = on;
+  cb.checked = suivi(s);
   const msg = h('span', { class: 'small' });
   cb.onchange = async e => {
     const v = e.target.checked;
@@ -886,32 +866,31 @@ function celluleVisibilite(s, redessiner) {
       if (r.ok === false) throw new Error(r.error || r.message || 'refus du serveur');
       mount(msg);
       await loadFleet();
-      redessiner();
+      renderInstalls();
     } catch (err) {
       e.target.checked = !v;
       mount(msg, chipEl('échec', 'err', { title: String(err) }));
     }
   };
-
-  const vis = h('select', { class: 'w-xs', 'aria-label': 'Affichage forcé de ' + s.domain },
-    h('option', { value: 'auto', text: 'suit le suivi' }),
-    h('option', { value: 'show', text: 'toujours afficher' }),
-    h('option', { value: 'hide', text: 'toujours masquer' }));
-  vis.value = s.visible === true ? 'show' : s.visible === false ? 'hide' : 'auto';
-  vis.dataset.role = 'vis';
-
   return h('td', {},
-    h('label', { class: 'fld' }, cb, ' Suivi'),
-    h('div', { class: 'mt1' }, vis),
-    // Le forçage ne se voit pas quand il dit la même chose que le suivi : on ne
-    // le signale que lorsqu'il le CONTREDIT, sinon la colonne crie pour rien.
+    h('label', { class: 'fld inst-suivi' }, cb, ' suivi'),
+    // Le forçage ne se voit que lorsqu'il CONTREDIT le suivi : s'il dit la même
+    // chose, la colonne crierait pour rien.
     affichageForce(s)
-      ? h('div', { class: 'mt1' }, chipEl('prime sur le suivi', 'warn', {
-        title: s.visible ? 'affiché dans le Parc bien que non suivi'
-          : 'masqué du Parc bien qu’il soit suivi',
-      }))
+      ? chipEl(s.visible ? 'affiché quand même' : 'masqué quand même', 'warn', {
+        title: 'l’affichage forcé (Modifier) prime sur le suivi',
+      })
       : null,
     msg);
+}
+
+/** Environnement tel qu'affiché, et d'où il vient. */
+function envTexte(s, ov) {
+  const manuel = !(ov.preprod === undefined || ov.preprod === null);
+  return {
+    env: s.preprod ? 'préproduction' : 'production',
+    origine: manuel ? 'posé à la main' : s.preprod_auto ? 'déduit du nom' : '',
+  };
 }
 
 function renderInstalls() {
@@ -933,7 +912,6 @@ function renderInstalls() {
 
   const toutes = toutesInstalls().map(s => installAvecOverride(s, m));
   let list = toutes;
-  mount('mgmt-count', chipEl(pluriel(list.length, 'install'), 'mut'));
   if (srvF) list = list.filter(s => s.srv === srvF);
   // Même règle que `allSites()` dans lib/state.js — importée, pas recopiée :
   // deux règles qui divergent, c'est un site qu'on croit suivi et qui ne l'est pas.
@@ -950,93 +928,152 @@ function renderInstalls() {
 
   mount(tb, list.length ? list.map(s => {
     const ov = m.overrides[s.domain] || {};
+    const nom = nomDeSite(s);
+    const { env, origine } = envTexte(s, ov);
     const mon = kName(s);
-    let monCell = null;
-    if (kumaActif()) {
-      if (mon) monCell = chipEl(mon, 'ok');
-      else {
-        const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('plus'), ' créer moniteur');
-        b.onclick = () => creerMoniteur(b, s.domain);
-        monCell = b;
-      }
-    }
-
-    const visTd = celluleVisibilite(s, renderInstalls);
-    const vis = visTd.querySelector('[data-role="vis"]');
-
-    const label = h('input', {
-      class: 'inp w-xs', placeholder: mon || s.domain, 'aria-label': 'Nom affiché de ' + s.domain,
-      title: mon ? 'Un moniteur Kuma nomme déjà ce site : c’est lui qui s’affiche.' : '',
-    });
-    // La VALEUR SAISIE, pas le nom résolu : `s.label` vaut déjà « nom Kuma,
-    // sinon libellé, sinon domaine » — le réinjecter écrirait le domaine dans
-    // l'override à chaque enregistrement de la ligne.
-    label.value = ov.label || '';
-    label.disabled = !!mon;
-    const client = h('input', {
-      class: 'inp w-xs', placeholder: 'client', 'aria-label': 'Client de ' + s.domain,
-      title: s.kuma_group ? 'Le groupe Kuma « ' + s.kuma_group + ' » prime sur cette valeur.' : '',
-    });
-    client.value = ov.client || '';
-    const alias = h('input', {
-      class: 'inp w-xs', placeholder: 'nom du moniteur', 'aria-label': 'Alias de ' + s.domain,
-    });
-    alias.value = ov.alias || '';
-
-    /* Trois états, pas deux : sans le « non » explicite, impossible de démentir
-       une détection par le nom — et sans « auto », impossible d'y revenir.
-       `cartoffset.sumoto.fr` est une préprod que son nom ne trahit pas, un
-       `test-pilates.fr` de client serait un vrai site : la main tranche. */
-    const env = h('select', { class: 'w-xs', 'aria-label': 'Environnement de ' + s.domain },
-      h('option', { value: 'auto', text: 'automatique', title: 'déduit du nom du site (dev., preprod., staging.…)' }),
-      h('option', { value: 'prod', text: 'production' }),
-      h('option', { value: 'preprod', text: 'préproduction' }));
-    env.value = ov.preprod === true ? 'preprod' : ov.preprod === false ? 'prod' : 'auto';
-    const envTd = h('td', {}, env,
-      h('div', { class: 'sub', text: 'affiché : ' + (s.preprod ? 'préproduction' : 'production')
-        + (ov.preprod === undefined || ov.preprod === null
-           ? (s.preprod_auto ? ' (déduit du nom)' : '') : ' (posé à la main)') }));
-
-    const save = h('button', {
-      type: 'button', class: 'btn sm',
-      title: 'Enregistrer le nom, le client, l’affichage forcé et l’environnement',
-    }, iconEl('check', { label: 'Enregistrer' }));
-    save.onclick = async () => {
-      setBusy(save);
-      const v = vis.value;
-      try {
-        const r = await api('/api/mgmt/override', {
-          domain: s.domain,
-          visible: v === 'show' ? true : v === 'hide' ? false : null,
-          label: label.value,
-          client: client.value,
-          preprod: env.value === 'preprod' ? true : env.value === 'prod' ? false : null,
-          ...(kumaActif() ? { alias: alias.value } : {}),
-        }) || {};
-        if (r.overrides) store.mgmt.overrides = r.overrides;
-      } catch (e) { /* le rechargement de la flotte dira l'état réel */ }
-      setIdle(save, null);
-      mount(save, iconEl('check', { label: 'Enregistré' }));
-      await loadFleet();
-    };
-
-    return h('tr', {},
-      h('td', {}, h('b', { text: s.domain }),
-        s.blogname ? h('div', { class: 'sub', text: s.blogname }) : null),
-      h('td', { class: 'muted', text: s.srv }),
-      h('td', {}, label,
-        h('div', { class: 'sub', text: 'affiché : ' + nomDeSite(s) })),
-      h('td', {}, client,
-        clientDe(s) ? h('div', { class: 'sub',
-          text: 'affiché : ' + clientDe(s) + (s.kuma_group ? ' (groupe Kuma)' : '') }) : null),
-      kumaActif() ? h('td', {}, monCell) : null,
-      visTd, envTd,
-      kumaActif() ? h('td', {}, alias) : null,
-      h('td', {}, celluleAgent(s)),
-      h('td', {}, celluleWp(s.domain, s.srv)),
-      h('td', {}, save));
+    const modif = h('button', { type: 'button', class: 'btn sm', 'aria-label': 'Modifier ' + s.domain, text: 'Modifier' });
+    modif.onclick = () => ouvrirInstall(s);
+    return h('tr', { class: estAffiche(s) ? null : 'inst-masque' },
+      h('td', { class: 'inst-site' }, h('b', { text: s.domain }),
+        nom && nom !== s.domain ? h('div', { class: 'sub', text: nom })
+          : s.blogname ? h('div', { class: 'sub', text: s.blogname }) : null),
+      h('td', { class: 'muted', 'data-l': 'Serveur', text: s.srv }),
+      h('td', { 'data-l': 'Client' }, clientDe(s)
+        ? [clientDe(s), s.kuma_group ? h('span', { class: 'sub', text: ' (groupe Kuma)' }) : null]
+        : h('span', { class: 'muted', text: '—' })),
+      h('td', { 'data-l': 'Environnement' },
+        s.preprod ? chipEl(env, 'mut') : h('span', { text: env }),
+        origine ? h('div', { class: 'sub', text: origine }) : null),
+      kumaActif() ? h('td', { 'data-l': 'Kuma' },
+        mon ? chipEl(mon, 'ok') : h('span', { class: 'muted', text: 'aucun' })) : null,
+      h('td', { 'data-l': 'WordPress' }, celluleWp(s.domain, s.srv, true)),
+      celluleSuivi(s),
+      h('td', { class: 'inst-act' }, modif));
   }) : h('tr', {}, h('td', { colspan: String(nCols) },
     h('span', { class: 'muted small', text: 'aucune install ne correspond au filtre.' }))));
+}
+
+/* ---- fenêtre « Modifier » d'une install -----------------------------------
+   Deux blocs, deux temps : les RÉGLAGES (nom, client, environnement, affichage,
+   alias) ne s'écrivent qu'au bouton Enregistrer ; les LIAISONS (moniteur Kuma,
+   liaison temps réel, identifiants WordPress) sont des gestes immédiats, chacun
+   avec son bouton et son résultat — comme avant dans la ligne. */
+let INST = null;
+
+function ouvrirInstall(s) {
+  const m = store.mgmt || {};
+  const ov = (m.overrides || {})[s.domain] || {};
+  const mon = kName(s);
+  const k = kumaActif();
+  const { env, origine } = envTexte(s, ov);
+
+  const label = champ({
+    id: 'instf-label', label: 'Nom affiché', value: ov.label || '', placeholder: mon || s.domain,
+    // La VALEUR SAISIE, pas le nom résolu : `s.label` vaut déjà « nom Kuma,
+    // sinon libellé, sinon domaine » — le réinjecter écrirait le domaine dans
+    // l'override à chaque enregistrement.
+    aide: mon ? 'Un moniteur Kuma nomme déjà ce site (« ' + mon + ' ») : c’est lui qui s’affiche.'
+      : 'Vide = le domaine. Affiché aujourd’hui : ' + nomDeSite(s) + '.',
+  });
+  label.ctrl.disabled = !!mon;
+  const client = champ({
+    id: 'instf-client', label: 'Client', value: ov.client || '', placeholder: 'client',
+    aide: s.kuma_group ? 'Le groupe Kuma « ' + s.kuma_group + ' » prime sur cette valeur.'
+      : 'Regroupe les sites dans le Parc et les bilans.',
+  });
+  /* Trois états, pas deux : sans le « non » explicite, impossible de démentir
+     une détection par le nom — et sans « auto », impossible d'y revenir.
+     `cartoffset.sumoto.fr` est une préprod que son nom ne trahit pas, un
+     `test-pilates.fr` de client serait un vrai site : la main tranche. */
+  const envC = champ({
+    id: 'instf-env', label: 'Environnement',
+    value: ov.preprod === true ? 'preprod' : ov.preprod === false ? 'prod' : 'auto',
+    options: [
+      { value: 'auto', label: 'automatique (selon le nom)' },
+      { value: 'prod', label: 'production' },
+      { value: 'preprod', label: 'préproduction' },
+    ],
+    aide: 'Affiché aujourd’hui : ' + env + (origine ? ' (' + origine + ')' : '')
+      + '. Automatique = préprod si le nom commence par dev., preprod., staging.… '
+      + 'Une préprod est regroupée à part dans le bilan et exclue des vérifications de nuit.',
+  });
+  const vis = champ({
+    id: 'instf-vis', label: 'Affichage dans le Parc',
+    value: s.visible === true ? 'show' : s.visible === false ? 'hide' : 'auto',
+    options: [
+      { value: 'auto', label: 'suit le suivi' },
+      { value: 'show', label: 'toujours afficher' },
+      { value: 'hide', label: 'toujours masquer' },
+    ],
+    aide: 'Forcer l’affichage prime sur la case « Suivi » de la liste. À réserver aux exceptions.',
+  });
+  const alias = k ? champ({
+    id: 'instf-alias', label: 'Alias Kuma', value: ov.alias || '', placeholder: 'nom du moniteur',
+    aide: 'Nom du moniteur Kuma à rattacher quand il ne porte pas le domaine.',
+  }) : null;
+  INST = { s, label, client, envC, vis, alias };
+
+  let monEl;
+  if (!k) monEl = h('span', { class: 'muted', text: 'Uptime Kuma n’est pas branché.' });
+  else if (mon) monEl = chipEl(mon, 'ok');
+  else {
+    const b = h('button', { type: 'button', class: 'btn sm' }, iconEl('plus'), ' Créer le moniteur');
+    b.onclick = () => creerMoniteur(b, s.domain);
+    monEl = b;
+  }
+
+  document.getElementById('instm-title').textContent = 'Modifier ' + s.domain;
+  mount('instm-intro', 'Serveur ', h('b', { text: s.srv }),
+    s.blogname ? ' · titre WordPress « ' + s.blogname + ' »' : '');
+  mount('instm-body',
+    h('div', { class: 'fieldrow' }, label.wrap, client.wrap),
+    h('div', { class: 'fieldrow' }, envC.wrap, vis.wrap),
+    alias ? alias.wrap : null,
+    h('h3', { class: 'inst-h3', text: 'Liaisons' }),
+    h('p', { class: 'hint', text: 'Ces gestes s’appliquent tout de suite, sans « Enregistrer ».' }),
+    h('dl', { class: 'kv inst-liaisons' },
+      h('dt', { class: 'k', text: 'Moniteur Kuma' }), h('dd', {}, monEl),
+      h('dt', { class: 'k', text: 'Liaison temps réel' }), h('dd', {}, celluleAgent(s),
+        s.via === 'rest' ? null : h('div', { class: 'muted small mt1',
+          text: 'Le site pousse ses évènements (nouvel administrateur, activation d’extension) sans '
+            + 'attendre la collecte. Aucun témoin n’est gardé : le résultat affiché est celui du geste.' })),
+      h('dt', { class: 'k', text: 'Identifiants WordPress' }), h('dd', {}, celluleWp(s.domain, s.srv))));
+  mount('instm-err');
+  const ok = document.getElementById('instm-ok');
+  setIdle(ok, 'Enregistrer');
+  document.getElementById('instmodal').classList.add('open');
+  (mon ? client : label).ctrl.focus();
+}
+
+function fermerInstall() {
+  document.getElementById('instmodal').classList.remove('open');
+  INST = null;
+}
+
+async function enregistrerInstall() {
+  if (!INST) return;
+  const { s, label, client, envC, vis, alias } = INST;
+  const ok = document.getElementById('instm-ok');
+  setBusy(ok);
+  const v = vis.valeur(), e = envC.valeur();
+  try {
+    const r = await api('/api/mgmt/override', {
+      domain: s.domain,
+      visible: v === 'show' ? true : v === 'hide' ? false : null,
+      label: label.valeur(),
+      client: client.valeur(),
+      preprod: e === 'preprod' ? true : e === 'prod' ? false : null,
+      ...(alias ? { alias: alias.valeur() } : {}),
+    }) || {};
+    if (r.ok === false) throw new Error(r.error || r.message || 'refus du serveur');
+    if (r.overrides) store.mgmt.overrides = r.overrides;
+  } catch (err) {
+    mount('instm-err', chipEl('échec', 'err'), ' ', h('span', { class: 'muted', text: String(err.message || err) }));
+    setIdle(ok, 'Enregistrer');
+    return;
+  }
+  fermerInstall();
+  await loadFleet();
 }
 
 async function creerMoniteur(b, domaine) {
@@ -1676,6 +1713,7 @@ setAddHooks({
   apresAppairage: () => { loadRestSites(); },
   allerInstalls: dom => {
     const cible = String(dom || '');
+    basculer('mgmt-installs', true);
     const lignes = [...document.querySelectorAll('#mgmt-tb tr')];
     const tr = lignes.find(x => {
       const b = x.querySelector('td b');
@@ -1695,6 +1733,11 @@ document.getElementById('srvm-ok').onclick = enregistrerServeur;
 document.getElementById('srvm-test').onclick = testerServeur;
 document.getElementById('srvmodal').onclick = e => { if (e.target.id === 'srvmodal') fermerFormServeur(); };
 registerModalCloser('srvmodal', fermerFormServeur);
+
+document.getElementById('instm-cancel').onclick = fermerInstall;
+document.getElementById('instm-ok').onclick = enregistrerInstall;
+document.getElementById('instmodal').onclick = e => { if (e.target.id === 'instmodal') fermerInstall(); };
+registerModalCloser('instmodal', fermerInstall);
 
 document.getElementById('jsonm-cancel').onclick = fermerJsonServeurs;
 document.getElementById('srv-save').onclick = enregistrerJsonServeurs;

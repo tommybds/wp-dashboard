@@ -36,6 +36,7 @@ import { demarrerJob } from '../components/job.js';
 import { majCompteursServeur } from '../components/shell.js';
 import { chip, chipEl } from '../components/chip.js';
 import { erreurPhpEl, fichierSuspectEl } from '../components/incident.js';
+import { accordeon } from '../components/pliable.js';
 
 /* Extensions régulièrement exploitées en incident. */
 const RISKY = ['wp-file-manager', 'file-manager-advanced', 'filester', 'duplicator',
@@ -98,43 +99,10 @@ function lienSite(nom, libelle) {
    Squelette de la page : sommaire + huit sections. Monté une seule fois ;
    ensuite seul le CONTENU de chaque section est redessiné.
    ========================================================================== */
-/* Sections REPLIABLES : huit sections dépliées, chacune avec ses filtres, ses
-   paragraphes et ses listes, faisaient une page qu'on ne lisait pas. Repliée,
-   une section tient sur une ligne — son titre et son compteur ; la matrice du
-   haut dit laquelle ouvrir. L'état ouvert est mémorisé par section. */
-const OUVERTES_CLE = 'dashSecOuvertes';
-let OUVERTES = new Set();
-try { OUVERTES = new Set(JSON.parse(localStorage.getItem(OUVERTES_CLE) || '[]')); }
-catch (e) { OUVERTES = new Set(); }
-
-function basculerSection(id, ouvrir) {
-  const sec = document.getElementById(id);
-  if (!sec) return;
-  const o = ouvrir === undefined ? !sec.classList.contains('ouvert') : !!ouvrir;
-  sec.classList.toggle('ouvert', o);
-  const corps = document.getElementById(id + '-corps');
-  if (corps) corps.hidden = !o;
-  const bt = sec.querySelector('.sec-pli');
-  if (bt) bt.setAttribute('aria-expanded', o ? 'true' : 'false');
-  if (o) OUVERTES.add(id); else OUVERTES.delete(id);
-  try { localStorage.setItem(OUVERTES_CLE, JSON.stringify([...OUVERTES])); } catch (e) { /* refusé */ }
-}
-// Une ancre (#securite/vulns, lien d'un incident, cellule de la matrice) ouvre
-// sa section avant que le routeur n'y fasse défiler.
-document.addEventListener('ancre', e => { if (String(e.detail || '').startsWith('sec-')) basculerSection(e.detail, true); });
-
-function sectionEl(id, titre, tete, ...corps) {
-  const ouvert = OUVERTES.has(id);
-  const bt = h('button', {
-    type: 'button', class: 'sec-pli', 'aria-expanded': ouvert ? 'true' : 'false', 'aria-controls': id + '-corps',
-  }, h('span', { class: 'tlchev' }, iconEl('chevron-right', { size: 14 })),
-  h('span', { text: titre }), h('span', { class: 'sec-n', id: id + '-n' }));
-  bt.onclick = () => basculerSection(id);
-  return h('section', { class: 'section secsec sec-pliable' + (ouvert ? ' ouvert' : ''), id },
-    h('div', { class: 'sechead' }, h('h2', { class: 'sec-titre' }, bt),
-      tete ? h('span', { class: 'sec-tete' }, tete) : null),
-    h('div', { class: 'sec-corps', id: id + '-corps', hidden: !ouvert }, ...corps));
-}
+/* Sections REPLIABLES (components/pliable.js) : repliée, une section tient
+   sur une ligne — son titre et son compteur ; la matrice du haut dit laquelle
+   ouvrir. */
+const { section: sectionEl, basculer: basculerSection } = accordeon('dashSecOuvertes', 'sec-');
 
 function monterSec() {
   if (MONTE) return;

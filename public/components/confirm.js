@@ -23,7 +23,7 @@ import { tipOuverte, fermerTips } from './tip.js';
    viennent en tête. La feuille basse (components/sheet.js) s'ouvre par-dessus
    tout le reste sur mobile : elle est en tête de liste. */
 const MODALES = ['sheetmodal', 'searchmodal', 'askmodal', 'vizmodal', 'rbmodal', 'addmodal',
-  'bulkmodal', 'srvmodal', 'jsonmodal', 'logmodal'];
+  'bulkmodal', 'srvmodal', 'instmodal', 'jsonmodal', 'logmodal'];
 
 const CLOSERS = {};
 

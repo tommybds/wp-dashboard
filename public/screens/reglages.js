@@ -1,7 +1,8 @@
 /* Écran Réglages — « comment le dashboard se comporte ».
 
    Phase 4 : ce n'était qu'une modale, c'est maintenant UNE page à ancres, sur
-   le modèle de Sécurité et de Gestion. Neuf sections, chacune avec son bouton
+   le modèle de Sécurité et de Gestion — en accordéon depuis octobre 2026, chaque
+   section repliée résumant son état en une ligne. Neuf sections, chacune avec son bouton
    d'enregistrement et son message de résultat : rien ne s'enregistre à l'insu
    de l'utilisateur, et un échec ne se confond jamais avec un autre.
 
@@ -34,23 +35,12 @@ import { setBusy, setIdle } from '../components/button.js';
 import { chipEl } from '../components/chip.js';
 import { setDensity } from '../components/table.js';
 import { loadSched, applyTheme, themeCourant } from '../components/shell.js';
+import { accordeon } from '../components/pliable.js';
 
 /* ---- état du module -------------------------------------------------------- */
 let MONTE = false;
 let KEYS = null;
 let SETTINGSLU = false;
-
-const ANCRES = [
-  ['set-collecte', 'collecte', 'Collecte'],
-  ['set-kuma', 'kuma', 'Uptime Kuma'],
-  ['set-alertes', 'alertes', 'Alertes'],
-  ['set-vizproof', 'vizproof', 'VizProof'],
-  ['set-visuel', 'controle-visuel', 'Contrôle visuel'],
-  ['set-incidents', 'incidents', 'Règles d’incidents'],
-  ['set-cles', 'cles-ssh', 'Clés SSH'],
-  ['set-apparence', 'apparence', 'Apparence'],
-  ['set-session', 'session', 'Session'],
-];
 
 /* Message de résultat d'une section : il s'efface tout seul quand il est
    positif, reste quand il ne l'est pas — une erreur qui disparaît est une
@@ -73,10 +63,20 @@ function attendre(id) {
   if (el) mount(el, h('span', { class: 'muted small', text: '…' }));
 }
 
+/* Sections REPLIABLES (components/pliable.js). Repliée, une section dit son
+   état en une ligne à côté de son titre — « collecté il y a 5 min · toutes les
+   30 minutes », « actives », « connecté » : on n'ouvre que ce qu'on vient
+   changer. Le résumé est l'élément `*-sum` que chaque section remplit déjà ;
+   les autres gestes de l'en-tête n'apparaissent qu'ouverte. */
+const { section, resumer } = accordeon('dashRegOuvertes', 'set-');
+
 function sectionEl(id, titre, tete, ...corps) {
-  return h('section', { class: 'section secsec', id },
-    h('div', { class: 'sechead' }, h('h2', { text: titre }), tete),
-    ...corps);
+  const L = [].concat(tete || []);
+  const resume = L.find(n => n && n.id && n.id.endsWith('-sum'));
+  const gestes = L.filter(n => n && n !== resume && !n.classList.contains('spacer'));
+  const sec = section(id, titre, gestes.length ? gestes : null, ...corps);
+  if (resume) sec.querySelector('.sec-n').append(resume);
+  return sec;
 }
 
 /** Ligne « bouton(s) + message » qui ferme une section. */
@@ -91,9 +91,6 @@ function monterReglages() {
   if (MONTE) return;
   MONTE = true;
   mount('page-reglages',
-    h('nav', { class: 'anchors', 'aria-label': 'Sections de la page Réglages' },
-      ANCRES.map(([, slug, lbl]) => h('a', { class: 'anchor', href: '#reglages/' + slug },
-        h('span', { text: lbl })))),
     sectionCollecte(),
     sectionKuma(),
     sectionAlertes(),
@@ -160,7 +157,8 @@ async function loadSchedule() {
   const gen = store.fleet && store.fleet.generated_at;
   mount('sched-sum', gen
     ? chipEl('collecté ' + relTime(gen), 'mut', { title: absTime(gen) })
-    : chipEl('jamais collecté', 'warn'));
+    : chipEl('jamais collecté', 'warn'),
+  ' ', h('span', { class: 'muted', text: SCHED_LABELS[s.interval_minutes] || s.interval_minutes + ' min' }));
 }
 
 /* ============================================================================
@@ -600,6 +598,7 @@ function renderVisuel() {
         const r = await api('/api/mgmt/settings', { settings: { [cle]: v } }) || {};
         if (r && r.settings) store.settings = r.settings;
         dire(id + 'msg', 'ok', 'enregistré');
+        resumeVisuel();
       } catch (err) {
         e.target.checked = !v;               // ne jamais afficher un réglage qui n'a pas été écrit
         dire(id + 'msg', 'err', 'échec', String(err));
@@ -609,6 +608,18 @@ function renderVisuel() {
       h('label', { class: 'fld' }, c, ' ' + titre, ' ', zoneMessage(id + 'msg')),
       h('div', { class: 'aide', text: aide }));
   }));
+  resumeVisuel();
+}
+
+/* Résumé replié : les cases cochées, nommées court. */
+const COURT_VIZ = {
+  viz_scan_after_update: 'scan après MAJ', viz_baseline_before_update: 'baseline avant',
+  viz_baseline_required: 'baseline exigée', viz_anomaly_rollback: 'retour arrière sur anomalie',
+};
+function resumeVisuel() {
+  const actifs = CASES_VIZ.filter(([, cle, defaut]) =>
+    (store.settings[cle] === undefined ? defaut : !!store.settings[cle])).map(([, cle]) => COURT_VIZ[cle]);
+  resumer('set-visuel', h('span', { class: 'muted', text: actifs.length ? actifs.join(' · ') : 'tout désactivé' }));
 }
 
 /* ============================================================================
@@ -895,13 +906,20 @@ function appliquerPreferences() {
   setDensity(compacte);
 }
 
+const THEMES_COURT = { auto: 'thème auto', light: 'thème clair', dark: 'thème sombre' };
+function texteApparence() {
+  return h('span', { class: 'muted',
+    text: (THEMES_COURT[themeCourant()] || 'thème auto') + ' · densité ' + densiteMemorisee() });
+}
+function resumeApparence() { mount('app-sum', texteApparence()); }
+
 function sectionApparence() {
   const theme = h('select', { id: 'set-theme', 'aria-label': 'Thème' },
     h('option', { value: 'auto', text: 'Auto (préférence du système)' }),
     h('option', { value: 'light', text: 'Clair' }),
     h('option', { value: 'dark', text: 'Sombre' }));
   theme.value = themeCourant();
-  theme.onchange = () => { applyTheme(theme.value); dire('app-msg', 'ok', 'thème appliqué'); };
+  theme.onchange = () => { applyTheme(theme.value); dire('app-msg', 'ok', 'thème appliqué'); resumeApparence(); };
 
   const dens = h('select', { id: 'set-dens', 'aria-label': 'Densité des tableaux' },
     h('option', { value: 'normale', text: 'Normale' }),
@@ -913,9 +931,10 @@ function sectionApparence() {
     store.filt.compact = compacte;
     setDensity(compacte);
     dire('app-msg', 'ok', 'densité appliquée');
+    resumeApparence();
   };
 
-  return sectionEl('set-apparence', 'Apparence', null,
+  return sectionEl('set-apparence', 'Apparence', [h('span', { class: 'small', id: 'app-sum' }, texteApparence())],
     h('p', { class: 'hint', text: 'Préférences de CE navigateur : elles ne partent pas au serveur et ne '
       + 'concernent pas les autres postes.' }),
     h('div', { class: 'fieldrow' },
@@ -936,7 +955,8 @@ function sectionSession() {
   const bt = h('button', { type: 'button', class: 'btn sm danger', id: 'set-logout' },
     iconEl('log-out'), ' Se déconnecter');
   bt.onclick = () => logout();
-  return sectionEl('set-session', 'Session', null,
+  return sectionEl('set-session', 'Session',
+    [h('span', { class: 'small', id: 'ses-sum' }, h('span', { class: 'muted', text: (qui && qui.textContent) || 'session ouverte' }))],
     h('div', { class: 'kv' },
       h('span', { class: 'k', text: 'Utilisateur' }),
       h('span', { text: (qui && qui.textContent) || 'session ouverte' }),

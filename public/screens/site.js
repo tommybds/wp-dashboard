@@ -1633,7 +1633,7 @@ function tlRow({ e, n }) {
   if (kind === 'action') c = stt.includes('ok') ? 'ok' : (stt.includes('anomal') ? 'warn' : 'err');
   else if (kind === 'event') c = TLCRIT.test(lab) ? 'err' : 'mut';
   else if (kind === 'collect') c = (stt === 'alerte') ? 'err' : 'mut';
-  const titre = (kind === 'event' ? (EVLABEL[lab] || lab) : lab) || '—';
+  const titre = (kind === 'event' ? (EVLABEL[lab] || lab) : kind === 'action' ? libelleAction(lab) : lab) || '—';
   const ic = h('span', { class: 'tlic ' + c });
   ic.append(iconEl(TLICON[kind] || 'diamond', { size: 14 }));
   const pre = depliable ? h('pre', { class: 'tldet', hidden: true, text: brut.slice(0, 4000) }) : null;
@@ -1647,6 +1647,13 @@ function tlRow({ e, n }) {
       pre));
   if (pre) row.onclick = () => { pre.hidden = !pre.hidden; row.classList.toggle('open', !pre.hidden); };
   return row;
+}
+
+/* Le journal nomme une action par sa clé technique (« plugin_update akismet ») :
+   on la lit avec le même vocabulaire que les boutons qui la lancent. */
+function libelleAction(lab) {
+  const [act, ...arg] = lab.split(' ');
+  return ACT_LIB[act] ? actLib(act, arg.join(' ')) : lab;
 }
 
 const TLICON = { action: 'diamond', event: 'activity', collect: 'refresh-cw' };
