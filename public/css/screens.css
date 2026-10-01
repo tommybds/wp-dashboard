@@ -359,21 +359,37 @@
 .choice b{font-size:var(--t-13);margin-bottom:4px;display:block}
 .choice small{display:block;line-height:1.55;color:var(--muted)}
 
-/* ---- écran Incidents -------------------------------------------------------
-   La file complète, groupée par gravité. La ligne elle-même (`.inc`) est celle
-   de la file « à traiter » du Parc : c'est le même objet, il se lit pareil. */
-.incgrp{margin-bottom:var(--s-16)}
-/* Intitulé des DEUX sections de l'écran : « À traiter » puis « À planifier ». */
-.incsec{margin:0 0 var(--s-8);font-size:var(--t-14)}
-.incplan{margin-top:var(--s-16);padding-top:var(--s-12);border-top:1px solid var(--line)}
-.incack{margin-top:var(--s-16)}
-.incack .todo-h{padding:var(--s-8) 0}
-.incgrp-h{display:flex;align-items:center;gap:var(--s-8);margin-bottom:var(--s-4)}
-.incgrp .inclist{background:var(--surface);border:1px solid var(--line);
-  border-radius:var(--r-surf);padding:2px var(--s-8)}
+/* Nom du site dans une ligne d'incident (Parc, page site, écran Incidents). */
 .inc-s{font-weight:600}
 a.inc-s{color:var(--ink);text-decoration:none}
 a.inc-s:hover{color:var(--accent);text-decoration:underline}
+
+/* ---- écran Incidents : trois vues, un tableau ------------------------------
+   Le sélecteur segmenté porte le compte de chaque vue ; le tableau a des
+   colonnes fixes — gravité, type, site, problème, ancienneté, actions — pour
+   qu'on puisse descendre une colonne du regard. Le trait de gravité reste, sur
+   la première cellule. */
+.inc-tete{display:flex;align-items:center;gap:var(--s-12);flex-wrap:wrap;margin-bottom:var(--s-12)}
+.inc-tete .tabs{margin:0}
+.tab-n{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:500}
+.tab-n:not(:empty)::before{content:"· "}
+.inctbl td{vertical-align:top;padding-top:10px;padding-bottom:10px}
+.inctbl tbody tr.inc-row{cursor:pointer}
+.inctbl tr.inc-row>td:first-child{border-left:3px solid var(--line-2);width:30px;padding-right:0}
+.inctbl tr.inc-row.err>td:first-child{border-left-color:var(--err)}
+.inctbl tr.inc-row.warn>td:first-child{border-left-color:var(--warn-edge)}
+.inctbl tr.inc-row.ouvert>td{border-bottom-color:transparent}
+.inc-c-type{color:var(--ink-2);white-space:normal;min-width:15ch;max-width:20ch}
+.inc-c-site{font-weight:600}
+.inc-c-pb{white-space:normal;min-width:28ch}
+.inc-pb{color:var(--ink)}
+.inc-c-pb .inc-d{white-space:normal;max-width:70ch}
+.inc-c-quand{white-space:nowrap}
+.inc-c-act{text-align:right;white-space:nowrap}
+.inc-c-act .inc-b{display:inline-flex;gap:6px;justify-content:flex-end}
+.inctbl tr.inc-detail>td{background:var(--surface-2);white-space:normal;padding:0 var(--s-12) var(--s-12)}
+.inctbl tr.inc-detail .incp{margin-top:0;background:none;padding:var(--s-8) 0 0}
+.inctbl tbody tr.inc-detail:hover td{background:var(--surface-2)}
 
 /* ---- pages à sections repérées par une ancre ------------------------------
    Sécurité, Changements, et depuis la phase 4 Gestion et Réglages.
@@ -410,6 +426,26 @@ td.wrapcell{white-space:normal;max-width:38ch}
 @media(max-width:560px){ .majmodes{grid-template-columns:1fr} .majmodes dd{margin-bottom:var(--s-8)} }
 
 /* ---- écran Sécurité ------------------------------------------------------- */
+/* Sections repliables : le titre est un bouton (dans le h2, motif accordéon),
+   suivi du compteur ; les gestes de la section n'apparaissent qu'ouverte. */
+.sec-titre{margin:0}
+.sec-pli{display:inline-flex;align-items:center;gap:var(--s-8);background:none;border:0;padding:0;
+  font:inherit;color:inherit;cursor:pointer;text-align:left}
+.sec-pli:hover{color:var(--accent)}
+.sec-pliable.ouvert .sec-pli .tlchev{transform:rotate(90deg)}
+.sec-n .chip{font-family:var(--f-body)}
+.sec-pliable:not(.ouvert){padding-top:var(--s-12);padding-bottom:var(--s-12);margin-bottom:var(--s-8)}
+.sec-pliable:not(.ouvert) .sechead{margin-bottom:0}
+.sec-pliable:not(.ouvert) .sec-tete{display:none}
+.sec-tete{display:inline-flex;align-items:center;gap:var(--s-8);flex-wrap:wrap;flex:1;min-width:0}
+.sec-corps{margin-top:var(--s-8)}
+/* Matrice de synthèse : cellule vide = rien à signaler ; remplie = lien vers sa
+   section, filtrée sur le site. */
+table.synth td{vertical-align:middle}
+table.synth td.synth-vide{background:none}
+.synth-a{text-decoration:none;display:inline-flex}
+.synth-a:hover .chip{filter:brightness(.96);outline:1px solid currentColor}
+
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* Ligne de l'onglet Réglages d'un site : ce qu'on règle et son état à gauche,
    le geste qui le change à droite. Sous la largeur, les boutons passent dessous. */
@@ -571,7 +607,30 @@ td.wrapcell{white-space:normal;max-width:38ch}
   .inc-a{order:2;margin-left:30px}
   .inc-b{order:3;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
   .inc-d{white-space:normal;max-width:none}
-  .incgrp .inclist{padding:0 var(--s-4)}
+
+  /* ---- Sécurité : la matrice devient une liste de cartes — le site, puis
+     SEULEMENT ses problèmes, chacun nommé (les colonnes vides disparaissent) ---- */
+  table.synth thead{display:none}
+  table.synth,table.synth tbody{display:block}
+  table.synth tr{display:flex;flex-wrap:wrap;align-items:center;gap:6px var(--s-12);
+    padding:var(--s-8) var(--s-12);border-bottom:1px solid var(--line-2)}
+  table.synth td{border:0;padding:0;white-space:normal}
+  table.synth td.site{flex-basis:100%}
+  table.synth td.synth-vide{display:none}
+  table.synth td[data-l]::before{content:attr(data-l) " ";font-size:var(--t-12);color:var(--muted)}
+
+  /* ---- Incidents : chaque ligne devient une carte empilée ---- */
+  .inctbl thead{display:none}
+  .inctbl,.inctbl tbody{display:block}
+  .inctbl tr.inc-row{display:grid;grid-template-columns:auto 1fr;gap:2px var(--s-8);
+    padding:var(--s-8) var(--s-8) var(--s-8) 0;border-bottom:1px solid var(--line-2)}
+  .inctbl tr.inc-row>td{border:0;padding:0;white-space:normal}
+  .inctbl tr.inc-row>td:first-child{grid-row:1 / span 6;grid-column:1;width:auto;border-left-width:3px;padding:0 var(--s-4)}
+  .inctbl tr.inc-row>td:not(:first-child){grid-column:2}
+  .inctbl tr.inc-row>td.inc-c-act{text-align:left;margin-top:6px}
+  .inctbl tr.inc-detail{display:block}
+  .inctbl tr.inc-detail>td{display:block}
+  .inc-c-type,.inc-c-pb{min-width:0;max-width:none}
 
   /* ---- page site ---- */
   .siteact{flex:1 1 100%;flex-direction:column;align-items:stretch;

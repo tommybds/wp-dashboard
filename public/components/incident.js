@@ -589,6 +589,74 @@ export function incidentEl(inc, {
 }
 
 /**
+ * Un incident en LIGNE DE TABLEAU (écran Incidents) → [ligne, ligne de détail].
+ *
+ * Mêmes données et même panneau que `incidentEl`, mais rangés en colonnes
+ * (gravité · type · site · problème · depuis · actions) : la liste en texte
+ * libre ne se parcourait pas du regard, et ses boutons tombaient à des
+ * endroits différents selon la longueur de la ligne. Le détail est une
+ * seconde ligne pleine largeur, ouverte par le chevron ou un clic sur la ligne.
+ */
+export function incidentLigneTableau(inc, {
+  siteEl = null, actions = null, onAck = null, acquitte = false, nbCols = 7,
+} = {}) {
+  const x = (inc.extra && typeof inc.extra === 'object') ? inc.extra : {};
+  const corps = panneau({
+    kind: inc.kind, message: inc.detail || inc.title || '',
+    file: String(x.file || ''), line: x.line || 0,
+    count: x.count || 0, first: x.first || '', last: x.last || '',
+    trace: x.trace, tronquee: !!x.trace_truncated, extra: x,
+  }, boutonsAcquittement(inc, { onAck, acquitte }));
+  const id = 'incp-' + (++SEQ);
+  const detail = h('tr', { class: 'inc-detail', id, hidden: true },
+    h('td', { colspan: String(nbCols) }, corps));
+
+  const plan = inc.bucket === 'plan';
+  const grave = inc.severity === 'critical';
+  const gravite = acquitte ? chipEl('acquitté', 'mut')
+    : plan ? chipEl(grave ? 'critique' : 'avertissement', 'mut')
+      : chipEl(grave ? 'critique' : 'avertissement', grave ? 'err' : 'warn');
+
+  // Le titre sans le site (il a sa colonne) ; s'il ne fait que redire le type,
+  // c'est le détail qui devient la ligne principale.
+  const kl = kindLabel(inc.kind);
+  let titre = titreSansCible(inc.title || '', inc.site || inc.server || '');
+  const tl = titre.toLowerCase();
+  let sous = inc.detail || '';
+  if (!tl || tl === kl.toLowerCase() || kl.toLowerCase().endsWith(tl)) { titre = sous; sous = ''; }
+
+  const bt = h('button', {
+    type: 'button', class: 'inc-x', 'aria-expanded': 'false', 'aria-controls': id,
+    'aria-label': 'Détails — ' + String(inc.title || kl),
+  }, h('span', { class: 'tlchev' }, iconEl('chevron-right', { size: 14 })));
+  const bascule = () => {
+    const ouvrir = detail.hidden;
+    detail.hidden = !ouvrir;
+    bt.setAttribute('aria-expanded', ouvrir ? 'true' : 'false');
+    tr.classList.toggle('ouvert', ouvrir);
+  };
+  bt.onclick = e => { e.stopPropagation(); bascule(); };
+
+  const quand = anciennete(inc).replace(/^depuis /, '');
+  const tr = h('tr', { class: 'inc-row ' + (acquitte || plan ? 'plan' : grave ? 'err' : 'warn') },
+    h('td', { class: 'inc-c-x' }, bt),
+    h('td', { 'data-l': 'Gravité' }, gravite),
+    h('td', { 'data-l': 'Type', class: 'inc-c-type' },
+      h('span', { title: KINDS[inc.kind] ? '' : String(inc.kind || ''), text: kl })),
+    h('td', { 'data-l': 'Site', class: 'inc-c-site' }, siteEl),
+    h('td', { 'data-l': 'Problème', class: 'inc-c-pb' },
+      h('div', { class: 'inc-pb', text: titre }),
+      sous ? h('div', { class: 'muted small inc-d', text: sous }) : null,
+      bandeauAck(inc)),
+    h('td', { 'data-l': 'Depuis', class: 'muted small inc-c-quand',
+      title: inc.since ? absTime(inc.since) : '', text: quand }),
+    h('td', { class: 'inc-c-act' }, actions));
+  // La ligne entière bascule à la souris, sauf sur un lien ou un bouton.
+  tr.onclick = e => { if (!e.target.closest('a,button,input')) bascule(); };
+  return [tr, detail];
+}
+
+/**
  * Un fichier signalé par le scan structurel, dépliable — même panneau que les
  * incidents et les erreurs PHP.
  *

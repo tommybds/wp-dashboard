@@ -26,30 +26,39 @@ import { api } from '../lib/api.js';
 import { h, mount, occupe } from '../lib/dom.js';
 import { iconEl } from '../lib/icons.js';
 import { debounce } from '../lib/format.js';
-import { chipEl } from '../components/chip.js';
-import { estNow, incidentEl, kindLabel, sourceIncompleteEl } from '../components/incident.js';
+import { estNow, incidentLigneTableau, kindLabel, sourceIncompleteEl } from '../components/incident.js';
 import { setIncidentCount } from '../components/shell.js';
 import { siteParCle, cleDeSite, lancerSur } from './site.js';
 
 /* Le libellé des types, la ligne dépliable et son panneau vivent dans
    components/incident.js : la page site montre exactement le même objet. */
 
-const GRAVITES = [
-  ['critical', 'Critique', 'err'],
-  ['warning', 'Avertissement', 'warn'],
-];
 
-let INCIDENTS = [], ACQUITTES = [], ERREURS = [], CHARGE = false, AT = 0;
-let NB_ACQUITTES = 0, ACK_OUVERT = false;
+let INCIDENTS = [], ACQUITTES = [], ACQ_CHARGES = false, ERREURS = [], CHARGE = false, AT = 0;
+let NB_ACQUITTES = 0;
 let MONTE = false;
 const FILT = { sev: '', kind: '', q: '' };
-const ACK_CLE = 'dashIncAcksOpen';
 
-/* L'ouverture du bloc « Acquittés » est mémorisée : qui travaille sur ses
-   décisions passées ne veut pas le rouvrir à chaque visite. Le stockage peut
-   être refusé (navigation privée) — le bloc reste alors simplement replié. */
-function ackMemo(v) { try { localStorage.setItem(ACK_CLE, v ? '1' : '0'); } catch (e) { /* refusé */ } }
-try { ACK_OUVERT = localStorage.getItem(ACK_CLE) === '1'; } catch (e) { ACK_OUVERT = false; }
+/* Trois VUES d'une même liste, choisies par un sélecteur segmenté : ce qui se
+   règle maintenant, ce qui se décide (chantiers, situations connues), et ce
+   qu'on a écarté. Elles s'empilaient en trois blocs imbriqués, chacun avec ses
+   sous-groupes de gravité : on ne savait plus où regarder. */
+const VUES = [
+  ['now', 'À traiter'],
+  ['plan', 'À planifier'],
+  ['acked', 'Acquittés'],
+];
+const VUE_CLE = 'dashIncVue';
+let VUE = 'now';
+try { VUE = VUES.some(([k]) => k === localStorage.getItem(VUE_CLE)) ? localStorage.getItem(VUE_CLE) : 'now'; }
+catch (e) { VUE = 'now'; }
+function vueMemo(v) { try { localStorage.setItem(VUE_CLE, v); } catch (e) { /* stockage refusé */ } }
+
+const VUE_AIDE = {
+  now: 'Ce qui se règle maintenant : c’est ce que compte la pastille de la barre latérale.',
+  plan: 'Chantiers et situations connues : à décider, hors pastille.',
+  acked: 'Mises en veille et alertes écartées : elles reviennent seules si la situation change.',
+};
 
 /* ---- squelette -------------------------------------------------------------- */
 function monter() {
@@ -75,7 +84,23 @@ function monter() {
     iconEl('refresh-cw'), 'Actualiser');
   actualiser.onclick = () => charger(true);
 
+  const vues = h('div', { class: 'tabs incvues', role: 'group', 'aria-label': 'Vue', id: 'inc-vues' },
+    VUES.map(([k, lbl]) => {
+      const bv = h('button', { type: 'button', class: 'tab', dataset: { vue: k } },
+        h('span', { text: lbl }), h('span', { class: 'tab-n', dataset: { n: k } }));
+      bv.onclick = () => {
+        VUE = k;
+        vueMemo(k);
+        if (k === 'acked' && !ACQ_CHARGES) chargerAcquittes();
+        render();
+      };
+      return bv;
+    }));
+
   mount('page-incidents',
+    h('div', { class: 'inc-tete' },
+      vues,
+      h('span', { class: 'muted small', id: 'inc-aide' })),
     h('div', { class: 'filters', id: 'inc-filters' },
       q, sev, kind,
       h('span', { class: 'spacer' }),
@@ -122,11 +147,13 @@ function ligne(inc, acquitte) {
       class: 'inc-s', href: '#site/' + encodeURIComponent(s ? cleDeSite(s) : inc.site), text: inc.site,
     })
     : (inc.server ? h('b', { class: 'inc-s', text: inc.server }) : null);
-  return incidentEl(inc, {
-    siteEl, chipKind: true, actions: boutons, acquitte: !!acquitte,
+  return incidentLigneTableau(inc, {
+    siteEl, actions: boutons, acquitte: !!acquitte, nbCols: COLS.length,
     onAck: () => charger(true),
   });
 }
+
+const COLS = ['', 'Gravité', 'Type', 'Site', 'Problème', 'Depuis', ''];
 
 /* ---- rendu ------------------------------------------------------------------ */
 function majTypes() {
@@ -150,52 +177,10 @@ function filtres(lot) {
       .toLowerCase().includes(q)));
 }
 
-/* Un groupe : un intitulé, un compteur, ses lignes. */
-function groupe(titre, niveau, lot, acquitte) {
-  return h('section', { class: 'incgrp' },
-    h('div', { class: 'incgrp-h' },
-      h('span', { class: 'glbl', text: titre }), chipEl(String(lot.length), niveau)),
-    h('div', { class: 'inclist' }, lot.map(i => ligne(i, acquitte))));
-}
-
-/* Bloc « À planifier » : mêmes lignes, mais un intitulé qui dit ce qu'on en
-   attend. Sans cette phrase, la section se lit comme une seconde file d'attente
-   — c'est exactement ce dont on sortait. */
-function blocPlan(lot) {
-  if (!lot.length) return null;
-  return h('section', { class: 'incgrp incplan' },
-    h('div', { class: 'incgrp-h' },
-      h('span', { class: 'glbl', text: 'À planifier' }), chipEl(String(lot.length), 'mut'),
-      h('span', { class: 'muted small', text: 'chantiers et situations connues — hors pastille' })),
-    h('div', { class: 'inclist' }, lot.map(i => ligne(i, false))));
-}
-
-/* Bloc « Acquittés », replié : il n'est chargé qu'à l'ouverture (une requête
-   de plus, `?include=acked`), et son compteur vient de `counts.acked` — il est
-   donc juste avant même d'avoir lu la liste. */
-function blocAcquittes() {
-  if (!NB_ACQUITTES && !ACQUITTES.length) return null;
-  const liste = h('div', { class: 'inclist', id: 'inc-acked-list', hidden: !ACK_OUVERT });
-  if (ACK_OUVERT) {
-    const vus = filtres(ACQUITTES);
-    if (!ACQUITTES.length) liste.append(h('p', { class: 'hint hint-tight', text: 'chargement…' }));
-    else if (!vus.length) liste.append(h('p', { class: 'hint hint-tight', text: 'aucun acquitté ne correspond au filtre.' }));
-    else vus.forEach(i => liste.append(ligne(i, true)));
-  }
-  const bt = h('button', {
-    type: 'button', class: 'todo-h', 'aria-expanded': ACK_OUVERT ? 'true' : 'false',
-    'aria-controls': 'inc-acked-list',
-  },
-    h('span', { class: 'todo-chev' + (ACK_OUVERT ? ' open' : '') }, iconEl('chevron-right', { size: 14 })),
-    h('span', { class: 'glbl', text: 'Acquittés (' + (NB_ACQUITTES || ACQUITTES.length) + ')' }),
-    h('span', { class: 'muted small', text: 'mises en veille et alertes écartées' }));
-  bt.onclick = () => {
-    ACK_OUVERT = !ACK_OUVERT;
-    ackMemo(ACK_OUVERT);
-    if (ACK_OUVERT && !ACQUITTES.length) chargerAcquittes();
-    render();
-  };
-  return h('section', { class: 'incgrp incack' }, bt, liste);
+function tableau(lot, acquitte) {
+  return h('div', { class: 'wrap' }, h('table', { class: 'inctbl' },
+    h('thead', {}, h('tr', {}, COLS.map(t => h('th', { text: t })))),
+    h('tbody', {}, lot.flatMap(i => ligne(i, acquitte)))));
 }
 
 function render() {
@@ -206,48 +191,48 @@ function render() {
   // sens si l'une de ses sources n'a pas répondu.
   mount('inc-errors', ERREURS.map(sourceIncompleteEl));
 
-  if (!CHARGE) { mount(body, h('p', { class: 'hint hint-tight', text: 'chargement…' })); return; }
-  const ack = blocAcquittes();
-  if (!INCIDENTS.length) {
-    cnt.textContent = '';
-    mount(body, h('div', { class: 'empty' },
-      iconEl('circle-check', { size: 20 }),
-      h('h2', { text: 'Rien à traiter' }),
-      h('p', { text: 'Aucun site injoignable, aucune vulnérabilité critique corrigeable, '
-        + 'aucun administrateur inconnu, aucune sauvegarde en retard : le parc est en ordre.' })),
-      ack);
-    return;
-  }
   const vus = filtres();
-  // Le compte dit les DEUX blocs séparément : « 10 incidents » à côté d'une
-  // pastille à 6 laissait croire que l'un des deux chiffres était faux.
-  const nNow = vus.filter(estNow).length, nPlan = vus.length - nNow;
-  cnt.textContent = [nNow + ' à traiter', nPlan ? nPlan + ' à planifier' : '']
-    .filter(Boolean).join(' · ')
-    + (vus.length === INCIDENTS.length ? '' : ' (filtre : ' + vus.length + ' / ' + INCIDENTS.length + ')');
-  if (!vus.length) {
-    mount(body, h('p', { class: 'hint hint-tight', text: 'aucun incident ne correspond au filtre.' }), ack);
+  const maintenant = vus.filter(estNow), plan = vus.filter(i => !estNow(i));
+  const acq = ACQ_CHARGES ? filtres(ACQUITTES) : [];
+  const nb = { now: maintenant.length, plan: plan.length, acked: ACQ_CHARGES ? acq.length : NB_ACQUITTES };
+  document.querySelectorAll('#inc-vues .tab').forEach(b => {
+    const on = b.dataset.vue === VUE;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const n = b.querySelector('.tab-n');
+    if (n) n.textContent = CHARGE ? String(nb[b.dataset.vue]) : '';
+  });
+  const aide = document.getElementById('inc-aide');
+  if (aide) aide.textContent = VUE_AIDE[VUE];
+
+  if (!CHARGE) { mount(body, h('p', { class: 'hint hint-tight', text: 'chargement…' })); return; }
+  const filtre = vus.length !== INCIDENTS.length;
+  cnt.textContent = filtre ? 'filtre : ' + vus.length + ' / ' + INCIDENTS.length : '';
+
+  let lot;
+  if (VUE === 'acked') {
+    if (!ACQ_CHARGES) { mount(body, h('p', { class: 'hint hint-tight', text: 'chargement…' })); return; }
+    lot = acq;
+  } else {
+    lot = VUE === 'plan' ? plan : maintenant;
+  }
+  if (!lot.length) {
+    if (VUE === 'now' && !maintenant.length && !filtre) {
+      mount(body, h('div', { class: 'empty' },
+        iconEl('circle-check', { size: 20 }),
+        h('h2', { text: 'Rien à traiter' }),
+        h('p', { text: 'Aucun site injoignable, aucune vulnérabilité critique corrigeable, '
+          + 'aucun administrateur inconnu, aucune sauvegarde en retard'
+          + (plan.length ? ' — ' + plan.length + ' point' + (plan.length > 1 ? 's' : '') + ' à planifier.' : '.') })));
+    } else {
+      mount(body, h('p', { class: 'hint hint-tight', text: filtre
+        ? 'Aucun incident de cette vue ne correspond au filtre.'
+        : VUE === 'plan' ? 'Rien à planifier.' : 'Aucune alerte acquittée.' }));
+    }
     return;
   }
-  // Deux natures, deux blocs : ce qui se règle maintenant, et ce qui se décide.
-  const maintenant = vus.filter(estNow), plan = vus.filter(i => !estNow(i));
-  const blocs = [];
-  GRAVITES.forEach(([cle, titre, niveau]) => {
-    const lot = maintenant.filter(i => i.severity === cle);
-    if (lot.length) blocs.push(groupe(titre, niveau, lot, false));
-  });
-  // Gravité inconnue (backend plus récent que le front) : elle reste visible.
-  const autres = maintenant.filter(i => !GRAVITES.some(g => g[0] === i.severity));
-  if (autres.length) blocs.push(groupe('Autres', 'mut', autres, false));
-  if (blocs.length) {
-    blocs.unshift(h('h2', { class: 'incsec', text: 'À traiter' }));
-  } else if (plan.length) {
-    blocs.push(h('p', { class: 'hint hint-tight todo-ok' },
-      iconEl('circle-check', { size: 16 }),
-      h('span', { text: 'Rien à traiter — ' + plan.length + ' à planifier.' })));
-  }
-  blocs.push(blocPlan(plan), ack);
-  mount(body, blocs);
+  // Critique d'abord, puis le plus ancien : l'ordre du serveur, qu'on garde.
+  mount(body, tableau(lot, VUE === 'acked'));
 }
 
 /* ---- chargement -------------------------------------------------------------- */
@@ -274,7 +259,7 @@ async function charger(force) {
   setIncidentCount(maintenant.length, crit ? 'err' : 'warn');
   majTypes();
   render();
-  if (ACK_OUVERT && NB_ACQUITTES) chargerAcquittes();
+  if (VUE === 'acked') chargerAcquittes();
 }
 
 /* La liste des acquittés est une requête À PART : la file par défaut n'a pas à
@@ -284,6 +269,7 @@ async function chargerAcquittes() {
   try { j = await api('/api/incidents?include=acked'); } catch (e) { j = null; }
   ACQUITTES = (j && Array.isArray(j.acked)) ? j.acked : [];
   NB_ACQUITTES = ACQUITTES.length;
+  ACQ_CHARGES = true;
   render();
 }
 

@@ -43,7 +43,7 @@ function traiter(p) {
 }
 
 function balayer(racine) {
-  (racine || document).querySelectorAll('.section > p.hint').forEach(traiter);
+  (racine || document).querySelectorAll('.section > p.hint, .sec-corps > p.hint').forEach(traiter);
 }
 
 export function initAides() {

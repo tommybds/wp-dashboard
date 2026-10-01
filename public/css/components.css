@@ -261,14 +261,14 @@ label{cursor:default}
 .section p.hint,.box p.hint{color:var(--muted);margin:0 0 var(--s-12);font-size:var(--t-12);line-height:1.55}
 p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 /* Aide de section repliée sur sa première ligne (components/aides.js). */
-.section>p.hint.aide-pliee{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:0}
+.section>p.hint.aide-pliee,.sec-corps>p.hint.aide-pliee{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:0}
 .aide-plus{display:block;background:none;border:0;padding:1px 0;margin:0 0 var(--s-12);
   color:var(--accent);font:inherit;font-size:var(--t-12);cursor:pointer}
 .aide-plus:hover{text-decoration:underline}
 .section>p.hint+.aide-plus{margin-top:-6px}
-.section>p.hint.aide-pliee+.aide-plus{margin-top:0}
+.section>p.hint.aide-pliee+.aide-plus,.sec-corps>p.hint.aide-pliee+.aide-plus{margin-top:0}
 /* Texte qui tient sur la largeur : pas de bouton, donc la marge revient au paragraphe. */
-.section>p.hint.aide-pliee:has(+.aide-plus[hidden]){margin-bottom:var(--s-12)}
+.section>p.hint.aide-pliee:has(+.aide-plus[hidden]),.sec-corps>p.hint.aide-pliee:has(+.aide-plus[hidden]){margin-bottom:var(--s-12)}
 .hint-tight{margin:0 0 6px}
 .hint-loose{margin:6px 0 0}
 .box h3,.sitesec h3,.section h3{font-size:var(--t-12);text-transform:uppercase;letter-spacing:.05em;

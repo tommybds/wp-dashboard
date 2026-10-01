@@ -28,7 +28,7 @@ import { relTime, absTime, safeUrl, debounce } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
 import { poll } from '../lib/poll.js';
 import {
-  store, allSites, siteByName, kName, kumaActif, loadKuma, cacheFrais, cacheVider,
+  store, allSites, siteByName, kName, kumaActif, loadKuma, cacheFrais, cacheVider, nomDeSite,
 } from '../lib/state.js';
 import { askConfirm, askInfo } from '../components/confirm.js';
 import { setBusy, setIdle } from '../components/button.js';
@@ -98,17 +98,52 @@ function lienSite(nom, libelle) {
    Squelette de la page : sommaire + huit sections. Monté une seule fois ;
    ensuite seul le CONTENU de chaque section est redessiné.
    ========================================================================== */
+/* Sections REPLIABLES : huit sections dépliées, chacune avec ses filtres, ses
+   paragraphes et ses listes, faisaient une page qu'on ne lisait pas. Repliée,
+   une section tient sur une ligne — son titre et son compteur ; la matrice du
+   haut dit laquelle ouvrir. L'état ouvert est mémorisé par section. */
+const OUVERTES_CLE = 'dashSecOuvertes';
+let OUVERTES = new Set();
+try { OUVERTES = new Set(JSON.parse(localStorage.getItem(OUVERTES_CLE) || '[]')); }
+catch (e) { OUVERTES = new Set(); }
+
+function basculerSection(id, ouvrir) {
+  const sec = document.getElementById(id);
+  if (!sec) return;
+  const o = ouvrir === undefined ? !sec.classList.contains('ouvert') : !!ouvrir;
+  sec.classList.toggle('ouvert', o);
+  const corps = document.getElementById(id + '-corps');
+  if (corps) corps.hidden = !o;
+  const bt = sec.querySelector('.sec-pli');
+  if (bt) bt.setAttribute('aria-expanded', o ? 'true' : 'false');
+  if (o) OUVERTES.add(id); else OUVERTES.delete(id);
+  try { localStorage.setItem(OUVERTES_CLE, JSON.stringify([...OUVERTES])); } catch (e) { /* refusé */ }
+}
+// Une ancre (#securite/vulns, lien d'un incident, cellule de la matrice) ouvre
+// sa section avant que le routeur n'y fasse défiler.
+document.addEventListener('ancre', e => { if (String(e.detail || '').startsWith('sec-')) basculerSection(e.detail, true); });
+
 function sectionEl(id, titre, tete, ...corps) {
-  return h('section', { class: 'section secsec', id },
-    h('div', { class: 'sechead' }, h('h2', { text: titre }), tete),
-    ...corps);
+  const ouvert = OUVERTES.has(id);
+  const bt = h('button', {
+    type: 'button', class: 'sec-pli', 'aria-expanded': ouvert ? 'true' : 'false', 'aria-controls': id + '-corps',
+  }, h('span', { class: 'tlchev' }, iconEl('chevron-right', { size: 14 })),
+  h('span', { text: titre }), h('span', { class: 'sec-n', id: id + '-n' }));
+  bt.onclick = () => basculerSection(id);
+  return h('section', { class: 'section secsec sec-pliable' + (ouvert ? ' ouvert' : ''), id },
+    h('div', { class: 'sechead' }, h('h2', { class: 'sec-titre' }, bt),
+      tete ? h('span', { class: 'sec-tete' }, tete) : null),
+    h('div', { class: 'sec-corps', id: id + '-corps', hidden: !ouvert }, ...corps));
 }
 
 function monterSec() {
   if (MONTE) return;
   MONTE = true;
   mount('page-sec',
-    h('nav', { class: 'anchors', id: 'sec-somm', 'aria-label': 'Sections de la page Sécurité' }),
+    h('section', { class: 'section secsec', id: 'sec-synthese' },
+      h('div', { class: 'sechead' }, h('h2', { text: 'Sites à surveiller' }),
+        h('span', { class: 'muted small', id: 'synth-n' })),
+      h('div', { id: 'synth-body' }, h('p', { class: 'hint hint-tight', text: 'chargement…' }))),
     sectionVulns(),
     sectionAdmins(),
     sectionPhe(),
@@ -162,18 +197,111 @@ function compteursSommaire() {
 }
 
 function majSommaire() {
-  const box = document.getElementById('sec-somm');
-  if (!box) return;
   const c = compteursSommaire();
-  mount(box, ANCRES.map(([id, slug, lbl]) => {
+  ANCRES.forEach(([id]) => {
+    const box = document.getElementById(id + '-n');
     const n = c[id];
-    const a = h('a', { class: 'anchor', href: '#securite/' + slug },
-      h('span', { text: lbl }),
-      n ? chipEl(String(n[0]), n[1]) : null);
-    // Le clic pose le fragment ; le routeur fait défiler (et l'URL reste
-    // partageable, comme du temps des sous-onglets).
-    return a;
-  }));
+    if (box) mount(box, n ? chipEl(n[1] === 'ok' ? 'rien à signaler' : String(n[0]), n[1]) : null);
+  });
+  renderSynthese();
+}
+
+/* ============================================================================
+   0. Synthèse : une ligne par site qui a au moins un problème
+   ----------------------------------------------------------------------------
+   Pour savoir QUEL site allait mal, il fallait parcourir huit sections de
+   formats différents. La matrice croise les sites et les risques ; une cellule
+   vide veut dire « rien à signaler », une cellule remplie ouvre sa section,
+   filtrée sur le site quand la section a un filtre.
+   ========================================================================== */
+const COLONNES = [
+  ['vulns', 'Failles', 'sec-vulns', 'vulnerabilites', 'vln-q'],
+  ['admins', 'Admins inconnus', 'sec-admins', 'administrateurs', null],
+  ['phe', 'Erreurs PHP', 'sec-phperr', 'erreurs-php', 'phe-q'],
+  ['cert', 'Certificat', 'sec-certs', 'certificats', null],
+  ['coeur', 'Cœur modifié', 'sec-checksums', 'integrite-core', null],
+  ['scan', 'Fichiers suspects', 'sec-scan', 'fichiers-suspects', 'scan-q'],
+  ['risky', 'Ext. à risque', 'sec-risky', 'plugins-a-risque', null],
+  ['php', 'PHP', 'sec-php', 'php-obsolete', null],
+];
+const POIDS = { err: 3, warn: 1 };
+
+function constats() {
+  const par = new Map();       // domaine → {s, cellules:{col: [texte, niveau, titre]}}
+  const poser = (nom, col, texte, niv, titre) => {
+    const s = siteByName(nom) || allSites().find(x => x.domain === nom);
+    if (!s) return;
+    if (!par.has(s.domain)) par.set(s.domain, { s, c: {} });
+    par.get(s.domain).c[col] = [texte, niv, titre || ''];
+  };
+  (VULNS.sites || []).forEach(x => {
+    const f = x.findings || [];
+    if (!f.length) return;
+    const pire = f.reduce((m, v) => ((SEVRANK[v.severity] || 0) > (SEVRANK[m] || 0) ? v.severity : m), '');
+    const fix = f.filter(v => v.update_to).length;
+    poser(x.domain, 'vulns', f.length + ' · ' + (SEVLABEL[pire] || pire || '?'), sevNiveau(pire),
+      fix + ' corrigeable' + (fix > 1 ? 's' : '') + ' par une mise à jour');
+  });
+  const adm = new Map();
+  adminsInconnus().forEach(({ s, a }) => adm.set(s.domain, (adm.get(s.domain) || []).concat(a.login)));
+  adm.forEach((logins, d) => poser(d, 'admins', String(logins.length), 'err', logins.join(', ')));
+  (PHERR.sites || []).forEach(x => {
+    const g = x.groups || [];
+    const fat = g.filter(y => (PHRANK[y.severity] || 0) >= 4 && !y.famille).length;
+    if (fat) poser(x.domain, 'phe', fat + ' fatale' + (fat > 1 ? 's' : ''), 'err');
+    else if (g.length) poser(x.domain, 'phe', String(g.length), 'warn', 'avertissements et bruit (aucune fatale du site)');
+  });
+  certsFusionnes().forEach(c => {
+    const d = c.days;
+    if (d === null || d === undefined || Number(d) >= 21) return;
+    poser(c.monitor, 'cert', d + ' j', Number(d) < 7 ? 'err' : 'warn', 'expire le ' + (c.valid_to || '?'));
+  });
+  Object.entries(CKS).forEach(([d, ck]) => {
+    if (ck && typeof ck === 'object' && !ck.ok) poser(d, 'coeur', 'oui', 'err', 'des fichiers du cœur diffèrent de la version officielle');
+  });
+  (SCAN.sites || []).forEach(x => {
+    const n = Number(x.new) || 0;
+    if (!n) return;
+    const crit = (x.findings || []).some(y => y.new && y.sev === 'critical');
+    poser(x.domain, 'scan', String(n), crit ? 'err' : 'warn', 'nouveaux depuis la référence');
+  });
+  risques().forEach(({ s, p }) => poser(s.domain, 'risky', p.name, 'warn'));
+  phpObsoletes(allSites()).forEach(g => g.sites.forEach(s => poser(s.domain, 'php', g.version, 'warn', 'branche sans correctifs de sécurité')));
+  return [...par.values()]
+    .map(r => ({ ...r, poids: Object.values(r.c).reduce((a, [, n]) => a + (POIDS[n] || 0), 0) }))
+    .sort((a, b) => b.poids - a.poids || nomDeSite(a.s).localeCompare(nomDeSite(b.s)));
+}
+
+function cellule(r, [col, lbl, secId, slug, filtre]) {
+  const v = r.c[col];
+  if (!v) return h('td', { class: 'synth-vide' });
+  const [texte, niv, titre] = v;
+  const a = h('a', { class: 'synth-a', href: '#securite/' + slug, title: titre || null }, chipEl(texte, niv));
+  a.onclick = () => {
+    // La section ouvre filtrée sur ce site, quand elle a un filtre.
+    const champ = filtre && document.getElementById(filtre);
+    if (champ) { champ.value = r.s.domain; champ.dispatchEvent(new Event('input')); }
+    basculerSection(secId, true);
+  };
+  return h('td', { 'data-l': lbl }, a);
+}
+
+function renderSynthese() {
+  const box = document.getElementById('synth-body');
+  if (!box) return;
+  const lignes = constats();
+  const n = document.getElementById('synth-n');
+  if (n) n.textContent = lignes.length + ' site' + (lignes.length > 1 ? 's' : '') + ' sur ' + allSites().length;
+  if (!lignes.length) {
+    mount(box, h('p', { class: 'hint hint-tight todo-ok' }, iconEl('circle-check', { size: 16 }),
+      h('span', { text: 'Rien à signaler sur le parc.' })));
+    return;
+  }
+  mount(box, h('div', { class: 'wrap' }, h('table', { class: 'synth' },
+    h('thead', {}, h('tr', {}, h('th', { text: 'Site' }), COLONNES.map(([, lbl]) => h('th', { text: lbl })))),
+    h('tbody', {}, lignes.map(r => h('tr', {},
+      h('td', { class: 'site' }, lienSite(r.s.domain, nomDeSite(r.s))),
+      COLONNES.map(c => cellule(r, c))))))));
 }
 
 /* ============================================================================

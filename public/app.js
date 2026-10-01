@@ -251,6 +251,9 @@ function allerAncre(route, sub, revise) {
   arreterRevisee();
   const id = (ANCRES[route] || {})[sub];
   if (!id) return;
+  // Une section repliée doit s'ouvrir AVANT d'être visée (Sécurité) : l'écran
+  // l'apprend par cet évènement, sans que le routeur connaisse ses sections.
+  document.dispatchEvent(new CustomEvent('ancre', { detail: id }));
   let ref = null;
   const aller = doux => {
     const el = document.getElementById(id);
