@@ -962,6 +962,96 @@ class TestVizNuit(unittest.TestCase):
         self.assertIn("HTTP 500", incs[0]["detail"])
 
 
+class TestVizNuitFilet(unittest.TestCase):
+    """Filet du 01/10 : une MAJ journalisée sans scan du plugin est rattrapée par
+    le dashboard, et un écart ne disparaît plus sans avoir été levé."""
+
+    def journal(self, d, lignes):
+        chemin = os.path.join(d, "changes.jsonl")
+        with open(chemin, "w") as fh:
+            for l in lignes:
+                fh.write(json.dumps(l) + "\n")
+        return chemin
+
+    def ligne(self, kind, detail, il_y_a=1800, dom="a.fr"):
+        return {"ts": time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() - il_y_a)),
+                "domain": dom, "kind": kind, "severity": "info", "detail": detail}
+
+    def test_maj_journalisees(self):
+        with tempfile.TemporaryDirectory() as d:
+            chemin = self.journal(d, [
+                self.ligne("plugin_update", "seo 1.0 → 1.1"),
+                self.ligne("theme_update", "astra 4.13 → 4.14"),
+                self.ligne("plugin_remove", "− extension wp-mail-smtp"),
+                self.ligne("plugin_add", "+ extension wp-mail-smtp 4.10.0"),
+                self.ligne("plugin_add", "+ extension inconnue 1.0"),       # vrai ajout : pas une MAJ
+                self.ligne("plugin_update", "x 1 → 2", dom="b.fr"),
+                self.ligne("plugin_update", "vieux 1 → 2", il_y_a=40 * 3600)])
+            with mock.patch.object(viz_nuit, "CHANGES_PATH", chemin):
+                out = viz_nuit.maj_journalisees("a.fr", time.time() - 26 * 3600)
+        self.assertEqual(sorted((m, g) for m, g, _ in out),
+                         [("astra", "theme"), ("seo", "plugin"), ("wp-mail-smtp", "plugin")])
+
+    def examiner(self, evenements, lignes):
+        rapport = {"run_id": "r1", "is_baseline": False, "report_url": "https://v/r1",
+                   "items": [{"page": "Contact", "viewport": "Desktop", "status": "fail"}]}
+        appels = []
+
+        def rattrapage(srv_name, s, srv, site, majs):
+            appels.append(sorted(m for m, _, _ in majs))
+            return {"rc": 2, "report": rapport, "items": []}
+        with tempfile.TemporaryDirectory() as d:
+            chemin = self.journal(d, lignes)
+            with mock.patch.object(viz_nuit, "CHANGES_PATH", chemin), \
+                 mock.patch.object(viz_nuit.A, "find_site", return_value=({"name": "s1"}, {"domain": "a.fr"})), \
+                 mock.patch.object(viz_nuit, "evenements", return_value=evenements), \
+                 mock.patch.object(viz_nuit, "scan_rattrapage", side_effect=rattrapage), \
+                 mock.patch.object(viz_nuit, "lire_rapport", return_value=None):
+                r = viz_nuit.examiner("s1", {"domain": "a.fr"}, time.time(), rattraper=True)
+        return r, appels
+
+    def test_maj_sans_scan_du_plugin_rattrapee(self):
+        r, appels = self.examiner([], [self.ligne("plugin_update", "wp-mail-smtp 4.9 → 4.10")])
+        self.assertEqual(appels, [["wp-mail-smtp"]])
+        self.assertEqual((r["non_couvertes"], r["rattrapage"]), (["wp-mail-smtp"], 2))
+        self.assertEqual([e["page"] for e in r["ecarts"]], ["Contact"])
+
+    def test_maj_couverte_par_le_plugin_pas_de_rattrapage(self):
+        at = datetime.datetime.fromtimestamp(time.time() - 2400, datetime.timezone.utc).isoformat()
+        r, appels = self.examiner([{"at": at, "items": ["wp-mail-smtp"]}],
+                                  [self.ligne("plugin_update", "wp-mail-smtp 4.9 → 4.10")])
+        self.assertEqual(appels, [])
+        self.assertEqual(r["non_couvertes"], [])
+
+    def test_ecart_reconfirme_tant_que_le_rapport_le_montre(self):
+        ancien = {"site": "a.fr", "domain": "a.fr", "at": "2026-09-29T03:00:00+00:00",
+                  "items": ["x"], "sans_effet": ["y"], "ecarts": [{"page": "Accueil"}]}
+        fail = {"run_id": "r", "items": [{"page": "Accueil", "viewport": "Mobile", "status": "fail"}]}
+        ok = {"run_id": "r2", "items": [{"page": "Accueil", "viewport": "Mobile", "status": "ok"}]}
+        with mock.patch.object(viz_nuit, "lire_rapport", return_value=fail):
+            r = viz_nuit.reconfirmer("s1", ancien, time.time())
+        self.assertEqual(r["at"], ancien["at"])
+        self.assertTrue(r["confirme"])
+        self.assertEqual(r["sans_effet"], [])
+        with mock.patch.object(viz_nuit, "lire_rapport", return_value=ok):
+            self.assertIsNone(viz_nuit.reconfirmer("s1", ancien, time.time()))
+
+    def test_incident_garde_l_ecart_reconfirme_et_signale_l_absence_de_controle(self):
+        now = time.time()
+        vieux = datetime.datetime.fromtimestamp(now - 5 * 86400, datetime.timezone.utc).isoformat()
+        frais = datetime.datetime.fromtimestamp(now - 600, datetime.timezone.utc).isoformat()
+        data = {"sites": {
+            "a.fr": {"server": "s1", "at": vieux, "confirme": frais, "items": ["x"], "sans_effet": [],
+                     "ecarts": [{"page": "Accueil", "formats": ["Mobile"], "http": None}]},
+            "b.fr": {"server": "s1", "at": frais, "items": ["seo"], "sans_effet": [], "ecarts": [],
+                     "non_couvertes": ["seo"], "rattrapage": None}}}
+        index = {"a.fr": ("s1", {}), "b.fr": ("s1", {})}
+        with mock.patch.object(A, "incident_json", return_value=data):
+            incs = {i["kind"]: i for i in A.inc_viz_nuit(index, now)}
+        self.assertEqual(sorted(incs), ["viz_auto_update", "viz_not_scanned"])
+        self.assertEqual(incs["viz_not_scanned"]["bucket"], "plan")
+
+
 class TestTexteEcartVisuel(unittest.TestCase):
     RAPPORT = {"items": [
         {"page": "Contact", "viewport": "Mobile", "status": "fail", "diff_percent": 6.117},

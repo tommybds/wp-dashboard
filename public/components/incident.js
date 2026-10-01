@@ -42,6 +42,9 @@ const KINDS = {
   cert_expiring: 'certificat',
   php_eol: 'PHP en fin de support',
   scan_suspect: 'fichier suspect',
+  viz_auto_update: 'écart visuel après MAJ auto',
+  viz_not_scanned: 'MAJ auto sans contrôle visuel',
+  auto_update_noop: 'MAJ auto sans effet',
 };
 
 export const kindLabel = k => KINDS[k] || (k ? 'autre' : 'incident');

@@ -5456,7 +5456,17 @@ def inc_viz_nuit(index, now):
             since = datetime.datetime.fromisoformat(str(r.get("at")).replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError):
             pass
-        if since is None or now - since > 48 * 3600:
+        # Un écart RECONFIRMÉ ce matin (viz_nuit.reconfirmer) reste à traiter
+        # tant que le dernier rapport le montre, même si la mise à jour qui l'a
+        # causé date de plusieurs jours : il disparaissait au bout de 48 h sans
+        # avoir été réglé (tiphainedesign, 29/09 → « réglé » le 01/10).
+        vu = since
+        try:
+            if r.get("confirme"):
+                vu = datetime.datetime.fromisoformat(str(r["confirme"]).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            pass
+        if since is None or now - (vu or since) > 48 * 3600:
             continue
         server = r.get("server") or index[cle][0]
         items = ", ".join(r.get("items") or []) or "?"
@@ -5470,6 +5480,19 @@ def inc_viz_nuit(index, now):
                 f"{items} → {pages}", site=cle, server=server, since=since, now=now,
                 link={"tab": "parc", "sub": ""},
                 extra={"items": r.get("items") or [], "pages": ecarts, "report_url": r.get("report_url") or ""}))
+        # Mise à jour que le plugin n'a pas scannée ET que le rattrapage n'a pas
+        # pu couvrir : personne n'a regardé le site après. Rien n'indique qu'il
+        # soit cassé — d'où « à planifier » — mais le contrôle n'a pas eu lieu.
+        nc = [str(x) for x in (r.get("non_couvertes") or [])]
+        if nc and r.get("rattrapage") not in (0, VIZ_ANOMALY_RC):
+            out.append(make_incident(
+                "viz_not_scanned", "warning", cle,
+                f"Mise à jour automatique sans contrôle visuel sur {cle}",
+                ", ".join(nc) + " : ni le plugin VizProof ni le scan de rattrapage du "
+                "dashboard n'ont pu photographier le site après la mise à jour",
+                site=cle, server=server, since=since, now=now,
+                link={"tab": "parc", "sub": ""}, bucket="plan",
+                extra={"items": nc, "rattrapage": r.get("rattrapage")}))
         for item in r.get("sans_effet") or []:
             out.append(make_incident(
                 "auto_update_noop", "warning", cle,
