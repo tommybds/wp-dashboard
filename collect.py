@@ -1752,6 +1752,7 @@ def main():
         try:
             import actions_server
             actions_server.evaluate_alerts(changes if prev else [])
+            actions_server.attendre_envois()
         except Exception as e:  # une alerte ratée ne doit pas faire échouer la collecte
             print(f"alertes : {type(e).__name__}: {e}", flush=True)
     print(f"OK — {sum(len(s['sites']) for s in fleet['servers'])} sites.")

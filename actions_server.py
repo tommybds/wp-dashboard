@@ -4468,13 +4468,31 @@ def telegram_send_sync(text):
         return False, f"{type(e).__name__}: {e}".replace(token, "***")[:300]
 
 
+# Envois en cours. Le serveur vit longtemps, mais un SCRIPT de cron qui appelle
+# `alert()` puis se termine tue ses fils d'exécution « daemon » : l'alerte était
+# notée envoyée (anti-spam) sans jamais partir. Constaté le 01/10 : l'écart
+# visuel de tiphainedesign du 29/09, marqué envoyé à 6 h 45, absent de
+# alerts.log. Les scripts appellent `attendre_envois()` avant de sortir.
+_ENVOIS = []
+
+
 def send_telegram(text):
     """Envoi non bloquant : l'appelant n'attend pas, les erreurs partent dans alerts.log."""
     def worker():
         ok, err = telegram_send_sync(text)
         short = " ".join(str(text).split())[:200]
         alerts_log(("envoyé: " if ok else f"échec ({err}): ") + short)
-    threading.Thread(target=worker, daemon=True).start()
+    t = threading.Thread(target=worker, daemon=True)
+    _ENVOIS.append(t)
+    t.start()
+
+
+def attendre_envois(delai=60):
+    """Attend la fin des envois Telegram lancés par ce processus (scripts de cron)."""
+    fin = time.time() + delai
+    for t in list(_ENVOIS):
+        t.join(max(0.0, fin - time.time()))
+    _ENVOIS[:] = [t for t in _ENVOIS if t.is_alive()]
 
 
 def nom_usage(domain):

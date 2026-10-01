@@ -1052,6 +1052,25 @@ class TestVizNuitFilet(unittest.TestCase):
         self.assertEqual(incs["viz_not_scanned"]["bucket"], "plan")
 
 
+class TestEnvoisAttendus(unittest.TestCase):
+    """Un script de cron qui alerte puis se termine doit attendre l'envoi."""
+
+    def test_attendre_envois(self):
+        partis = []
+
+        def lent(texte):
+            time.sleep(0.2)
+            partis.append(texte)
+            return True, None
+        with mock.patch.object(A, "telegram_send_sync", side_effect=lent), \
+             mock.patch.object(A, "alerts_log"):
+            A.send_telegram("écart visuel")
+            self.assertEqual(partis, [])          # l'envoi est bien en arrière-plan
+            A.attendre_envois(5)
+        self.assertEqual(partis, ["écart visuel"])
+        self.assertEqual(A._ENVOIS, [])
+
+
 class TestTexteEcartVisuel(unittest.TestCase):
     RAPPORT = {"items": [
         {"page": "Contact", "viewport": "Mobile", "status": "fail", "diff_percent": 6.117},

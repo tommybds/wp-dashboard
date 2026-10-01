@@ -325,6 +325,7 @@ def main():
     for r in resultats.values():
         if r["ecarts"] and not r.get("confirme"):
             A.alert(f"viz_nuit:{r['site']}:{r['at'][:10]}", "viz_anomaly", texte_alerte(r))
+    A.attendre_envois()
     print(f"{len(resultats)} site(s) mis à jour cette nuit.")
 
 
