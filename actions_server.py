@@ -5031,7 +5031,10 @@ def inc_down_probe(server, s, now):
 # est réelle, mais elle ne dit rien de l'état du site une fois la mise à jour
 # finie. Depuis que des sites se mettent à jour seuls la nuit, il en tombait
 # chaque matin dans « nouveaux problèmes ».
-RE_FICHIER_MANQUANT = re.compile(r"Failed opening required|failed to open stream", re.I)
+# « Class … not found » : même instant, autre symptôme — l'autoloader de
+# l'extension cherche une classe dont le fichier n'est pas encore reposé.
+RE_FICHIER_MANQUANT = re.compile(
+    r"Failed opening required|failed to open stream|Class \"?[\w\\]+\"? not found", re.I)
 RE_SLUG_CONTENU = re.compile(r"(?:^|/)wp-content/(?:plugins|themes)/([^/]+)/")
 MAJ_FENETRE_S = 3 * 3600      # écart toléré entre la fatale et la MAJ journalisée
 MAJ_MAX_OCCURRENCES = 5       # au-delà, ce n'est plus passager : le site est cassé

@@ -1053,6 +1053,17 @@ class TestDigest(unittest.TestCase):
         # rien de reconnu : on garde le message brut, faute de mieux
         self.assertEqual(f("", "Uncaught Error: Bidule"), "<b>a.fr</b> : erreur fatale : Uncaught Error: Bidule")
 
+    def test_mise_a_jour_vue_en_cours_n_est_ni_ajout_ni_retrait(self):
+        ch = [self.maj("a.fr", "− extension wp-mail-smtp", kind="plugin_remove"),
+              self.maj("a.fr", "+ extension wp-mail-smtp 4.10.0", kind="plugin_add", sev="warn")]
+        self.assertEqual(digest.resume_changements(ch), ["• 1 extension à jour sur 1 site"])
+        # un vrai ajout reste à vérifier, un vrai retrait reste compté
+        ch = [self.maj("a.fr", "− extension vieux", kind="plugin_remove"),
+              self.maj("a.fr", "+ extension inconnue 1.0", kind="plugin_add", sev="warn")]
+        lignes = digest.resume_changements(ch)
+        self.assertIn("  a.fr : + inconnue 1.0", lignes)
+        self.assertIn("• 1 extension retirée", lignes)
+
     def test_themes_comptes(self):
         ch = [self.maj("a.fr", "astra 4.13 → 4.14", kind="theme_update"),
               self.maj("b.fr", "astra 4.13 → 4.14", kind="theme_update")]

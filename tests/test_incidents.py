@@ -1802,6 +1802,10 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
         self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t - 6 * 3600]}), [("", "now")])
         # l'erreur se répète : le site est cassé pour de bon
         self.assertEqual(familles([grp(40)], {("a.fr", "seo"): [t]}), [("", "now")])
+        # même instant, autre symptôme : l'autoloader ne trouve pas la classe
+        g = grp(1)
+        g["message"] = 'Uncaught Error: Class "WPMailSMTP\\Tasks\\Tasks" not found'
+        self.assertEqual(familles([g], {("a.fr", "seo"): [t]}), [("maj_en_cours", "plan")])
 
     def test_incident_declasse_mais_conserve(self):
         """Déclassée, pas supprimée : le volume dit quelque chose du bruit

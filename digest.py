@@ -93,8 +93,35 @@ def versions_nettes(changes, kind, motif):
     return {k: v for k, v in net.items() if v[0] != v[1]}
 
 
+def reinstallations(changes):
+    """Une extension « retirée » puis « ajoutée » sous le même nom sur le même
+    site, c'est une mise à jour vue EN COURS : WordPress supprime l'ancien
+    dossier avant de poser le nouveau, et une collecte qui passe entre les deux
+    voit l'extension disparaître. Annoncer « + extension » en « À vérifier »
+    (signal d'intrusion) et « 1 extension retirée » était doublement faux.
+
+    → changements où chaque paire retrait → ajout devient une mise à jour."""
+    retraits = {}
+    for k, c in enumerate(changes):
+        if c.get("kind") == "plugin_remove":
+            nom = str(c.get("detail") or "").replace("− extension ", "", 1).strip()
+            retraits.setdefault((c.get("domain"), nom), []).append(k)
+    sautes, ajouts = set(), {}
+    for k, c in enumerate(changes):
+        if c.get("kind") != "plugin_add":
+            continue
+        reste = str(c.get("detail") or "").replace("+ extension ", "", 1).strip().split(" ")
+        nom, vers = reste[0], (reste[1] if len(reste) > 1 else "?")
+        avant = [r for r in retraits.get((c.get("domain"), nom), []) if r < k and r not in sautes]
+        if avant:
+            sautes.update((avant[-1], k))
+            ajouts[k] = dict(c, kind="plugin_update", severity="info", detail=f"{nom} ? → {vers}")
+    return [ajouts.get(k, c) for k, c in enumerate(changes) if k not in sautes or k in ajouts]
+
+
 def resume_changements(changes):
     """Changements de PRODUCTION → lignes du bloc « Changements »."""
+    changes = reinstallations(changes)
     lignes = []
 
     # 1. sécurité, détaillée : c'est là qu'un piratage se voit. Les admins
