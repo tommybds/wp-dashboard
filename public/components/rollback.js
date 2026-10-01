@@ -1,7 +1,7 @@
 /* Rétablir une version antérieure d'une extension OU d'un thème.
 
    Deux sources, une seule modale (`#rbmodal`) :
-     * l'archive locale laissée par une « MAJ sûre » — restitution à l'identique,
+     * l'archive locale laissée par une « MAJ contrôlée » — restitution à l'identique,
        y compris pour une extension premium ;
      * les versions publiées sur wordpress.org.
 
@@ -30,7 +30,7 @@ export function setRollbackPoints(points, srv, dom) {
 export function rollbackPoints() { return RBPOINTS; }
 
 /* Le mot employé dans la modale, et la clé sous laquelle un point de
-   restauration liste ce qu'il contient. Une archive de « MAJ sûre » range les
+   restauration liste ce qu'il contient. Une archive de « MAJ contrôlée » range les
    extensions sous `plugins` ; si elle range un jour les thèmes, ce sera sous
    `themes` — d'ici là, `archiveDe()` n'en trouve simplement aucune pour un
    thème, et seule la liste wordpress.org est proposée. */
@@ -147,7 +147,7 @@ export async function askVersion(slug, btn, cible, apres, type) {
   if (!vs.length && !arc) {
     intro.innerHTML = `Aucune version antérieure disponible pour <b>${H(slug)}</b> : aucune version `
       + `de ce${t === 'theme' ? ' thème' : 'tte extension'} n'est publiée sur wordpress.org `
-      + `(${H(m)} premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ sûre ».`;
+      + `(${H(m)} premium) et aucune archive locale n'existe. Une archive est créée à chaque « MAJ contrôlée ».`;
   } else {
     intro.innerHTML = `Choisissez la version à remettre en place pour <b>${H(slug)}</b>.
       Seuls les <b>fichiers</b> sont remplacés — la base n'est pas touchée.`;

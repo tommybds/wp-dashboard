@@ -989,7 +989,7 @@ class TestVizNuitFilet(unittest.TestCase):
                 self.ligne("plugin_update", "vieux 1 → 2", il_y_a=40 * 3600)])
             with mock.patch.object(viz_nuit, "CHANGES_PATH", chemin):
                 out = viz_nuit.maj_journalisees("a.fr", time.time() - 26 * 3600)
-        self.assertEqual(sorted((m, g) for m, g, _ in out),
+        self.assertEqual(sorted((m, g) for m, g, *_ in out),
                          [("astra", "theme"), ("seo", "plugin"), ("wp-mail-smtp", "plugin")])
 
     def examiner(self, evenements, lignes):
@@ -998,7 +998,7 @@ class TestVizNuitFilet(unittest.TestCase):
         appels = []
 
         def rattrapage(srv_name, s, srv, site, majs):
-            appels.append(sorted(m for m, _, _ in majs))
+            appels.append(sorted(m for m, *_ in majs))
             return {"rc": 2, "report": rapport, "items": []}
         with tempfile.TemporaryDirectory() as d:
             chemin = self.journal(d, lignes)
@@ -1050,6 +1050,60 @@ class TestVizNuitFilet(unittest.TestCase):
             incs = {i["kind"]: i for i in A.inc_viz_nuit(index, now)}
         self.assertEqual(sorted(incs), ["viz_auto_update", "viz_not_scanned"])
         self.assertEqual(incs["viz_not_scanned"]["bucket"], "plan")
+
+
+class TestRetourArriereAuto(unittest.TestCase):
+    """Mode automatique : une MAJ de nuit qui casse l'affichage est annulée."""
+
+    def test_retour_cible_les_elements_du_scan(self):
+        t = time.time()
+        majs = [("seo", "plugin", t - 100, "1.0"), ("astra", "theme", t - 100, "4.1"),
+                ("premium", "plugin", t - 100, "2.0"), ("wordpress-core", "core", t - 100, ""),
+                ("hors-scan", "plugin", t - 100, "3.0")]
+        appels, suspendus = [], []
+
+        def rollback(srv, dom, slug, version=None, kind="plugin"):
+            appels.append((slug, version, kind))
+            return (1, "Error: plugin not found") if slug == "premium" else (0, "ok")
+        with mock.patch.object(viz_nuit.A, "plugin_rollback", side_effect=rollback), \
+             mock.patch.object(viz_nuit.A, "auto_maj_suspendre",
+                               side_effect=lambda *a: suspendus.append(a[2]) or (0, "")), \
+             mock.patch.object(viz_nuit.A, "append_log"):
+            r = viz_nuit.retour_arriere("s1", {"domain": "a.fr"}, majs,
+                                        {"seo", "astra", "premium", "wordpress-core"})
+        self.assertEqual(sorted(appels), [("astra", "4.1", "theme"), ("premium", "2.0", "plugin"),
+                                          ("seo", "1.0", "plugin")])
+        self.assertEqual(sorted(x["slug"] for x in r["retablis"]), ["astra", "seo"])
+        self.assertEqual(sorted(suspendus), ["astra", "seo"])      # la boucle est coupée
+        raisons = {x["slug"]: x["raison"] for x in r["impossibles"]}
+        self.assertIn("premium", raisons["premium"])
+        self.assertIn("cœur", raisons["wordpress-core"])
+
+    def test_incident_retour_propre_remplace_l_ecart(self):
+        now = time.time()
+        at = datetime.datetime.fromtimestamp(now - 3600, datetime.timezone.utc).isoformat()
+        base = {"server": "s1", "at": at, "items": ["seo"], "sans_effet": [],
+                "ecarts": [{"page": "Accueil", "formats": ["Mobile"], "http": None}]}
+        propre = dict(base, retour={"retablis": [{"slug": "seo", "version": "1.0", "suspendu": True}],
+                                    "impossibles": [], "ecarts_apres": 0})
+        rate = dict(base, retour={"retablis": [{"slug": "seo", "version": "1.0", "suspendu": True}],
+                                  "impossibles": [], "ecarts_apres": 1})
+        for donnees, attendu in ((propre, [("auto_rollback", "warning")]),
+                                 (rate, [("auto_rollback", "critical"), ("viz_auto_update", "warning")])):
+            with mock.patch.object(A, "incident_json", return_value={"sites": {"a.fr": donnees}}):
+                incs = A.inc_viz_nuit({"a.fr": ("s1", {})}, now)
+            self.assertEqual(sorted((i["kind"], i["severity"]) for i in incs), attendu)
+
+    def test_alerte_dit_ce_qui_a_ete_annule(self):
+        r = {"site": "a.fr", "domain": "a.fr", "ecarts": [{"page": "Accueil"}],
+             "retour": {"retablis": [{"slug": "seo", "version": "1.0", "suspendu": True}],
+                        "impossibles": [{"slug": "pro", "raison": "premium"}], "ecarts_apres": 0}}
+        t = viz_nuit.texte_retour(r)
+        self.assertIn("annulée", t)
+        self.assertIn("seo rétabli en 1.0", t)
+        self.assertIn("MAJ auto suspendue", t)
+        self.assertIn("pro : retour impossible", t)
+        self.assertIn("plus aucune page en échec", t)
 
 
 class TestEnvoisAttendus(unittest.TestCase):

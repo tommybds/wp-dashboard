@@ -606,6 +606,34 @@ def ack_vu(e):
             "stale_fingerprint": bool(e.get("stale")) and e.get("mode") == "ignore"}
 
 
+# Mode automatique bouchonné : le retour arrière se coche depuis l'écran
+# Mises à jour, et la case doit rester cochée au rechargement.
+AUTO_MODES = {"site-00.exemple.fr": {"rollback": True, "depuis": "2026-09-29 10:00"}}
+
+
+def auto_state():
+    """Écran Mises à jour : réglages + bilan de la nuit, les trois cas utiles —
+    scan du plugin sans écart, scan rattrapé par le dashboard avec une page en
+    échec, et mise à jour annulée par le retour arrière automatique."""
+    at = datetime.utcnow().replace(hour=3, minute=0, second=0).isoformat() + "+00:00"
+    return {"modes": AUTO_MODES, "nuit": {"generated_at": now(1)[:16], "sites": {
+        "site-00.exemple.fr": {"site": "site-00.exemple.fr", "domain": "site-00.exemple.fr", "at": at,
+                               "items": ["wp-mail-smtp", "wordfence"], "sans_effet": [], "non_couvertes": [],
+                               "ecarts": [], "report_url": "https://vizproof.example/r/1"},
+        "site-04.exemple.fr": {"site": "site-04.exemple.fr", "domain": "site-04.exemple.fr", "at": at,
+                               "items": ["elementor"], "sans_effet": ["astra-addon"],
+                               "non_couvertes": ["elementor"], "rattrapage": 2,
+                               "ecarts": [{"page": "Contact", "formats": ["Mobile"], "http": None}],
+                               "report_url": "https://vizproof.example/r/2"},
+        "site-08.exemple.fr": {"site": "site-08.exemple.fr", "domain": "site-08.exemple.fr", "at": at,
+                               "items": ["wp-mail-smtp"], "sans_effet": [], "non_couvertes": [],
+                               "ecarts": [{"page": "Accueil", "formats": ["Desktop"], "http": None}],
+                               "retour": {"retablis": [{"slug": "wp-mail-smtp", "genre": "plugin",
+                                                        "version": "4.9.0", "suspendu": True}],
+                                          "impossibles": [], "ecarts_apres": 0}},
+    }}}
+
+
 def sidebar_counts():
     """Pastilles de la barre latérale, comme le backend : `incidents` porte les
     six compteurs de la file, et c'est l'interface qui ne retient que
@@ -1182,6 +1210,7 @@ ROUTES = {
     "/api/mgmt/alerts": lambda: json.loads(json.dumps(ALERTES)),
     "/api/incidents": incidents,
     "/api/mgmt/counts": sidebar_counts,
+    "/api/mgmt/auto_state": auto_state,
     "/api/sec/vulns": vulns,
     "/api/sec/phperrors": phperrors,
     "/api/sec/scan": scan,
@@ -1224,7 +1253,7 @@ STUB = """
     '/api/actions/viz_report', '/api/actions/viz_update_status', '/api/actions/viz_last',
     // la file dépend des acquittements posés depuis l'interface, et sa réponse
     // dépend de `?include=acked` : elle ne peut pas venir du paquet figé.
-    '/api/incidents', '/api/mgmt/counts',
+    '/api/incidents', '/api/mgmt/counts', '/api/mgmt/auto_state',
     // les certificats sondés viennent de fleet.json, qui bouge avec le suivi et
     // les overrides : figés, la section Certificats mentirait après un clic.
     '/api/sec/certs',
@@ -1363,6 +1392,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if chemin == "/api/incidents/unack":
             ACKS.pop(str(corps.get("id") or ""), None)
             return self._json(200, {"ok": True, "id": corps.get("id"), "removed": True})
+        if chemin == "/api/mgmt/auto_mode":
+            dom = str(corps.get("domain") or "")
+            if corps.get("rollback") not in (True, False):
+                return self._json(400, {"error": "rollback doit valoir true ou false"})
+            if corps["rollback"]:
+                AUTO_MODES[dom] = {"rollback": True, "depuis": now(0)[:16]}
+            else:
+                AUTO_MODES.pop(dom, None)
+            return self._json(200, {"ok": True, "modes": AUTO_MODES})
         gere = self._mgmt_post(chemin, corps)
         if gere is not None:
             return self._json(gere[0], gere[1])

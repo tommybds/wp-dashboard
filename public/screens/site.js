@@ -13,7 +13,7 @@
    * La console est identifiée par le domaine qu'elle porte (`data-domain`) :
      la cibler par son seul identifiant faisait écrire la progression du site A
      dans la console du site B.
-   * Les suivis de job (MAJ sûre, MAJ sous contrôle visuel) vivent côté
+   * Les suivis de job (MAJ contrôlée, MAJ sous contrôle visuel) vivent côté
      serveur : rouvrir la page s'y raccroche, la quitter ne les arrête pas. */
 
 import { api } from '../lib/api.js';
@@ -94,6 +94,8 @@ const ACT_LIB = {
   autoupdate_on: 'Activation des auto-MAJ', autoupdate_off: 'Désactivation des auto-MAJ',
   themes_autoupdate_on: 'Activation des auto-MAJ des thèmes',
   themes_autoupdate_off: 'Désactivation des auto-MAJ des thèmes',
+  auto_rollback_on: 'Retour arrière automatique activé',
+  auto_rollback_off: 'Retour arrière automatique désactivé',
   verify_checksums: 'Intégrité du cœur', vizproof_install: 'Installation VizProof',
   viz_baseline: 'Baseline visuelle', viz_scan: 'Scan visuel', viz_disconnect: 'Dissociation VizProof',
   rescan: 'Re-scan',
@@ -294,7 +296,7 @@ function actionPrincipale(s) {
       type: 'button', class: 'btn primary', id: 'safeup',
       title: 'Archive ce qui va changer (fichiers + base), met à jour, contrôle le site, '
         + 'et remet en arrière automatiquement si quelque chose casse',
-    }, iconEl('shield-check'), 'MAJ sûre — ' + quoi);
+    }, iconEl('shield-check'), 'MAJ contrôlée — ' + quoi);
     b.dataset.core = core ? '1' : '0';
     b.dataset.n = String(nEx);
     b.onclick = () => startSafeUpdate(s.srv, s.domain, b);
@@ -334,7 +336,7 @@ async function chargerWpEtat(s) {
    comptés dans le total, ils affichaient « partielles (15/22) » sur un site
    où tout ce qui pouvait l'être était activé. Sans inventaire détaillé (site
    REST), on garde le total, faute de mieux. */
-function extensionsMajables(s) {
+export function extensionsMajables(s) {
   if (!Array.isArray(s.plugins_list)) return { n: s.plugins_total ?? null, horsMaj: 0 };
   const horsMaj = s.plugins_list.filter(p => p && (p.status === 'must-use' || p.status === 'dropin')).length;
   return { n: s.plugins_list.length - horsMaj, horsMaj };
@@ -388,8 +390,12 @@ function ongletReglages(s) {
           { raison: tAuto != null && tTotal && tAuto >= tTotal ? 'déjà activées pour tous les thèmes' : '' }),
         bouton('themes_autoupdate_off', 'Désactiver pour tous', 'x',
           { raison: tAuto === 0 ? 'déjà désactivées' : '' }))),
+    h('div', { class: 'regl' },
+      h('span', { class: 'regl-l' }, h('b', { text: 'Retour arrière automatique' }), ' ',
+        h('span', { class: 'muted', text: 'et bilan des nuits : réglés dans l’écran Mises à jour' })),
+      h('a', { class: 'btn sm', href: '#maj' }, iconEl('zap'), 'Mises à jour')),
     h('p', { class: 'hint hint-tight' },
-      'WordPress applique alors lui-même les nouvelles versions, la nuit, sans passer par le dashboard. ',
+      'Les nouvelles versions s’appliquent alors la nuit (l’hébergeur ou WordPress), sans passer par le dashboard. ',
       viz ? h('span', {}, 'VizProof étant relié, chaque mise à jour automatique est suivie d’un ',
         h('b', { text: 'scan visuel' }), '.')
         : h('span', {}, h('b', { text: 'Aucun contrôle après coup' }),
@@ -770,7 +776,7 @@ function ongletVizproof(s) {
       h('p', { class: 'hint hint-tight' },
         'La ', h('b', { text: 'baseline' }), ' fige l’apparence de référence ; le ',
         h('b', { text: 'scan' }), ' compare le rendu actuel à cette référence et signale ce qui a bougé. '
-        + 'C’est ce que fait la MAJ sûre avant et après une mise à jour.'),
+        + 'C’est ce que fait la MAJ contrôlée avant et après une mise à jour.'),
       h('div', { class: 'actions mt2' }, base, scan)));
     /* Seul geste de liaison que le bloc d'état ne porte pas (il a déjà « Pages
        surveillées… » et « Dissocier ») : le menu Actions, supprimé, l'offrait. */
@@ -882,7 +888,7 @@ function updraftKv(s) {
 /* Ce qui attend sur ce site sans être un incident : des mises à jour
    disponibles. Elles ne remontent pas dans la file du parc — cinquante sites
    qui ont des mises à jour ne font pas cinquante urgences — mais écrire « rien
-   à traiter » juste au-dessus d'un bouton « MAJ sûre — 6 ext. » était faux. */
+   à traiter » juste au-dessus d'un bouton « MAJ contrôlée — 6 ext. » était faux. */
 function resteAFaire(s) {
   const out = [];
   const p = Number(s.plugins_updates) || 0;
@@ -962,7 +968,7 @@ export async function lancerSur(s, btn, label) {
   if (ACT_RISQUE.has(act)) {
     const ok = await askConfirm(
       `${H(label || actLib(act, arg))} sur <b>${H(kName(s) || s.domain)}</b> ?`
-      + `<br><br>Cette action <b>modifie le site</b>. Elle n'est pas archivée : pour un retour arrière automatique, passez par « MAJ sûre » depuis la page du site.`,
+      + `<br><br>Cette action <b>modifie le site</b>. Elle n'est pas archivée : pour un retour arrière automatique, passez par « MAJ contrôlée » depuis la page du site.`,
       { titre: actLib(act, arg), ok: 'Lancer' });
     if (!ok) return;
   }
@@ -1054,7 +1060,7 @@ function ligneExtension(s, p, maj) {
     h('td', { class: 'pcell' }));
   const cell = tr.lastElementChild;
   if (maj) {
-    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
+    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive : rien à rétablir si le site casse', text: 'Directe' });
     b.dataset.act = 'plugin_update';
     b.dataset.arg = p.name;
     b.onclick = () => confirmRun(b);
@@ -1062,10 +1068,10 @@ function ligneExtension(s, p, maj) {
        extension, contrôle visuel, et un point de rétablissement à la clé. */
     const sb = h('button', { type: 'button', class: 'btn sm psafe',
       title: 'Sauvegarde, archive cette extension, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
-      iconEl('shield-check'), 'sûre');
+      iconEl('shield-check'), 'Contrôlée');
     sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { slug: p.name });
     siSansSsh(s, b, sb);
-    cell.append(b, sb);
+    cell.append(sb, b);
   }
   const gel = h('button', {
     type: 'button', class: 'btn sm pfreeze',
@@ -1123,16 +1129,16 @@ function ligneTheme(s, t, maj) {
     h('td', { class: 'pcell' }));
   const cell = tr.lastElementChild;
   if (maj) {
-    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
+    const b = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive : rien à rétablir si le site casse', text: 'Directe' });
     b.dataset.act = 'theme_update';
     b.dataset.arg = t.name;
     b.onclick = () => confirmRun(b);
     const sb = h('button', { type: 'button', class: 'btn sm psafe',
       title: 'Sauvegarde, archive ce thème, met à jour, contrôle le rendu — et laisse un point de rétablissement' },
-      iconEl('shield-check'), 'sûre');
+      iconEl('shield-check'), 'Contrôlée');
     sb.onclick = () => startSafeUpdate(s.srv, s.domain, sb, { theme: t.name });
     siSansSsh(s, b, sb);
-    cell.append(b, sb);
+    cell.append(sb, b);
   }
   const gel = h('button', {
     type: 'button', class: 'btn sm pfreeze',
@@ -1207,12 +1213,12 @@ function ongletExtensions(s) {
        qu'elle est la plus lourde de conséquences. Elle a sa ligne, avec les
        deux mêmes gestes que les extensions — et le même avertissement sur ce
        que le retour arrière ne rattrape pas. */
-    const maj = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'MAJ' });
+    const maj = h('button', { type: 'button', class: 'btn sm', title: 'Mise à jour immédiate, sans sauvegarde ni archive', text: 'Directe' });
     maj.dataset.act = 'core_update';
     maj.onclick = () => confirmRun(maj);
     const sure = h('button', { type: 'button', class: 'btn sm primary',
       title: 'Sauvegarde, archive, met à jour le cœur, contrôle le rendu' },
-      iconEl('shield-check'), 'sûre');
+      iconEl('shield-check'), 'Contrôlée');
     sure.dataset.core = '1';
     sure.onclick = () => startSafeUpdate(s.srv, s.domain, sure, { core: true });
     blocs.push(h('section', { class: 'sitesec' },
@@ -1222,7 +1228,7 @@ function ongletExtensions(s) {
         h('b', { text: s.core_update }), ' disponible. Le retour arrière rétablit les '
         + 'fichiers, pas les migrations de base de données : la sauvegarde UpdraftPlus '
         + 'est le seul recours pour elle.'),
-      h('div', { class: 'actions mt2' }, maj, sure)));
+      h('div', { class: 'actions mt2' }, sure, maj)));
   }
 
   blocs.push(h('section', { class: 'sitesec' },
@@ -1233,14 +1239,15 @@ function ongletExtensions(s) {
         : null),
     /* Le bouton « MAJ » de ces lignes lance un `wp plugin update` et rien
        d'autre : ni sauvegarde UpdraftPlus, ni archive des fichiers, donc aucun
-       point de rétablissement. La « MAJ sûre » du haut fait les deux. Les deux
+       point de rétablissement. La « MAJ contrôlée » du haut fait les deux. Les deux
        boutons se ressemblent trop pour que la différence aille sans dire. */
     aMaj.length && s.via !== 'rest'
       ? h('p', { class: 'hint hint-tight' },
-        h('b', { text: 'MAJ' }), ' met à jour tout de suite, ',
-        h('b', { text: 'sans sauvegarde' }), ' — rien à rétablir si le site casse. ',
-        h('b', { text: 'sûre' }), ' sauvegarde, archive ce seul composant, contrôle le rendu '
-        + 'et laisse un point de rétablissement ; comptez une à deux minutes.')
+        h('b', { text: 'Contrôlée' }), ' : sauvegarde, archive ce seul composant, met à jour, '
+        + 'contrôle le rendu avec VizProof et revient en arrière tout seul si une page casse '
+        + '(une à deux minutes). ',
+        h('b', { text: 'Directe' }), ' : immédiate, ', h('b', { text: 'sans filet' }),
+        ' — rien à rétablir si le site casse.')
       : null,
     aMaj.length
       ? h('table', { class: 'ptable' }, h('tbody', {}, aMaj.map(p => ligneExtension(s, p, true))))
@@ -1330,13 +1337,13 @@ function refletGel(tr, slug, type) {
   // rien. Sans ce `||`, cette fonction rallumait le bouton après coup.
   const sansSsh = CUR ? CUR.via === 'rest' : false;
   if (maj) maj.disabled = gel || sansSsh;
-  /* La MAJ sûre saute elle aussi une extension gelée — le serveur l'écarte et
+  /* La MAJ contrôlée saute elle aussi une extension gelée — le serveur l'écarte et
      le journalise. Laisser le bouton actif lancerait tout le cycle (sauvegarde,
      archive, contrôle) pour ne rien mettre à jour. */
   const sure = tr.querySelector('.psafe');
   if (sure) {
     sure.disabled = gel || sansSsh;
-    if (gel) sure.title = 'Extension gelée : la mise à jour sûre l’écarterait aussi';
+    if (gel) sure.title = 'Extension gelée : la mise à jour contrôlée l’écarterait aussi';
   }
   tr.classList.toggle('row-frozen', gel);
 }
@@ -1526,7 +1533,7 @@ function ongletSauvegardes(s) {
       h('div', { class: 'actions mt3' }, bt)),
     h('section', { class: 'sitesec', id: 'site-rbsec', hidden: !pts.length },
       h('h3', { text: 'Revenir en arrière' }),
-      h('p', { class: 'hint' }, 'Archives laissées par les mises à jour sûres. ',
+      h('p', { class: 'hint' }, 'Archives laissées par les mises à jour contrôlées. ',
         h('span', {
           class: 'info', text: '?',
           'data-tip': "Cliquez une pastille pour remettre l'extension dans sa version d'avant, a l'identique — y compris pour les extensions premium. Le bouton Retablir de chaque extension permet en plus de choisir une version publiee sur wordpress.org. Dans les deux cas seuls les fichiers sont remplaces : la base n'est pas touchee.",
@@ -1732,7 +1739,7 @@ async function chargerIncidents() {
   if (box && ONGLET === 'apercu') mount(box, h('h3', { text: 'À traiter sur ce site' }), incidentsEl());
 }
 
-/* ---- mise à jour sûre : archive → MAJ → contrôle → retour arrière si cassé --- */
+/* ---- mise à jour contrôlée : archive → MAJ → contrôle → retour arrière si cassé --- */
 function safeVerdictPill(v) {
   // « réussie avec anomalies visuelles » n'est PAS vert : la mise à jour tient,
   // mais le rendu a bougé et personne ne l'a encore regardé.
@@ -1750,10 +1757,10 @@ function renderSafe(stt, dom) {
       ${x.detail ? `<div class="muted small wrapline ml-8">${H(stripPhpNoise(x.detail))}</div>` : ''}
       ${x.report ? `<div class="ml-8">${vizReportHtml(x.report, { replie: true })}</div>` : ''}</div>`).join('');
   const bas = auBas(box);          // mesuré AVANT l'écriture, cf. lib/dom.js
-  box.innerHTML = `<div class="mb-6"><b>${icon('shield-check')} Mise à jour sûre</b> ${stt.running ? '<span class="pill mut">en cours…</span>' : safeVerdictPill(stt.verdict)}</div>${lignes}`;
+  box.innerHTML = `<div class="mb-6"><b>${icon('shield-check')} Mise à jour contrôlée</b> ${stt.running ? '<span class="pill mut">en cours…</span>' : safeVerdictPill(stt.verdict)}</div>${lignes}`;
   collerEnBas(box, bas);
 }
-/* Suivi d'une MAJ sûre : le bouton et la console sont retrouvés à chaque tour
+/* Suivi d'une MAJ contrôlée : le bouton et la console sont retrouvés à chaque tour
    (la page a pu être quittée puis rouverte), et le sondage s'arrête tout seul
    si le site affiché change ou si le backend ne répond plus. */
 function suivreSafe(dom, lbl) {
@@ -1775,7 +1782,7 @@ function suivreSafe(dom, lbl) {
 }
 /* Suivi pour la BARRE DE NOTIFICATIONS, indépendant de `suivreSafe` : celui-ci
    s'arrête dès que la page affiche un autre site. La barre, elle, doit tenir
-   jusqu'au verdict. Nombre d'étapes d'une MAJ sûre nominale : contrôle avant,
+   jusqu'au verdict. Nombre d'étapes d'une MAJ contrôlée nominale : contrôle avant,
    liste, à mettre à jour, sauvegarde, archivage fichiers, archivage base, mise
    à jour, page d'accueil, WordPress fonctionnel, contrôle visuel, terminé. */
 const SAFE_ETAPES = 11;
@@ -1799,7 +1806,7 @@ function suivreSafeNotif(dom, nid) {
     onStop: () => NOTIF.done(nid, { ok: false, message: 'suivi interrompu — voir la page du site' }),
   });
 }
-/* À l'ouverture : si une MAJ sûre tourne encore sur CE site, on ré-affiche sa
+/* À l'ouverture : si une MAJ contrôlée tourne encore sur CE site, on ré-affiche sa
    progression et on se raccroche au sondage. */
 async function loadSafeStatus(dom) {
   const seq = PAGESEQ;
@@ -1811,11 +1818,11 @@ async function loadSafeStatus(dom) {
   if (!stt.running) return;
   const b = document.getElementById('safeup');
   if (b) { b.dataset.label = b.dataset.label || b.innerHTML; b.disabled = true; b.textContent = 'en cours…'; }
-  suivreSafe(dom, (b && b.dataset.label) || (icon('shield-check') + ' MAJ sûre'));
+  suivreSafe(dom, (b && b.dataset.label) || (icon('shield-check') + ' MAJ contrôlée'));
   // Rechargement de page ou MAJ lancée ailleurs : la barre reprend le suivi.
   const nid = 'safe:' + dom;
   if (!NOTIF.encours(nid)) {
-    NOTIF.start({ id: nid, label: 'MAJ sûre · ' + dom, kind: 'safe', progress: 0, site: { srv: (CUR && CUR.srv) || '', domain: dom } });
+    NOTIF.start({ id: nid, label: 'MAJ contrôlée · ' + dom, kind: 'safe', progress: 0, site: { srv: (CUR && CUR.srv) || '', domain: dom } });
     suivreSafeNotif(dom, nid);
   }
 }
@@ -1829,8 +1836,8 @@ async function startSafeUpdate(srv, dom, btn, cible) {
   const un = cible && (cible.slug || cible.theme || (cible.core ? 'le cœur WordPress' : ''));
   await ensureSettings();
   let msg = un
-    ? `Mise à jour sûre de <b>${H(un)}</b> sur <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ${cible.theme ? 'ce thème' : 'cette extension'} → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.<br><br>Rien d'autre ne sera mis à jour.`
-    : `Mise à jour sûre de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
+    ? `Mise à jour contrôlée de <b>${H(un)}</b> sur <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ${cible.theme ? 'ce thème' : 'cette extension'} → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.<br><br>Rien d'autre ne sera mis à jour.`
+    : `Mise à jour contrôlée de <b>${H(dom)}</b> ?<br><br>Déroulé : sauvegarde UpdraftPlus → archivage de ce qui va changer → mise à jour → contrôle du site → retour arrière automatique si quelque chose casse.`;
   if (withCore) msg += `<br><br>${icon('triangle-alert')} Le cœur WordPress est inclus. Ses fichiers sont restaurables, mais les migrations de base de données ne sont PAS annulées par le retour arrière : la sauvegarde UpdraftPlus est le recours pour la base.`;
   msg += `<br><br>L'opération peut durer plusieurs minutes.`;
   // La case est pré-remplie avec le réglage, mais reste modifiable POUR CETTE
@@ -1840,7 +1847,7 @@ async function startSafeUpdate(srv, dom, btn, cible) {
       Annuler la mise à jour si VizProof détecte des anomalies visuelles</label>
     <p class="hint hint-loose">Pré-réglé d'après <b>Réglages</b>. Décoché : les anomalies sont signalées et la mise à jour est conservée.</p>`;
   const rep = await new Promise(res => {
-    askOpen('Mise à jour sûre', msg, corps,
+    askOpen('Mise à jour contrôlée', msg, corps,
       () => res({ go: true, rb: document.getElementById('su-vizrb').checked }),
       () => res({ go: false }));
     const b = document.getElementById('ask-ok');
@@ -1861,14 +1868,14 @@ async function startSafeUpdate(srv, dom, btn, cible) {
   try { r = await api('/api/actions/safe_update', corpsReq); }
   catch (e) { r = { error: 'lancement impossible : ' + e }; }
   if (!r || r.error) {
-    askInfo('Mise à jour sûre impossible', H((r && r.error) || 'réponse vide'));
+    askInfo('Mise à jour contrôlée impossible', H((r && r.error) || 'réponse vide'));
     btn.disabled = false;
     btn.innerHTML = lbl;
     return;
   }
   suivreSafe(dom, lbl);
   const nid = 'safe:' + dom;
-  NOTIF.start({ id: nid, label: 'MAJ sûre · ' + dom, kind: 'safe', progress: 0, detail: 'démarrage…', site: { srv, domain: dom } });
+  NOTIF.start({ id: nid, label: 'MAJ contrôlée · ' + dom, kind: 'safe', progress: 0, detail: 'démarrage…', site: { srv, domain: dom } });
   suivreSafeNotif(dom, nid);
 }
 

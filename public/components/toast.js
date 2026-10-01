@@ -6,7 +6,7 @@
    RÉSUME ces deux affichages — il ne les remplace pas.
    `start` renvoie l'identifiant à passer à `update`/`done`. Progression :
    un nombre entre 0 et 1 quand le serveur en fournit une (collecte, groupé,
-   étapes de la MAJ sûre), `null` = animation indéterminée. */
+   étapes de la MAJ contrôlée), `null` = animation indéterminée. */
 
 import { duree } from '../lib/format.js';
 import { icon, ICON } from '../lib/icons.js';

@@ -294,6 +294,7 @@ FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert
     (("cert_expiring",), "certificat", "certificats"),
     (("admin_unknown",), "admin inconnu", "admins inconnus"),
     (("viz_auto_update",), "écart après mise à jour auto", "écarts après mise à jour auto"),
+    (("auto_rollback",), "mise à jour auto annulée", "mises à jour auto annulées"),
 ]
 
 

@@ -397,6 +397,18 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 .seclien{color:var(--ink);font-weight:600;text-decoration:none}
 .seclien:hover{color:var(--accent);text-decoration:underline}
 
+/* ---- écran Mises à jour ----------------------------------------------------
+   Les trois façons de mettre à jour : terme à gauche (avec son icône, la même
+   que sur les boutons de la page site), phrase à droite. */
+.majmodes{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:var(--s-8) var(--s-16);
+  margin:var(--s-8) 0 0;max-width:900px}
+.majmodes dt{font-weight:600;display:flex;align-items:center;gap:6px}
+.majmodes dt .ic{color:var(--accent)}
+.majmodes dd{margin:0;color:var(--ink-2);line-height:1.5}
+.inlinechk{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+td.wrapcell{white-space:normal;max-width:38ch}
+@media(max-width:560px){ .majmodes{grid-template-columns:1fr} .majmodes dd{margin-bottom:var(--s-8)} }
+
 /* ---- écran Sécurité ------------------------------------------------------- */
 .vulnrow{display:flex;align-items:center;gap:7px;padding:4px 0;flex-wrap:wrap}
 /* Ligne de l'onglet Réglages d'un site : ce qu'on règle et son état à gauche,

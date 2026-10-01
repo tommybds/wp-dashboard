@@ -45,6 +45,7 @@ const KINDS = {
   viz_auto_update: 'écart visuel après MAJ auto',
   viz_not_scanned: 'MAJ auto sans contrôle visuel',
   auto_update_noop: 'MAJ auto sans effet',
+  auto_rollback: 'MAJ auto annulée',
 };
 
 export const kindLabel = k => KINDS[k] || (k ? 'autre' : 'incident');
@@ -138,7 +139,7 @@ function queFaire(kind, d) {
     vuln_critical_fixable: "Une faille publiée touche la version installée, et le "
       + "correctif existe déjà : la mise à jour est le geste attendu, elle est proposée "
       + "sur cette ligne. Si le site est délicat (extension modifiée à la main, "
-      + "personnalisations lourdes), passez par « MAJ sûre » depuis la page du site, "
+      + "personnalisations lourdes), passez par « MAJ contrôlée » depuis la page du site, "
       + "qui sauvegarde et sait revenir en arrière.",
     vuln_critical_unfixed: "Une faille critique est publiée et AUCUNE version "
       + "corrigée n'existe : la mise à jour ne réglera rien. Trois issues, dans cet "
@@ -177,6 +178,14 @@ function queFaire(kind, d) {
       + "validation, DNS changé, tâche planifiée arrêtée. Renouvelez à la main si "
       + "l'échéance est proche, puis réparez le renouvellement automatique — sinon "
       + "l'alerte reviendra à l'identique.",
+    auto_rollback: "VizProof a vu une page en échec après la mise à jour automatique de la "
+      + "nuit, et le dashboard a remis les composants concernés à leur version d'avant. "
+      + "Ils sont sortis des mises à jour automatiques : sans cela, la même version "
+      + "repasserait la nuit suivante. Regardez le rapport VizProof pour comprendre ce qui "
+      + "cassait, puis reprenez la mise à jour à la main (mise à jour contrôlée) quand "
+      + "l'éditeur a corrigé, ou après avoir adapté le site. Le retour arrière remet les "
+      + "fichiers, pas les données : une extension qui a migré ses tables peut demander "
+      + "une vérification.",
     php_eol: "Ces sites tournent sur une version de PHP qui ne reçoit plus de correctifs "
       + "de sécurité. Le changement se prépare : vérifier la compatibilité des extensions "
       + "et du thème, puis basculer site par site avec une sauvegarde fraîche. Commencez "

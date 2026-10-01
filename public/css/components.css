@@ -55,6 +55,10 @@
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink);color:var(--on-accent)}
 .btn.danger{color:var(--err);border-color:var(--err)}
+/* « Contrôlée » sur une ligne d'extension : le geste RECOMMANDÉ se distingue de
+   « Directe » sans peser autant qu'un bouton principal répété sur chaque ligne. */
+.btn.psafe{color:var(--accent);border-color:var(--accent)}
+.btn.psafe:hover{background:var(--accent-bg);color:var(--accent-ink)}
 .btn.danger:hover{background:var(--err-bg);color:var(--err);border-color:var(--err)}
 .btn.danger-hover:hover{border-color:var(--err);color:var(--err)}
 .btn:disabled,.btn[aria-disabled="true"]{opacity:.5;cursor:default;border-color:var(--line);color:var(--muted)}

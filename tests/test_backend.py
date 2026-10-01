@@ -4771,3 +4771,22 @@ class TestVizReportHttpStatus(unittest.TestCase):
 
     def test_la_cause_http_passe(self):
         self.assertEqual(self.item(http_status=500, cause="http+pixel")["cause"], "http+pixel")
+
+
+
+class TestAutoMajDeja(unittest.TestCase):
+    """« Only enabled 10 of 11 » n'est pas un échec : les autres l'étaient déjà."""
+
+    def test_rc_normalise(self):
+        with mock.patch.object(A, "find_site", return_value=({"name": "s"}, {"domain": "a.fr"})), \
+             mock.patch.object(A, "_frozen_lists", return_value=([], [])), \
+             mock.patch.object(A, "run_wp_remote",
+                               return_value=(1, "Error: Only enabled 10 of 11 plugin auto-updates.")):
+            rc, out = A.run_action("s", "a.fr", "autoupdate_on", None)
+        self.assertEqual(rc, 0)
+        self.assertIn("l'étaient déjà", out)
+        with mock.patch.object(A, "find_site", return_value=({"name": "s"}, {"domain": "a.fr"})), \
+             mock.patch.object(A, "_frozen_lists", return_value=([], [])), \
+             mock.patch.object(A, "run_wp_remote", return_value=(1, "Error: permission denied")):
+            rc, _ = A.run_action("s", "a.fr", "autoupdate_on", None)
+        self.assertEqual(rc, 1)                     # une vraie erreur reste une erreur

@@ -57,41 +57,45 @@ function demarrer() {
       [b('Réglages'), ' — cadence de collecte, alertes Telegram, VizProof, clés SSH, apparence.']),
     h('h3', { text: 'La page d’un site' }),
     p('Un clic sur un site ouvre sa page. L’en-tête porte l’action principale (la ',
-      b('MAJ sûre'), ' s’il y a des mises à jour, sinon le re-scan) ; chaque autre geste est dans '
+      b('MAJ contrôlée'), ' s’il y a des mises à jour, sinon le re-scan) ; chaque autre geste est dans '
       + 'l’onglet qui en parle :'),
     liste(
       [b('Aperçu'), ' — ce qui est à traiter sur ce site, et sa fiche.'],
       [b('Extensions et thèmes'), ' — mises à jour une par une ou en lot, cœur WordPress, gel, retour à une version.'],
       [b('Sécurité'), ' — vulnérabilités, administrateurs, intégrité du cœur, erreurs PHP.'],
       [b('VizProof'), ' — contrôle visuel : liaison, pages surveillées, baseline, scan, dernier rapport.'],
-      [b('Sauvegardes'), ' — UpdraftPlus, et les archives laissées par les MAJ sûres.'],
+      [b('Sauvegardes'), ' — UpdraftPlus, et les archives laissées par les MAJ contrôlées.'],
       [b('Historique'), ' — tout ce qui s’est passé sur ce site.'],
       [b('Réglages'), ' — mises à jour automatiques, agent Dash, identifiants WordPress, caches.']));
 }
 
 function maj() {
   return section('aide-maj', 'Mettre à jour',
-    p('Trois façons de mettre à jour, de la plus prudente à la plus directe.'),
-    h('h3', { text: 'MAJ sûre' }),
-    p('Le bouton bleu de l’en-tête, ou « sûre » sur une ligne. Dans l’ordre : ',
+    p('Trois façons de mettre à jour : contrôlée, directe, automatique.'),
+    h('h3', { text: 'Contrôlée' }),
+    p('Le bouton bleu de l’en-tête (« Mise à jour contrôlée »), ou « Contrôlée » sur une ligne. '
+      + 'Dans l’ordre : ',
       b('référence VizProof'), ' du rendu actuel, ', b('sauvegarde UpdraftPlus'), ', ',
       b('archive'), ' des fichiers qui vont changer et de la base, mise à jour ',
       b('sous maintenance'), ' (les visiteurs voient une page d’attente de quelques secondes), '
       + 'contrôle de santé, puis ', b('scan VizProof'), ' comparé à la référence. Si le site '
       + 'casse, le ', b('retour arrière'), ' est automatique. Comptez une à deux minutes.'),
-    h('h3', { text: 'MAJ simple' }),
-    p('Le bouton « MAJ » d’une ligne, ou « Tout mettre à jour ». Immédiat, ', b('sans sauvegarde ni archive'),
+    h('h3', { text: 'Directe' }),
+    p('Le bouton « Directe » d’une ligne, ou « Tout mettre à jour ». Immédiat, ', b('sans sauvegarde ni archive'),
       ' : rien à rétablir si le site casse. Si le site est relié à VizProof, une référence est prise '
       + 'avant et un scan après — pour information, il n’annule rien.'),
-    h('h3', { text: 'Mises à jour automatiques de WordPress' }),
-    p('Activées dans l’onglet ', b('Réglages'), ' d’un site. WordPress applique alors lui-même les '
-      + 'nouvelles versions, la nuit, sans passer par le dashboard. Si VizProof est relié, chaque '
-      + 'mise à jour automatique est suivie d’un scan visuel ; sinon, aucun contrôle après coup.'),
+    h('h3', { text: 'Automatique' }),
+    p('Réglée dans l’écran ', lien('#maj', 'Mises à jour'), '. L’hébergeur (WP Toolkit de Plesk) '
+      + 'ou WordPress applique les nouvelles versions la nuit, vers 5 h. À 6 h 45, le dashboard '
+      + 'vérifie que chaque mise à jour a été scannée par VizProof et lance lui-même le scan sinon. '
+      + 'Avec le ', b('retour arrière automatique'), ', une page en échec fait remettre les '
+      + 'composants en cause à leur version d’avant et les sort des mises à jour automatiques ; '
+      + 'une alerte Telegram le dit.'),
     h('h3', { text: 'Geler, revenir en arrière' }),
     liste(
       [b('Geler'), ' une extension ou un thème : le dashboard ne le mettra plus jamais à jour, ni par '
-        + 'un bouton, ni en lot, ni par la MAJ sûre. Utile quand une version casse le site.'],
-      [b('Rétablir'), ' : onglet Sauvegardes (archive d’une MAJ sûre) ou bouton Rétablir d’une extension '
+        + 'un bouton, ni en lot, ni par la MAJ contrôlée. Utile quand une version casse le site.'],
+      [b('Rétablir'), ' : onglet Sauvegardes (archive d’une MAJ contrôlée) ou bouton Rétablir d’une extension '
         + '(version publiée sur wordpress.org). Seuls les ', b('fichiers'), ' sont remplacés : si la mise '
         + 'à jour a migré la base, seule la sauvegarde UpdraftPlus la rétablit.']));
 }

@@ -262,6 +262,7 @@ function ouvrirPlus() {
     titre: 'Plus',
     onClose: () => btn.setAttribute('aria-expanded', 'false'),
     contenu: () => [
+      boutonFeuille({ label: 'Mises à jour', ic: 'zap', onSelect: aller('#maj') }),
       boutonFeuille({ label: 'Changements', ic: 'history', onSelect: aller('#changements') }),
       boutonFeuille({ label: 'Gestion', ic: 'server', onSelect: aller('#gestion') }),
       boutonFeuille({ label: 'Réglages', ic: 'settings', onSelect: aller('#reglages') }),

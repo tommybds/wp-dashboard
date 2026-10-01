@@ -223,6 +223,12 @@ SCAN_BASELINE_PATH = os.path.join(DATA, "scan_baseline.json")
 # chaque ouverture de tiroir coûtait 2 secondes. On tient donc la liste ici,
 # alimentée au moment où la MAJ sûre crée l'archive.
 ROLLBACK_INDEX_PATH = os.path.join(DATA, "rollback_index.json")
+# Mode automatique, réglage propre au dashboard : retour arrière automatique
+# d'une mise à jour de nuit quand VizProof voit une page en échec. Les mises à
+# jour automatiques elles-mêmes vivent sur le site (option WordPress lue par la
+# collecte) ; ce fichier ne porte que ce que WordPress ne sait pas faire.
+#   {domaine: {"rollback": true, "depuis": "AAAA-MM-JJ HH:MM"}}
+AUTO_MODE_PATH = os.path.join(DATA, "auto_mode.json")
 # Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
 # extension gelée (parce qu'une version casse le site, ou qu'un client valide
 # avant) reste installée mais n'est jamais mise à jour par le dashboard.
@@ -273,6 +279,8 @@ ACTIONS = {
     # jamais passer par une ligne de commande (cf. viz_connect_run).
     "viz_disconnect":     ("Dissocier VizProof", False, "vizproof disconnect --format=json"),
 }
+AUTO_MAJ_ACTIONS = {"autoupdate_on", "autoupdate_off", "themes_autoupdate_on", "themes_autoupdate_off"}
+RE_AUTO_MAJ_DEJA = re.compile(r"Only (enabled|disabled) \d+ of \d+|No (plugin|theme) auto-updates (enabled|disabled)")
 # actions bulk qui doivent d'abord backuper si UpdraftPlus est présent
 BACKUP_FIRST = {"core_update", "plugins_update_all", "plugins_update_except",
                 "themes_update_all", "themes_update_except"}
@@ -1064,8 +1072,15 @@ def run_action(server_name, domain, action, arg, wp_extra=""):
         return 92, "site inconnu"
     # rc 2 sur une action vizproof = anomalies visuelles, remonté tel quel à l'appelant
     # Toute mise à jour lancée par le dashboard se fait sous maintenance.
-    return run_wp_remote(srv, site, wp_args, extra=wp_extra,
-                         maintenance=action in VIZ_AFTER_UPDATE_ACTIONS)
+    rc, out = run_wp_remote(srv, site, wp_args, extra=wp_extra,
+                            maintenance=action in VIZ_AFTER_UPDATE_ACTIONS)
+    if action in AUTO_MAJ_ACTIONS and rc == 1 and RE_AUTO_MAJ_DEJA.search(out or ""):
+        # « Only enabled 10 of 11 » : wp-cli compte en échec les éléments qui
+        # étaient DÉJÀ dans l'état demandé. Le résultat voulu est atteint ; sans
+        # ce rattrapage, l'action groupée sautait le re-scan (réservé au rc 0)
+        # et l'écran Mises à jour gardait les anciens compteurs.
+        rc, out = 0, (out or "").rstrip() + "\n(les autres l'étaient déjà)"
+    return rc, out
 
 
 def append_log(entry):
@@ -3665,6 +3680,33 @@ def wporg_versions(slug, limit=40, kind="plugin"):
     return {"current": data.get("version"), "versions": brutes[:limit], "error": None}
 
 
+def auto_mode_load():
+    """{domaine: {rollback, depuis}} — réglages du mode automatique."""
+    d = load_json(AUTO_MODE_PATH, {})
+    return d if isinstance(d, dict) else {}
+
+
+def auto_rollback_actif(domain):
+    """Le retour arrière automatique est-il activé pour ce site ?"""
+    e = auto_mode_load().get(str(domain or ""))
+    return bool(isinstance(e, dict) and e.get("rollback"))
+
+
+def auto_maj_suspendre(server_name, domain, slug, kind="plugin"):
+    """Retire UN composant des mises à jour automatiques → (rc, sortie).
+
+    Après un retour arrière, la mise à jour fautive repasserait la nuit
+    suivante (WordPress ou l'hébergeur la retentent), casserait de nouveau, et
+    serait annulée de nouveau : la boucle se coupe ici, et c'est dit."""
+    srv, site = find_site(server_name, domain)
+    if not srv or not site:
+        return 92, "site inconnu"
+    if not SLUG_RE.match(str(slug or "")):
+        return 91, "composant invalide"
+    quoi = "theme" if kind == "theme" else "plugin"
+    return remote_bash(srv, site, f"run {quoi} auto-updates disable {sq(str(slug))}", timeout=120)
+
+
 def plugin_rollback(server_name, domain, slug, arc_dir=None, version=None, kind="plugin"):
     """Rétablit une extension — ou un thème (`kind="theme"`). → (rc, message).
 
@@ -5489,6 +5531,26 @@ def inc_viz_nuit(index, now):
         server = r.get("server") or index[cle][0]
         items = ", ".join(r.get("items") or []) or "?"
         ecarts = [e for e in (r.get("ecarts") or []) if isinstance(e, dict)]
+        # Retour arrière automatique fait cette nuit : c'est LUI l'incident. Il
+        # reste à traiter — la mise à jour annulée est à reprendre à la main, et
+        # le composant est sorti des mises à jour automatiques.
+        retour = r.get("retour") if isinstance(r.get("retour"), dict) else None
+        if retour and (retour.get("retablis") or retour.get("impossibles")):
+            faits = [f"{x.get('slug')} rétabli en {x.get('version')}" for x in retour.get("retablis") or []]
+            ko = [f"{x.get('slug')} : {x.get('raison')}" for x in retour.get("impossibles") or []]
+            ea = retour.get("ecarts_apres")
+            propre = bool(retour.get("retablis")) and ea == 0 and not ko
+            out.append(make_incident(
+                "auto_rollback", "warning" if propre else "critical", cle,
+                f"Mise à jour automatique annulée sur {cle}",
+                " ; ".join(faits + ko) + (" — site revenu, plus aucune page en échec" if propre
+                                          else " — à vérifier : le retour n'a pas tout réglé"),
+                site=cle, server=server, since=since, now=now,
+                link={"tab": "maj", "sub": ""},
+                extra={"retablis": retour.get("retablis") or [], "impossibles": retour.get("impossibles") or [],
+                       "ecarts_apres": ea, "pages": ecarts, "report_url": r.get("report_url") or ""}))
+            if propre:
+                ecarts = []           # l'écart est levé par le retour : pas de second incident
         if ecarts:
             http = any(e.get("http") for e in ecarts)
             pages = ", ".join(str(e.get("page")) + (f" (HTTP {e['http']})" if e.get("http") else "") for e in ecarts)
@@ -7648,6 +7710,13 @@ class Handler(BaseHTTPRequestHandler):
             if q.get("include") != "acked":
                 rep.pop("acked", None)
             self._send(200, rep)
+        elif p == "/api/mgmt/auto_state":
+            # Écran « Mises à jour » : réglages du mode automatique + bilan de
+            # la nuit (viz_nuit.json). Les compteurs de MAJ auto par site sont
+            # déjà dans fleet.json, que l'interface a sous la main.
+            nuit = load_json(VIZ_NUIT_PATH, {})
+            self._send(200, {"modes": auto_mode_load(),
+                             "nuit": nuit if isinstance(nuit, dict) else {}})
         elif p == "/api/mgmt/counts":
             # Pastilles de la barre latérale : même agrégat, mis en cache 30 s.
             self._send(200, sidebar_counts())
@@ -8080,6 +8149,32 @@ class Handler(BaseHTTPRequestHandler):
             if job:
                 job["cancel"] = True
             return self._send(200, {"ok": bool(job)})
+
+        if p == "/api/mgmt/auto_mode":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            if body.get("rollback") not in (True, False):
+                return self._send(400, {"error": "rollback doit valoir true ou false"})
+            srv, site = find_site(server, domain)
+            if not srv or not site:
+                return self._send(404, {"error": "site inconnu"})
+            actif = bool(body["rollback"])
+
+            def _muter(d):
+                d = d if isinstance(d, dict) else {}
+                if actif:
+                    d[domain] = {"rollback": True, "depuis": _now_s()[:16]}
+                else:
+                    d.pop(domain, None)
+                return d
+
+            modes = update_json(AUTO_MODE_PATH, _muter, {})
+            append_log({"ts": _now_s(), "source": "manuel", "server": server, "domain": domain,
+                        "action": "auto_rollback_on" if actif else "auto_rollback_off",
+                        "arg": None, "rc": 0, "duration_s": 0,
+                        "output_tail": "retour arrière automatique " + ("activé" if actif else "désactivé")})
+            return self._send(200, {"ok": True, "modes": modes})
 
         if p == "/api/mgmt/override":
             domain = str(body.get("domain", ""))

@@ -558,7 +558,7 @@ function renderVizSettings(cfg) {
 const CASES_VIZ = [
   ['set-vizrb', 'viz_anomaly_rollback', false,
     'Retour arrière automatique sur anomalie visuelle',
-    'Décoché (défaut) : pendant une MAJ sûre, une anomalie détectée par VizProof est SIGNALÉE et la mise à '
+    'Décoché (défaut) : pendant une MAJ contrôlée, une anomalie détectée par VizProof est SIGNALÉE et la mise à '
     + 'jour est conservée — le verdict devient « réussie avec anomalies visuelles ». Coché : la mise à jour '
     + 'est ANNULÉE. Un rendu qui change n’est pas toujours un rendu cassé (bandeau de cookies, carrousel, '
     + 'publicité), d’où le défaut prudent côté « avertir ».'],
@@ -950,7 +950,7 @@ function sectionSession() {
 /* ============================================================================
    Réglages lus paresseusement (hors écran)
    ========================================================================== */
-/* La modale de confirmation de la MAJ sûre a besoin des réglages même si
+/* La modale de confirmation de la MAJ contrôlée a besoin des réglages même si
    personne n'a jamais ouvert cette page. Un seul appel par session. */
 export async function ensureSettings() {
   if (SETTINGSLU) return store.settings;

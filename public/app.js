@@ -44,6 +44,7 @@ import { loadHist } from './screens/historique.js';
 import { loadAide } from './screens/aide.js';
 import { loadReglages, ensureSettings } from './screens/reglages.js';
 import { renderIncidents } from './screens/incidents.js';
+import { loadMaj, onFleetMaj } from './screens/maj.js';
 
 /* ---- destinations ---------------------------------------------------------
    `page` est l'identifiant DOM du volet (page-dash, page-sec…). `legacy` est
@@ -51,6 +52,7 @@ import { renderIncidents } from './screens/incidents.js';
    destination de la barre latérale : elle a sa propre branche de routage. */
 const DESTINATIONS = [
   { route: 'parc',        page: 'dash',      titre: 'Parc',        legacy: 'dash' },
+  { route: 'maj',         page: 'maj',       titre: 'Mises à jour' },
   { route: 'incidents',   page: 'incidents', titre: 'Incidents' },
   { route: 'securite',    page: 'sec',       titre: 'Sécurité',    legacy: 'sec' },
   { route: 'changements', page: 'hist',      titre: 'Changements', legacy: 'hist' },
@@ -371,6 +373,7 @@ function showDest(route, { ecrire = true, push = false } = {}) {
   if (route === 'securite') loadSec();
   if (route === 'changements') loadHist();
   if (route === 'incidents') renderIncidents();
+  if (route === 'maj') loadMaj();
   if (route === 'reglages') loadReglages();
   if (route === 'aide') loadAide();
   if (ecrire) writeHash(route, push);
@@ -490,7 +493,7 @@ async function boot() {
      depuis le chargeur de données. La page site, elle, se rafraîchit sur ordre
      (après une action) : la redessiner toutes les 60 s effacerait l'onglet
      ouvert et relancerait ses requêtes pour rien. */
-  subscribe(() => { onFleetChange(); updMeta(); majCompteurs(); majCompteurSec(); });
+  subscribe(() => { onFleetChange(); onFleetMaj(); updMeta(); majCompteurs(); majCompteurSec(); });
 
   // La destination demandée par l'URL n'est appliquée qu'une fois la flotte
   // chargée : la page site, Gestion et Sécurité se construisent à partir d'elle.

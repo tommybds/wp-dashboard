@@ -201,7 +201,7 @@ function menuColonnes() {
    arrêt sur erreur) sont posés dans la confirmation, au moment où on décide. */
 const BULK = [
   {
-    action: 'plugins_update_all', label: 'MAJ sûre', safe: true, ic: 'shield-check',
+    action: 'plugins_update_all', label: 'MAJ contrôlée', safe: true, ic: 'shield-check',
     title: 'Sauvegarde UpdraftPlus avant, mise à jour des extensions, contrôle visuel après',
   },
   { action: 'plugins_update_all', label: 'MAJ extensions', ic: 'arrow-up' },
@@ -285,8 +285,8 @@ async function lancerGroupe(def) {
     <label class="fld"><input type="checkbox" id="bk-viz"${def.safe ? ' checked disabled' : ''}>
       Contrôle visuel VizProof après l'action</label>
     <label class="fld"><input type="checkbox" id="bk-stop"> Arrêter la série à la première erreur</label>
-    ${def.safe ? `<p class="hint hint-loose">La « MAJ sûre » groupée impose la sauvegarde et le contrôle visuel.
-      Elle n'archive PAS les fichiers et n'annule PAS automatiquement : ce filet-là est propre à la MAJ sûre
+    ${def.safe ? `<p class="hint hint-loose">La « MAJ contrôlée » groupée impose la sauvegarde et le contrôle visuel.
+      Elle n'archive PAS les fichiers et n'annule PAS automatiquement : ce filet-là est propre à la MAJ contrôlée
       d'un seul site, depuis sa page.</p>` : ''}
     ${rest.length ? `<p class="hint hint-loose">${rest.length} site(s) de la sélection sont gérés <b>sans SSH</b> :
       l'action y sera refusée (rc 97), les autres se dérouleront normalement.</p>` : ''}`;
