@@ -255,16 +255,26 @@ def lire_rapport(srv_name, domaine):
     return rapport if isinstance(rapport, dict) else None
 
 
-def examiner(srv_name, s, now, rattraper=False):
-    """Bilan de la nuit pour un site, ou None s'il n'y a rien eu."""
+def examiner(srv_name, s, now, rattraper=False, deja=None):
+    """Bilan de la nuit pour un site, ou None s'il n'y a rien eu.
+
+    `deja` = composants que le dashboard a mis à jour lui-même (maj_nuit.py) :
+    sa chaîne les a déjà scannés, jugés et au besoin annulés. On ne regarde
+    que le reste — en pratique, une mise à jour forcée par WordPress.org."""
     srv, site = A.find_site(srv_name, s.get("domain"))
     if not site:
         return None
+    majs = maj_journalisees(s.get("domain"), now - FENETRE_H * 3600)
+    if deja is not None:
+        majs = [m for m in majs if m[0] not in deja]
+        if not majs:
+            return None
     ev = evenements(srv, site) or []
     recents = [e for e in ev if (iso_epoch(e.get("at")) or 0) >= now - FENETRE_H * 3600]
+    if deja is not None:
+        recents = [e for e in recents if not set(e.get("items") or []) <= deja]
 
     # Filet : une mise à jour journalisée que AUCUN scan du plugin n'a suivie.
-    majs = maj_journalisees(s.get("domain"), now - FENETRE_H * 3600)
     rattrapage, non_couvertes = None, []
     if majs:
         premiere = min(t for _, _, t, _ in majs)
@@ -375,8 +385,12 @@ def main():
     # Sites que le dashboard a mis à jour lui-même cette nuit (maj_nuit.py,
     # 4 h) : la chaîne Contrôlée a déjà scanné, jugé et, au besoin, annulé.
     # Repasser derrière ferait un second retour arrière et une seconde alerte.
-    faits = {d for d, r in ((load_json(MAJ_NUIT, {}) or {}).get("sites") or {}).items()
-             if isinstance(r, dict) and now - (r.get("ts") or 0) < 12 * 3600
+    # Seuls LES COMPOSANTS qu'elle a traités sont écartés : une mise à jour
+    # faite par un tiers sur le même site (mise à jour de sécurité forcée par
+    # WordPress.org, qui passe outre le réglage du site) reste contrôlée ici.
+    faits = {d: {str(k).split(":", 1)[-1] for k in (r.get("visees") or {})}
+             for d, r in ((load_json(MAJ_NUIT, {}) or {}).get("sites") or {}).items()
+             if isinstance(r, dict) and now - (r.get("ts") or 0) < 26 * 3600
              and r.get("verdict") not in ("rien à faire", "bloqué", "simulation")}
     resultats = {}
     for srv_name, s in A.visible_sites():
@@ -386,10 +400,8 @@ def main():
         if not (v.get("connected") and v.get("has_cli")):
             continue
         cle = s.get("kuma") or s.get("domain")
-        if s.get("domain") in faits:
-            continue
         try:
-            r = examiner(srv_name, s, now, rattraper=not dry)
+            r = examiner(srv_name, s, now, rattraper=not dry, deja=faits.get(s.get("domain")))
             if not r and isinstance(precedent.get(cle), dict) and precedent[cle].get("ecarts"):
                 r = reconfirmer(srv_name, precedent[cle], now)
         except Exception as e:           # un site en panne n'arrête pas les autres

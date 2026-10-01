@@ -199,3 +199,24 @@ class TestRouteMode(RoutesBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVizNuitApresDashboard(IncidentsBase):
+    """viz_nuit ne repasse pas sur ce que le dashboard a fait, mais contrôle le
+    reste — une mise à jour forcée par WordPress.org passe outre le réglage."""
+
+    def examiner(self, majs, deja):
+        import viz_nuit
+        with mock.patch.object(A, "find_site", return_value=({"name": "vps1"}, {"domain": "auto.fr"})), \
+                mock.patch.object(viz_nuit, "maj_journalisees", return_value=majs), \
+                mock.patch.object(viz_nuit, "evenements", return_value=[]), \
+                mock.patch.object(viz_nuit, "lire_rapport", return_value=None):
+            return viz_nuit.examiner("vps1", site("auto.fr"), time.time(), rattraper=False, deja=deja)
+
+    def test_composants_du_dashboard_ignores(self):
+        self.assertIsNone(self.examiner([("elementor", "plugin", time.time(), "3.30.0")], {"elementor"}))
+
+    def test_mise_a_jour_forcee_controlee(self):
+        r = self.examiner([("elementor", "plugin", time.time(), "3.30.0"),
+                           ("ninja-forms", "plugin", time.time(), "3.6.10")], {"elementor"})
+        self.assertEqual(r["non_couvertes"], ["ninja-forms"])
