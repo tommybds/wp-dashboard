@@ -212,6 +212,7 @@ CHECKSUMS_PATH = os.path.join(DATA, "checksums.json")
 # d'incident, écrite en 0600 comme tout ce qui vit dans data/ (elle cite des
 # domaines et la raison saisie par l'exploitant). Cf. « Acquitter une alerte ».
 ACKS_PATH = os.path.join(DATA, "incident_acks.json")
+SEEN_PATH = os.path.join(DATA, "incident_seen.json")
 VULNS_FOUND_PATH = os.path.join(DATA, "vulns_found.json")
 PHPERR_PATH = os.path.join(DATA, "php_errors.json")
 # Chasse aux portes dérobées (scan.py) : ce qui a été trouvé, et la référence
@@ -4740,6 +4741,61 @@ def incident_iso(epoch):
         return None
 
 
+def duree_h(h):
+    """Une durée en heures, lisible : « 56 h » (comparable au seuil en heures),
+    mais « 1306 j » au-delà de 4 jours (« il y a 31351 h » ne se lisait pas)."""
+    h = float(h)
+    return f"{h:.0f} h" if h < 96 else f"{h / 24:.0f} j"
+
+
+def incident_vus(incidents, now, purger=True):
+    """Date de première apparition des incidents qui n'en ont pas.
+
+    Une faille, un fichier suspect, un administrateur inconnu n'ont pas de date
+    à eux : la colonne « Depuis » restait vide, et une faille vieille de trois
+    semaines se lisait comme celle apparue ce matin. Le serveur retient donc
+    l'instant où il a vu chaque identifiant pour la première fois
+    (data/incident_seen.json) et le pose dans `since`.
+
+    Les identifiants absents sont oubliés (un problème réglé puis revenu repart
+    de zéro) — sauf si une source a échoué (`purger=False`) : ses incidents
+    manquent alors sans être réglés. Les dates connues dès la création du
+    fichier ne sont qu'un plancher : `since_min` le dit à l'interface (« ≥ »).
+    """
+    now = round(float(now))
+    sans = [i for i in incidents if not i.get("since")]
+    try:
+        cur = load_json(SEEN_PATH, {})
+    except Exception:
+        cur = {}
+    if not isinstance(cur, dict) or not isinstance(cur.get("ids"), dict):
+        cur = {"init": now, "ids": {}}
+    ids = cur["ids"]
+    init = to_number(cur.get("init")) or now
+    change = False
+    for i in sans:
+        if i["id"] not in ids:
+            ids[i["id"]] = now
+            change = True
+    if purger:
+        presents = {i["id"] for i in incidents}
+        for k in [k for k in ids if k not in presents]:
+            del ids[k]
+            change = True
+    for i in sans:
+        t = to_number(ids.get(i["id"])) or now
+        i["since"] = incident_iso(t)
+        i["age_h"] = round(max(0.0, now - t) / 3600.0, 2)
+        if t <= init:
+            i["since_min"] = True
+    if change:
+        try:
+            save_json(SEEN_PATH, cur)
+        except OSError:
+            pass          # data/ en lecture seule : l'affichage n'en dépend pas
+    return incidents
+
+
 def make_incident(kind, severity, key, title, detail, site="", server="", arg="",
                   since=None, action=None, link=None, now=None, extra=None,
                   bucket="now"):
@@ -5478,7 +5534,7 @@ def inc_backup(sites, rules, now):
         rest = s.get("via") == "rest"
         out.append(make_incident(
             "backup_late", "warning", cle, f"Sauvegarde en retard sur {cle}",
-            (f"dernière sauvegarde il y a {age_h:.0f} h" if age_h is not None
+            (f"dernière sauvegarde il y a {duree_h(age_h)}" if age_h is not None
              else "aucune sauvegarde connue") + f" — seuil {seuil:g} h",
             site=cle, server=server, since=ts if ts else None, now=now,
             action=None if rest else {"label": "Sauvegarder",
@@ -5738,6 +5794,7 @@ def incidents_snapshot(now=None):
     # `plan_kinds` déplace un TYPE entier vers « à planifier ». Il s'applique
     # APRÈS les sources : celles-ci ne connaissent que le contexte d'une ligne,
     # le réglage, lui, tranche pour toute une famille.
+    incident_vus(uniques, now, purger=not errors)
     plan_kinds = {str(k) for k in (rules.get("plan_kinds") or []) if str(k)}
     for i in uniques:
         if i["kind"] in plan_kinds:

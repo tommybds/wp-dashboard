@@ -79,7 +79,8 @@ class BaseTmp(unittest.TestCase):
         os.makedirs(self.data)
         self._sauv = {k: getattr(A, k) for k in
                       ("BASE", "DATA", "CRON_PATH", "SECRETS_PATH", "SESSION_SECRET_PATH",
-                       "WPAUTH_PATH", "WPSTATE_PATH", "UPDATE_POLICY_PATH", "LOG")}
+                       "WPAUTH_PATH", "WPSTATE_PATH", "UPDATE_POLICY_PATH", "LOG",
+                       "SEEN_PATH", "ACKS_PATH")}
         A.BASE = self.root
         A.DATA = self.data
         A.CRON_PATH = os.path.join(self.root, "wp-dashboard.cron")
@@ -89,6 +90,8 @@ class BaseTmp(unittest.TestCase):
         A.WPSTATE_PATH = os.path.join(self.data, "wp_states.json")
         A.UPDATE_POLICY_PATH = os.path.join(self.data, "update_policy.json")
         A.LOG = os.path.join(self.data, "actions.log")
+        A.SEEN_PATH = os.path.join(self.data, "incident_seen.json")
+        A.ACKS_PATH = os.path.join(self.data, "incident_acks.json")
         # La détection de Kuma lit elle aussi data/settings.json (surcharges de
         # branchement) : sans cette redirection, un test qui écrit un conteneur
         # dans le répertoire jetable serait jugé sur le VRAI data/ du dépôt.

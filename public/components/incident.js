@@ -33,8 +33,9 @@ import { NOTIF } from '../components/toast.js';
 const KINDS = {
   down: 'site injoignable',
   php_fatal: 'erreur PHP fatale',
-  vuln_critical_fixable: 'vulnérabilité critique corrigeable',
-  vuln_critical_unfixed: 'vulnérabilité critique sans correctif',
+  // La gravité a sa propre pastille : le type ne la répète pas.
+  vuln_critical_fixable: 'faille corrigeable',
+  vuln_critical_unfixed: 'faille sans correctif',
   checksums_modified: 'checksums modifiés',
   admin_unknown: 'administrateur inconnu',
   server_stale: 'serveur injoignable',
@@ -538,8 +539,10 @@ function depliable(classe, resume, corps, libelle) {
 }
 
 /* ---- ancienneté ------------------------------------------------------------ */
+/* `since_min` : date posée à la création du suivi des premières apparitions —
+   le problème existait déjà, depuis au moins ce moment-là. */
 function anciennete(inc) {
-  if (inc.since) return relTime(inc.since).replace(/^il y a /, 'depuis ');
+  if (inc.since) return relTime(inc.since).replace(/^il y a /, inc.since_min ? 'depuis ≥ ' : 'depuis ');
   const age = Number(inc.age_h) || 0;
   if (!age) return '';
   return age < 48 ? 'depuis ' + Math.round(age) + ' h' : 'depuis ' + Math.round(age / 24) + ' j';
@@ -624,6 +627,9 @@ export function incidentLigneTableau(inc, {
   const tl = titre.toLowerCase();
   let sous = inc.detail || '';
   if (!tl || tl === kl.toLowerCase() || kl.toLowerCase().endsWith(tl)) { titre = sous; sous = ''; }
+  // « gravityforms 2.10.2 · faille critique corrigeable » : la seconde moitié
+  // redit le type et la gravité, déjà dans leurs colonnes.
+  if (/^vuln_/.test(inc.kind || '') && titre.includes(' · ')) titre = titre.split(' · ')[0];
 
   const bt = h('button', {
     type: 'button', class: 'inc-x', 'aria-expanded': 'false', 'aria-controls': id,
@@ -649,7 +655,7 @@ export function incidentLigneTableau(inc, {
       sous ? h('div', { class: 'muted small inc-d', text: sous }) : null,
       bandeauAck(inc)),
     h('td', { 'data-l': 'Depuis', class: 'muted small inc-c-quand',
-      title: inc.since ? absTime(inc.since) : '', text: quand }),
+      title: inc.since ? (inc.since_min ? 'déjà présent le ' : '') + absTime(inc.since) : '', text: quand }),
     h('td', { class: 'inc-c-act' }, actions));
   // La ligne entière bascule à la souris, sauf sur un lien ou un bouton.
   tr.onclick = e => { if (!e.target.closest('a,button,input')) bascule(); };

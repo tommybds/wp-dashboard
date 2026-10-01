@@ -124,7 +124,11 @@ function ligne(inc, acquitte) {
   const boutons = h('span', { class: 'inc-b' });
 
   if (inc.action && inc.action.act && s) {
-    const b = h('button', { type: 'button', class: 'btn sm', text: inc.action.label || 'Corriger' });
+    // « MAJ modern-events-calendar → 7.36.4 » : l'extension est déjà nommée
+    // dans la colonne Problème ; le bouton garde le geste et la version.
+    const lib = inc.action.label || 'Corriger';
+    const court = lib.replace(/^MAJ \S+ → /, 'MAJ → ');
+    const b = h('button', { type: 'button', class: 'btn sm', text: court, title: court !== lib ? lib : null });
     b.dataset.act = inc.action.act;
     if (inc.action.arg) b.dataset.arg = inc.action.arg;
     b.onclick = async () => {

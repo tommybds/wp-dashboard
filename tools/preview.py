@@ -417,7 +417,7 @@ def incidents(include_acked=False):
          "site": "site-01.exemple.fr", "server": "vps-1",
          "title": "plugin-2 1.3.0 · faille critique corrigeable",
          "detail": "RCE (CVE-2025-0002) — correctif en 1.3.1",
-         "since": iso(30), "age_h": 30.0,
+         "since": iso(30), "age_h": 30.0, "since_min": True,
          "action": {"label": "MAJ plugin-2 → 1.3.1", "act": "plugin_update", "arg": "plugin-2"},
          "link": {"tab": "securite", "sub": "vulns"},
          "extra": {"cve": ["CVE-2025-0002", "CVE-2025-0011"], "slug": "plugin-2",

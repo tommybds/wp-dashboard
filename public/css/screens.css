@@ -379,14 +379,17 @@ a.inc-s:hover{color:var(--accent);text-decoration:underline}
 .inctbl tr.inc-row.err>td:first-child{border-left-color:var(--err)}
 .inctbl tr.inc-row.warn>td:first-child{border-left-color:var(--warn-edge)}
 .inctbl tr.inc-row.ouvert>td{border-bottom-color:transparent}
-.inc-c-type{color:var(--ink-2);white-space:normal;min-width:15ch;max-width:20ch}
-.inc-c-site{font-weight:600}
+.inc-c-type{color:var(--ink-2);white-space:normal;min-width:10ch;max-width:16ch}
+.inc-c-site{font-weight:600;white-space:nowrap}
 .inc-c-pb{white-space:normal;min-width:28ch}
 .inc-pb{color:var(--ink)}
 .inc-c-pb .inc-d{white-space:normal;max-width:70ch}
 .inc-c-quand{white-space:nowrap}
 .inc-c-act{text-align:right;white-space:nowrap}
 .inc-c-act .inc-b{display:inline-flex;gap:6px;justify-content:flex-end}
+/* Écran moyen : les boutons s'empilent plutôt que de pousser le tableau hors
+   de son cadre (les actions disparaissaient à droite, à faire défiler). */
+@media(max-width:1360px){ .inc-c-act .inc-b{flex-direction:column;align-items:flex-end} }
 .inctbl tr.inc-detail>td{background:var(--surface-2);white-space:normal;padding:0 var(--s-12) var(--s-12)}
 .inctbl tr.inc-detail .incp{margin-top:0;background:none;padding:var(--s-8) 0 0}
 .inctbl tbody tr.inc-detail:hover td{background:var(--surface-2)}
@@ -650,6 +653,7 @@ table.synth td.synth-vide{background:none}
   .inctbl tr.inc-row>td:first-child{grid-row:1 / span 6;grid-column:1;width:auto;border-left-width:3px;padding:0 var(--s-4)}
   .inctbl tr.inc-row>td:not(:first-child){grid-column:2}
   .inctbl tr.inc-row>td.inc-c-act{text-align:left;margin-top:6px}
+  .inc-c-act .inc-b{flex-direction:row;align-items:center;flex-wrap:wrap;justify-content:flex-start}
   .inctbl tr.inc-detail{display:block}
   .inctbl tr.inc-detail>td{display:block}
   .inc-c-type,.inc-c-pb{min-width:0;max-width:none}

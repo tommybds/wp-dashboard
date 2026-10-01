@@ -60,7 +60,7 @@ class IncidentsBase(unittest.TestCase):
         self._sauv = {k: getattr(A, k) for k in
                       ("BASE", "DATA", "FLEET_PATH", "PHPERR_PATH", "VULNS_FOUND_PATH",
                        "CHECKSUMS_PATH", "SETTINGS_PATH", "SESSION_SECRET_PATH", "LOG",
-                       "ACKS_PATH")}
+                       "ACKS_PATH", "SEEN_PATH")}
         A.BASE = self.root
         A.DATA = self.data
         A.FLEET_PATH = os.path.join(self.data, "fleet.json")
@@ -71,6 +71,7 @@ class IncidentsBase(unittest.TestCase):
         A.SESSION_SECRET_PATH = os.path.join(self.data, ".session_secret")
         A.LOG = os.path.join(self.data, "actions.log")
         A.ACKS_PATH = os.path.join(self.data, "incident_acks.json")
+        A.SEEN_PATH = os.path.join(self.data, "incident_seen.json")
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         self.addCleanup(self._restaurer)
@@ -294,6 +295,29 @@ class TestVulns(IncidentsBase):
         self.reglages(vuln_high_is_incident=True)
         self.assertEqual(len(self.par_kind("vuln_critical_fixable")), 1)
 
+    def test_premiere_apparition_memorisee(self):
+        """Une faille n'a pas de date : « Depuis » vient de sa première apparition."""
+        A.save_json(A.SEEN_PATH, {"init": time.time() - 5 * 86400, "ids": {
+            "vuln_critical_fixable:ffhbi.fr:ml-slider": time.time() - 3 * 86400}})
+        self.poser(self.trouvaille())
+        inc = self.par_kind("vuln_critical_fixable")[0]
+        self.assertAlmostEqual(inc["age_h"], 72, delta=0.1)
+        self.assertNotIn("since_min", inc)
+
+    def test_nouvelle_faille_datee_de_maintenant_et_reglee_oubliee(self):
+        A.save_json(A.SEEN_PATH, {"init": time.time() - 86400, "ids": {"x:y:z": 1}})
+        self.poser(self.trouvaille())
+        inc = self.par_kind("vuln_critical_fixable")[0]
+        self.assertLess(inc["age_h"], 0.01)
+        ids = A.load_json(A.SEEN_PATH, {})["ids"]
+        self.assertIn("vuln_critical_fixable:ffhbi.fr:ml-slider", ids)
+        self.assertNotIn("x:y:z", ids)       # absent = réglé : oublié
+
+    def test_premier_passage_ne_date_qu_un_plancher(self):
+        self.poser(self.trouvaille())
+        inc = self.par_kind("vuln_critical_fixable")[0]
+        self.assertTrue(inc["since_min"])
+
     def test_une_seule_entree_par_site_et_composant(self):
         self.poser(self.trouvaille(), self.trouvaille(update_to="3.100.3"))
         self.assertEqual(len(self.par_kind("vuln_critical_fixable")), 1)
@@ -458,8 +482,16 @@ class TestBackup(IncidentsBase):
         inc = self.par_kind("backup_late")
         self.assertEqual(len(inc), 1)
         self.assertIn("aucune sauvegarde", inc[0]["detail"])
-        self.assertIsNone(inc[0]["since"])
-        self.assertEqual(inc[0]["age_h"], 0.0)
+        # Pas de date à elle : c'est la première apparition qui la remplace.
+        self.assertTrue(inc[0]["since"])
+        self.assertTrue(inc[0]["since_min"])
+        self.assertLess(inc[0]["age_h"], 0.01)
+
+    def test_age_en_jours_au_dela_de_48_h(self):
+        self.poser(age_h=24 * 1306 + 7)
+        inc = self.par_kind("backup_late")
+        self.assertIn("il y a 1306 j", inc[0]["detail"])
+        self.assertNotIn("31351", inc[0]["detail"])
 
     def test_site_sans_updraft_ignore(self):
         self.poser_fleet(self.serveur(sites=[site("sansplugin.fr", updraft=None)]))
