@@ -63,8 +63,18 @@ foreach (array_slice($h, 0, 12) as $e) {
   $e = (array) $e;
   if (($e['source'] ?? '') !== 'update') continue;
   $u = (array) ($e['update'] ?? array());
+  // Les slugs d'abord (`rollbackCandidates`) : depuis VizProof 1.3.16, `items`
+  // porte le NOM affiché des extensions (« WP Mail SMTP »), que rien ne relie
+  // au journal des versions, qui ne connaît que les slugs.
+  $items = array();
+  foreach ((array) ($u['rollbackCandidates'] ?? array()) as $c) {
+    $c = (array) $c; $sl = (string) ($c['slug'] ?? ''); $pf = (string) ($c['plugin'] ?? '');
+    $items[] = $sl !== '' ? $sl : ($pf !== '' && dirname($pf) !== '.' ? dirname($pf) : basename($pf, '.php'));
+  }
+  $items = array_values(array_filter($items));
+  if (!$items) $items = array_values(array_map('strval', (array) ($u['items'] ?? array())));
   $out[] = array('at' => (string) ($e['createdAt'] ?? ''), 'type' => (string) ($u['type'] ?? ''),
-                 'items' => array_values(array_map('strval', (array) ($u['items'] ?? array()))),
+                 'items' => $items,
                  'status' => (string) ($e['status'] ?? ''));
 }
 echo 'VIZNUIT:' . json_encode($out) . PHP_EOL;
@@ -225,8 +235,11 @@ def examiner(srv_name, s, now, rattraper=False):
     items = sorted({i for e in recents for i in e.get("items") or []} | set(non_couvertes))
     sans_effet = []
     if recents:
-        depuis = min(iso_epoch(e["at"]) for e in recents) - 3600
-        changes = elements_changes(s.get("domain"), depuis)
+        # Toute la fenêtre, pas « une heure avant le premier scan » : un scan
+        # lancé APRÈS la mise à jour (rattrapage du dashboard, scan manuel)
+        # ouvrait la comparaison après elle, et l'extension bel et bien mise à
+        # jour sortait « sans effet ».
+        changes = elements_changes(s.get("domain"), now - FENETRE_H * 3600)
         sans_effet = sorted({i for e in recents for i in e.get("items") or []} - changes)
 
     rapport = (rattrapage or {}).get("report") or lire_rapport(srv_name, s.get("domain"))
