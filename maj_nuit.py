@@ -167,7 +167,7 @@ def traiter(srv_name, s, mode, refus, dry):
     # Compte rendu par page : ce qui a bougé et pourquoi (pixels, SEO avec
     # l'avant/après de chaque champ, accessibilité, HTTP).
     pages = [{k: it.get(k) for k in ("page", "viewport", "status", "cause", "diff_percent",
-                                     "seo_changes", "http_status") if it.get(k) not in (None, "", [])}
+                                     "seo_changes", "http_status", "masked_missing") if it.get(k) not in (None, "", [])}
              for it in (rapport or {}).get("items") or []
              if isinstance(it, dict) and (it.get("cause") or it.get("status") == "fail")][:16]
     return dict(base, ecarts_apres=apres, verdict=verdict, echecs=echecs, pages=pages,

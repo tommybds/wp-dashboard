@@ -1699,6 +1699,12 @@ def viz_report_item(x):
     hs = x.get("http_status")
     if isinstance(hs, int) and not isinstance(hs, bool) and 100 <= hs <= 599:
         item["http_status"] = hs
+    # Éléments masqués (exclus des pixels) présents dans la référence et
+    # disparus ou vides (plugin 1.3.18) : un widget qui ne charge plus.
+    mm = x.get("masked_missing") if isinstance(x.get("masked_missing"), list) else []
+    mm = [str(m)[:120] for m in mm[:10] if str(m).strip()]
+    if mm:
+        item["masked_missing"] = mm
     return item
 
 
@@ -3029,8 +3035,8 @@ def pages_instables(rapport):
             continue
         causes = set(str(it.get("cause") or "").split("+")) - {""}
         page = str(it.get("page") or "?")
-        if causes & {"seo", "a11y", "http"}:
-            sem.append(f"{page} ({'+'.join(sorted(causes & {'seo', 'a11y', 'http'}))})")
+        if causes & {"seo", "a11y", "http", "masque"}:
+            sem.append(f"{page} ({'+'.join(sorted(causes & {'seo', 'a11y', 'http', 'masque'}))})")
         elif "pixel" in causes:
             pix.add(page)
     return sorted(set(sem)), pix

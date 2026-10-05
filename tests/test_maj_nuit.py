@@ -335,3 +335,16 @@ class TestCollecteChecks(unittest.TestCase):
         self.assertEqual(collect.niveaux_checks({"seo": "fail", "a11y": "warn"}), {"seo": "fail", "a11y": "warn"})
         self.assertIsNone(collect.niveaux_checks(None))
         self.assertIsNone(collect.niveaux_checks({"seo": "boom", "a11y": "warn"}))
+
+
+class TestElementMasque(unittest.TestCase):
+
+    def test_masque_absent_est_un_fait_pas_du_bruit(self):
+        sem, pix = A.pages_instables({"items": [{"page": "Accueil", "status": "fail", "cause": "masque"}]})
+        self.assertEqual(sem, ["Accueil (masque)"])
+        self.assertEqual(pix, set())
+
+    def test_rapport_recopie_les_elements_absents(self):
+        it = A.viz_report_item({"page": "Accueil", "status": "fail", "cause": "masque",
+                                "masked_missing": ["Flux Instagram", ""]})
+        self.assertEqual(it["masked_missing"], ["Flux Instagram"])

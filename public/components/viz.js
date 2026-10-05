@@ -352,7 +352,7 @@ function vizReportLignes(rep) {
    combinaison jointe par « + ». On teste donc par INCLUSION, jamais par égalité
    — « pixel+seo » doit compter comme du SEO. Les items d'un parc encore en
    1.3.9 n'ont pas la clé : absence = rien à expliquer, pas « aucune cause ». */
-const VZ_CAUSE = { pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
+const VZ_CAUSE = { masque: ['err', 'élément masqué absent'], pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
 // `http` n'a pas de pastille ici : la ligne porte déjà « HTTP 404 », avec le code.
 
 function vzCauseHtml(cause, status) {
@@ -362,7 +362,7 @@ function vzCauseHtml(cause, status) {
   if (!bouts.length) return '';
   // Ligne en échec sans écart de pixels : c'est le SEO ou l'accessibilité,
   // réglés sur « bloquant », qui la font échouer — pastille rouge.
-  const semBloquant = status === 'fail' && !c.includes('pixel') && !c.includes('http');
+  const semBloquant = status === 'fail' && !c.includes('pixel') && !c.includes('http') && !c.includes('masque');
   return ' ' + bouts.map(k => `<span class="pill ${semBloquant && k !== 'pixel' ? 'err' : VZ_CAUSE[k][0]}">${H(VZ_CAUSE[k][1])}</span>`).join(' ');
 }
 
@@ -371,11 +371,14 @@ function vzCauseHtml(cause, status) {
    avant la 1.3.10. Les valeurs arrivent déjà tronquées à 90 caractères. */
 function vzSeoHtml(x) {
   const ch = Array.isArray(x.seo_changes) ? x.seo_changes.filter(c => c && c.field) : [];
-  if (!ch.length) return '';
+  // Éléments masqués disparus (vizproof-timeline 1.3.18) : nommés sous la ligne.
+  const mm = Array.isArray(x.masked_missing) ? x.masked_missing.filter(Boolean) : [];
+  const masques = mm.length ? `<tr class="vzr-seo"><td colspan="4"><b>absent ou vide :</b> ${mm.map(m => H(String(m))).join(', ')}</td></tr>` : '';
+  if (!ch.length) return masques;
   return `<tr class="vzr-seo"><td colspan="4">` + ch.map(c =>
     `<div><b>${H(String(c.field))}</b> `
     + `<span class="muted">${H(String(c.before ?? '—') || '(vide)')}</span>`
-    + ` → <b>${H(String(c.after ?? '—') || '(vide)')}</b></div>`).join('') + '</td></tr>';
+    + ` → <b>${H(String(c.after ?? '—') || '(vide)')}</b></div>`).join('') + '</td></tr>' + masques;
 }
 
 function vzLigneHtml(x, suite) {
@@ -438,7 +441,8 @@ function vizVerdicts(rep) {
   const enErreur = new Set(it.filter(vzHttpErreur).map(x => String(x.page || x.url || '')));
   const http = enErreur.size
     ? [['err', enErreur.size === 1 ? '1 page en erreur' : enErreur.size + ' pages en erreur']] : [];
-  return http.concat([visuel, seo]).concat(a11y ? [a11y] : []);
+  const masque = it.some(x => a(x, 'masque')) ? [['err', 'élément masqué absent']] : [];
+  return http.concat(masque, [visuel, seo]).concat(a11y ? [a11y] : []);
 }
 
 function vizVerdictsHtml(rep) {
