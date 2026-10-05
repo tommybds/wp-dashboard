@@ -127,6 +127,9 @@ def faux_site(i, srv, rng):
         s["vizproof"] = {
             "connected": True, "configured": True, "version": vzver, "has_cli": True,
             "pages": 3, "site_id": f"site-{i:02d}",
+            # plugin ≥ 1.3.17 : niveaux SEO / accessibilité (un site sur deux
+            # en a, pour voir aussi le message « 1.3.17 requis »)
+            "checks": {"seo": "fail", "a11y": "warn"} if i % 8 == 0 else None,
             # `totals` accompagne `anomalies` dans l'inventaire réel : c'est lui
             # qui dit si c'est CASSÉ (fail) ou seulement à regarder (warn), donc
             # la couleur de la pastille de l'onglet. Un site sur deux tombe en
@@ -626,6 +629,12 @@ def auto_state():
         "site-03.exemple.fr": {"domain": "site-03.exemple.fr", "server": "plesk-mutu", "ts": t4,
                                "items": ["elementor", "thème astra"], "ecartees": [],
                                "verdict": "annulé (retour arrière)", "ecarts_apres": 0,
+                               "pages": [{"page": "Contact", "viewport": "mobile", "status": "fail", "cause": "seo",
+                                          "seo_changes": [{"field": "title", "before": "Contact — Site 3",
+                                                           "after": "Contact"}]},
+                                         {"page": "Contact", "viewport": "desktop", "status": "fail", "cause": "seo"},
+                                         {"page": "Accueil", "viewport": "desktop", "status": "warn",
+                                          "cause": "pixel", "diff_percent": 0.04}],
                                "cause": "Contrôle visuel VizProof : 1 page en échec (Contact, mobile)",
                                "report_url": "https://vizproof.example/r/3"},
         "site-06.exemple.fr": {"domain": "site-06.exemple.fr", "server": "vps-1", "ts": t4,
@@ -1447,6 +1456,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                           for t in taches],
             })
             rep = {"job": "apercu", "ok": True}
+        elif chemin.endswith("/api/actions/viz_checks"):
+            seo, a11y = str(corps.get("seo") or ""), str(corps.get("a11y") or "")
+            if seo not in ("fail", "warn", "off") or a11y not in ("fail", "warn", "off"):
+                return self._json(400, {"error": "niveaux attendus : fail, warn ou off"})
+            rep = {"ok": True, "rc": 0, "checks": {"seo": seo, "a11y": a11y}}
         elif chemin.endswith("/api/actions/viz_pages"):
             # Écriture des pages surveillées : elle a un EFFET (la sélection est
             # relue à la réouverture) et rejoue les refus du backend.

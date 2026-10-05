@@ -1255,6 +1255,9 @@ SETTINGS_DEFAULTS = {
     # d'après l'URL WordPress, puis à relier le plugin. Le fichier est en 0600
     # et la valeur n'est JAMAIS renvoyée par l'API : cf. settings_public().
     "vizproof_token": "",
+    # Niveaux appliqués par « Appliquer à tous les sites reliés » (Réglages).
+    "viz_check_seo": "fail",
+    "viz_check_a11y": "fail",
     # Adresse publique du dashboard : le bilan Telegram du matin s'en sert pour
     # son lien « ouvrir ». Vide = pas de lien (le dépôt ne connaît pas l'hôte).
     "public_url": "",
@@ -2883,6 +2886,38 @@ def viz_pages_read_137(srv, site):
          "pages": pages, "message": VIZ_PAGES_137_MSG}, "repli-1.3.7")
 
 
+VIZ_CHECK_LEVELS = ("fail", "warn", "off")
+
+
+def viz_checks_write(server_name, domain, seo, a11y, source="ui"):
+    """Règle le poids des méta SEO et de l'arbre d'accessibilité dans le verdict
+    VizProof du site (`wp vizproof checks`, plugin ≥ 1.3.17) → (rc, payload).
+
+    Le plugin reste l'autorité : c'est lui qui calcule le verdict, le score et
+    les totaux que lisent la MAJ contrôlée et les mises à jour de nuit."""
+    t0 = time.time()
+
+    def fin(rc, payload):
+        append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": source, "server": server_name, "domain": domain,
+                    "action": "viz_checks", "arg": f"seo={seo},a11y={a11y}",
+                    "rc": rc, "duration_s": round(time.time() - t0, 1),
+                    "output_tail": json.dumps(payload, ensure_ascii=False)[-1000:]})
+        return rc, payload
+
+    srv, site = viz_cible(server_name, domain)
+    if not srv:
+        return fin(site[0], site[1])
+    rc, out = remote_bash(srv, site, f"run vizproof checks --seo={seo} --a11y={a11y} --format=json",
+                          timeout=VIZ_PAGES_TIMEOUT, max_out=None)
+    j = viz_json_tail(out) if rc == 0 else None
+    if rc == 0 and isinstance(j, dict) and isinstance(j.get("checks"), dict):
+        return fin(0, {"ok": True, "checks": {k: str(j["checks"].get(k) or "") for k in ("seo", "a11y")}})
+    if re.search(r"not a registered|n'est pas une commande|is not a registered", out or "", re.I):
+        return fin(VIZ_OLD_RC, {"ok": False, "error": "vizproof-timeline 1.3.17 requis pour ce réglage"})
+    return fin(rc or 95, {"ok": False, "error": str(out or "")[-600:]})
+
+
 def viz_pages_write(server_name, domain, ids, scope, source="ui"):
     """Enregistre la sélection → (rc, payload). Journalise l'action `viz_pages`."""
     t0 = time.time()
@@ -2984,9 +3019,64 @@ def liste_maj_bash(kind):
             f'&& printf "%s" "$out" || asuser "$base {cmd} --skip-plugins --skip-themes $extra --no-color"')
 
 
+def pages_instables(rapport):
+    """Scan témoin → ([« page (causes) »] instables en SEO/accessibilité/HTTP,
+    {pages instables en pixels seulement}). Une ligne sans cause (rien à
+    comparer) ne compte pas."""
+    sem, pix = [], set()
+    for it in (rapport or {}).get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        causes = set(str(it.get("cause") or "").split("+")) - {""}
+        page = str(it.get("page") or "?")
+        if causes & {"seo", "a11y", "http"}:
+            sem.append(f"{page} ({'+'.join(sorted(causes & {'seo', 'a11y', 'http'}))})")
+        elif "pixel" in causes:
+            pix.add(page)
+    return sorted(set(sem)), pix
+
+
+def totaux_bloquants(rapport, instables_pix):
+    """Totaux du rapport, sans les échecs de PIXELS SEULS sur une page que le
+    scan témoin a montrée instable. Un échec SEO, d'accessibilité ou HTTP
+    compte toujours."""
+    tot = (rapport or {}).get("totals")
+    if not isinstance(tot, dict) or not instables_pix:
+        return tot
+    items = [it for it in (rapport or {}).get("items") or [] if isinstance(it, dict)]
+    if not items:
+        return tot
+    fail = sum(1 for it in items if it.get("status") == "fail"
+               and not (str(it.get("cause") or "") == "pixel" and it.get("page") in instables_pix))
+    return dict(tot, fail=fail)
+
+
+RE_LIGNE_MAJ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\t([^\t]*)\t([^\t]*)\t(\w+)\s*$")
+
+
+def maj_par_extension(sortie, demandees):
+    """Tableau final de `wp plugin update` → (faites, ratées), ou (None, None)
+    s'il est illisible. Une ligne « Error » = extension non mise à jour."""
+    faites, ratees = [], []
+    for l in (sortie or "").splitlines():
+        m = RE_LIGNE_MAJ.match(l.strip("\r"))
+        if not m or m.group(1) == "name" or m.group(1) not in demandees:
+            continue
+        (faites if m.group(4).lower() == "updated" else ratees).append(m.group(1))
+    if not faites and not ratees:
+        return None, None
+    return faites, ratees
+
+
+def cibles_maj(site):
+    """{extension: version visée} d'après la dernière collecte."""
+    return {str(x.get("name")): str(x.get("to") or "") for x in (site.get("plugins_updates_list") or [])
+            if isinstance(x, dict)}
+
+
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
                     with_core=False, dry_run=False, viz_rollback=None,
-                    themes=None, with_themes=True, with_plugins=True):
+                    themes=None, with_themes=True, with_plugins=True, temoin=False):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
@@ -3005,10 +3095,16 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
     sauvegarde UpdraftPlus qui sert de recours pour la base.
     `viz_rollback` None = on suit le réglage `viz_anomaly_rollback` ;
     True/False le surchargent pour cette exécution seulement.
+    `temoin` (mises à jour de nuit) : juste après la référence, un scan SANS
+    rien changer. Une page qui y bouge déjà en SEO, en accessibilité ou en
+    HTTP rend le contrôle aveugle : on s'arrête avant toute modification
+    (verdict « page instable »). Une page qui n'y bouge qu'en pixels reste
+    contrôlée sur le reste, mais son seul écart de pixels n'annulera pas la
+    mise à jour (les captures de cette page ne sont pas reproductibles).
     """
     if viz_rollback is None:
         viz_rollback = bool(settings_cfg().get("viz_anomaly_rollback"))
-    SAFE.update({"running": True, "domain": domain, "steps": [], "verdict": "",
+    SAFE.update({"running": True, "domain": domain, "steps": [], "verdict": "", "echecs": {},
                  "started": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "finished": None})
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -3164,6 +3260,7 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
         #    écrit quand les Réglages l'exigent et qu'elle échoue. Mêmes
         #    réglages que les mises à jour simples.
         cfg_viz = settings_cfg()
+        instables_pix = set()
         viz_dispo = bool(use_viz and viz_available(srv, site))
         if viz_dispo and cfg_viz.get("viz_baseline_before_update"):
             rcb, outb = remote_bash(srv, site, VIZ_BASELINE_CMD, timeout=VIZ_BASELINE_TIMEOUT,
@@ -3174,6 +3271,25 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                 safe_step("Référence VizProof avant mise à jour", True,
                           f"capturée et promue ({nb} page(s)) — le contrôle de fin "
                           "comparera à cet état-ci")
+                if temoin:
+                    rct, outt = remote_bash(srv, site, "run vizproof scan --wait --format=json",
+                                            timeout=600, max_out=None)
+                    rappt = viz_report_payload(viz_json_tail(outt) or {}) or {}
+                    instables_sem, instables_pix = pages_instables(rappt)
+                    if instables_sem:
+                        safe_step("Scan témoin (sans modification)", False,
+                                  "page(s) qui changent d'une capture à l'autre en SEO, en "
+                                  "accessibilité ou en HTTP : " + "; ".join(instables_sem)
+                                  + " — à stabiliser dans VizProof (éléments à masquer)")
+                        safe_step("Interrompu", False, "aucune modification : le contrôle "
+                                  "de ces pages ne dirait rien de la mise à jour")
+                        SAFE["verdict"] = "page instable"
+                        return
+                    safe_step("Scan témoin (sans modification)", True,
+                              ("stable" if not instables_pix else
+                               "pixels instables (écart seul non bloquant) : "
+                               + ", ".join(sorted(instables_pix))),
+                              warn=bool(instables_pix))
             elif cfg_viz.get("viz_baseline_required"):
                 safe_step("Référence VizProof avant mise à jour", False,
                           "exigée par les Réglages et en échec : "
@@ -3402,7 +3518,20 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             rcp, outp = remote_bash(srv, site, REMOTE_MAINT_ON
                                     + f'run plugin update {lst} {VIZ_SKIP_DURING_SAFE}',
                                     timeout=900)
-            safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
+            faites, ratees = maj_par_extension(outp, pending)
+            if rcp != 0 and faites is not None and ratees and not (set(ratees) - set(pending)):
+                # Échec PARTIEL : les extensions en échec n'ont pas été touchées
+                # (paquet indisponible — licence expirée le plus souvent). On ne
+                # défait pas les autres pour elles ; les contrôles d'après
+                # diront si le site a souffert.
+                SAFE["echecs"] = {r: (cibles_maj(site).get(r) or "") for r in ratees}
+                safe_step("Mise à jour des extensions", True,
+                          f"{len(faites)} mise(s) à jour faite(s) ; impossible pour "
+                          + ", ".join(ratees) + " (paquet indisponible — licence ?)",
+                          warn=True)
+                rcp = 0
+            else:
+                safe_step("Mise à jour des extensions", rcp == 0, (outp or "")[-500:])
             rc = rc or rcp
         if pending_th:
             rct2, outt2 = remote_bash(srv, site, REMOTE_MAINT_ON
@@ -3447,7 +3576,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             # du bruit, et c'est cela qui déclenche — ou non — le retour arrière.
             rapp = viz_report_payload(viz_json_tail(outv) or {})
             bloquant, libelle, viz_anomaly = viz_decide(
-                rcv, viz_rollback, (rapp or {}).get("totals"))
+                rcv, viz_rollback, totaux_bloquants(rapp, instables_pix))
             viz_ok = not bloquant
             detail = libelle or (outv or "")[-300:]
             if rapp and rapp.get("message"):
@@ -5697,6 +5826,12 @@ def inc_maj_nuit(index, now):
                 "viz_auto_update", "warning", cle, f"Écart visuel après la mise à jour de nuit sur {cle}",
                 f"{items} → mise à jour conservée, écart à regarder",
                 site=cle, server=server, since=since, now=now, link=lien, extra=x))
+        elif verdict == "page instable":
+            out.append(make_incident(
+                "auto_update_blocked", "warning", cle, f"Mises à jour de nuit en attente sur {cle}",
+                (cause or "page instable") + " — tant qu'elle bouge seule, son contrôle ne dit rien "
+                "de la mise à jour",
+                site=cle, server=server, since=since, now=now, link=lien, bucket="plan", extra=x))
         elif verdict == "bloqué":
             out.append(make_incident(
                 "auto_update_blocked", "warning", cle, f"Mises à jour de nuit en attente sur {cle}",
@@ -5706,6 +5841,13 @@ def inc_maj_nuit(index, now):
             out.append(make_incident(
                 "auto_update_failed", "warning", cle, f"Mise à jour de nuit non faite sur {cle}",
                 cause or verdict, site=cle, server=server, since=since, now=now, link=lien, extra=x))
+        for slug, vers in (r.get("echecs") or {}).items():
+            out.append(make_incident(
+                "auto_update_noop", "warning", cle, f"Mise à jour impossible sur {cle}",
+                f"{slug} {vers} : paquet indisponible (licence expirée ?) — les autres mises à jour "
+                "ont été faites ; celle-ci sera retentée à la version suivante",
+                site=cle, server=server, arg=str(slug), since=since, now=now, link=lien,
+                bucket="plan", extra={"item": slug, "version": vers}))
     return out
 
 
@@ -8236,6 +8378,17 @@ class Handler(BaseHTTPRequestHandler):
             doux = rc in (0, VIZ_OLD_RC, REST_UNSUPPORTED_RC)
             return self._send(200 if doux else 500, dict(payload, rc=rc))
 
+        if p == "/api/actions/viz_checks":
+            server, domain = str(body.get("server", "")), str(body.get("domain", ""))
+            if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
+                return self._send(400, {"error": "cible invalide"})
+            seo, a11y = str(body.get("seo", "")), str(body.get("a11y", ""))
+            if seo not in VIZ_CHECK_LEVELS or a11y not in VIZ_CHECK_LEVELS:
+                return self._send(400, {"error": "niveaux attendus : fail, warn ou off"})
+            rc, payload = viz_checks_write(server, domain, seo, a11y)
+            doux = rc in (0, VIZ_OLD_RC, REST_UNSUPPORTED_RC)
+            return self._send(200 if doux else 500, dict(payload, rc=rc))
+
         if p == "/api/actions/viz_disconnect":
             server, domain = str(body.get("server", "")), str(body.get("domain", ""))
             if not SERVER_RE.match(server) or not SLUG_RE.match(domain):
@@ -8744,6 +8897,9 @@ class Handler(BaseHTTPRequestHandler):
             # Branchement Uptime Kuma : ces quatre valeurs SURCHARGENT config.json
             # et partent en argv d'un `docker exec` ou dans une requête HTTP —
             # elles sont donc validées champ par champ, avec un message par champ.
+            for k in ("viz_check_seo", "viz_check_a11y"):
+                if k in patch and patch[k] not in VIZ_CHECK_LEVELS:
+                    return self._send(400, {"error": f"{k} : fail, warn ou off"})
             errs = kuma_settings_errors(patch)
             if errs:
                 return self._send(400, {"error": next(iter(errs.values())),

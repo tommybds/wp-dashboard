@@ -97,6 +97,34 @@ function vizVersionAvant(v, cible) {
    d'après, donc comparaient à elles-mêmes. Un site qui surveille une seule page
    n'est pas concerné — d'où le test sur le nombre de pages. */
 const VIZ_BASELINE_MULTIPAGE = '1.3.12';
+/* ---- méta SEO et arbre d'accessibilité dans le verdict --------------------
+   Réglage du PLUGIN (vizproof-timeline ≥ 1.3.17, `wp vizproof checks`) : c'est
+   lui qui calcule le verdict, le score et les totaux que lisent la MAJ
+   contrôlée et les mises à jour de nuit. Le dashboard le lit à la collecte
+   (`vizproof.checks`) et l'écrit par /api/actions/viz_checks. */
+const NIVEAUX_CHECK = [
+  ['fail', 'Bloquant — échec, déclenche le retour arrière'],
+  ['warn', 'Avertissement — à vérifier'],
+  ['off', 'Ignoré — hors du verdict'],
+];
+
+/** Liste déroulante d'un niveau (fail / warn / off). */
+export function selectNiveau(id, valeur, label) {
+  const sel = h('select', { id, 'aria-label': label },
+    NIVEAUX_CHECK.map(([v, l]) => h('option', { value: v, text: l })));
+  sel.value = NIVEAUX_CHECK.some(([v]) => v === valeur) ? valeur : 'warn';
+  return sel;
+}
+
+/** Écrit les niveaux sur le site → { ok, checks?, error? }. */
+export async function posterChecks(s, seo, a11y) {
+  let r;
+  try { r = await api('/api/actions/viz_checks', { server: s.srv, domain: s.domain, seo, a11y }); }
+  catch (e) { r = { ok: false, error: String(e) }; }
+  if (r && r.ok && r.checks && s.vizproof) s.vizproof.checks = r.checks;
+  return r || { ok: false, error: 'pas de réponse' };
+}
+
 export function vizBaselinePartielle(s) {
   if (vizState(s) !== 'connecte') return null;
   const n = Number((vizInfo(s) || {}).pages) || 0;
@@ -327,12 +355,15 @@ function vizReportLignes(rep) {
 const VZ_CAUSE = { pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
 // `http` n'a pas de pastille ici : la ligne porte déjà « HTTP 404 », avec le code.
 
-function vzCauseHtml(cause) {
+function vzCauseHtml(cause, status) {
   const c = String(cause || '');
   if (!c) return '';
   const bouts = Object.keys(VZ_CAUSE).filter(k => c.includes(k));
   if (!bouts.length) return '';
-  return ' ' + bouts.map(k => `<span class="pill ${VZ_CAUSE[k][0]}">${H(VZ_CAUSE[k][1])}</span>`).join(' ');
+  // Ligne en échec sans écart de pixels : c'est le SEO ou l'accessibilité,
+  // réglés sur « bloquant », qui la font échouer — pastille rouge.
+  const semBloquant = status === 'fail' && !c.includes('pixel') && !c.includes('http');
+  return ' ' + bouts.map(k => `<span class="pill ${semBloquant && k !== 'pixel' ? 'err' : VZ_CAUSE[k][0]}">${H(VZ_CAUSE[k][1])}</span>`).join(' ');
 }
 
 /* Une ligne SEO par champ modifié : c'est CE qui explique un « à vérifier » à
@@ -359,7 +390,7 @@ function vzLigneHtml(x, suite) {
     + `<td><span class="pill ${c}">${H(l)}</span>`
     + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '')
     + (vzHttpErreur(x) ? ` <span class="pill err" title="la page a répondu une erreur HTTP à la capture">HTTP ${H(String(x.http_status))}</span>` : '')
-    + vzCauseHtml(x.cause) + '</td></tr>'
+    + vzCauseHtml(x.cause, x.status) + '</td></tr>'
     + vzSeoHtml(x);
 }
 
@@ -378,17 +409,30 @@ function vzLigneHtml(x, suite) {
    se décident côté serveur, et le rapport n'y est pas encore conservé. */
 function vizVerdicts(rep) {
   if (!rep) return null;
-  const it = Array.isArray(rep.items) ? rep.items : [];
+  const it = (Array.isArray(rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
   const t = rep.totals || {};
-  const visuel = vzNb(t.fail) ? ['err', 'visuel : cassé']
-    : (vzNb(t.warn) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']);
   // `cause` n'existe qu'à partir de vizproof-timeline 1.3.10 : sans elle on ne
   // sait RIEN du SEO, ce qui n'est pas la même chose que « rien n'a changé ».
-  const mesure = it.some(x => x && x.cause);
-  const seo = !mesure ? ['mut', 'SEO : non mesuré']
-    : (it.some(x => String(x.cause || '').includes('seo')) ? ['warn', 'SEO : modifié'] : ['ok', 'SEO : inchangé']);
-  const a11y = !mesure ? null
-    : (it.some(x => String(x.cause || '').includes('a11y')) ? ['warn', 'structure : modifiée'] : null);
+  const mesure = it.some(x => x.cause);
+  const a = (x, k) => String(x.cause || '').split('+').includes(k);
+  const echec = x => x.status === 'fail';
+  // Depuis la 1.3.17, un échec peut venir du SEO ou de l'accessibilité seuls
+  // (réglage « bloquant ») : le verdict VISUEL ne lit donc que les lignes dont
+  // les pixels ont bougé — les totaux mêlent les trois natures.
+  const visuel = !mesure
+    ? (vzNb(t.fail) ? ['err', 'visuel : cassé'] : (vzNb(t.warn) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']))
+    : (it.some(x => a(x, 'pixel') && echec(x)) ? ['err', 'visuel : cassé']
+      : (it.some(x => a(x, 'pixel')) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']));
+  // Rouge quand le site règle ce contrôle sur « bloquant » : la ligne est alors
+  // en échec par ce seul changement (visuel resté OK).
+  const nature = (k, lib, fem) => {
+    const lignes = it.filter(x => a(x, k));
+    if (!lignes.length) return k === 'seo' ? ['ok', lib + ' : inchangé'] : null;
+    const bloq = lignes.some(x => echec(x) && !a(x, 'pixel') && !a(x, 'http'));
+    return [bloq ? 'err' : 'warn', lib + ' : ' + (fem ? 'modifiée' : 'modifié') + (bloq ? ' (bloquant)' : '')];
+  };
+  const seo = !mesure ? ['mut', 'SEO : non mesuré'] : nature('seo', 'SEO', false);
+  const a11y = !mesure ? null : nature('a11y', 'accessibilité', true);
   // Pages en erreur : en tête, c'est le verdict le plus grave. Comptées par
   // PAGE (le bureau et le mobile d'une même page ne font qu'une).
   const enErreur = new Set(it.filter(vzHttpErreur).map(x => String(x.page || x.url || '')));

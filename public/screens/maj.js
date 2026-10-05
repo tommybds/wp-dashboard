@@ -151,8 +151,35 @@ function resultatMaj(r) {
   }
   if (v.startsWith('ÉCHEC')) return chipEl('échec — intervention requise', 'err');
   if (v === 'bloqué') return chipEl('en attente : écart non réglé', 'mut');
+  if (v === 'page instable') return chipEl('en attente : page instable', 'mut');
   if (v === 'rien à faire') return chipEl('versions refusées, rien d’autre', 'mut');
   return chipEl('non faite', 'warn');
+}
+
+/* Compte rendu par page : une ligne par page (ses écrans regroupés), avec la
+   nature du changement et, pour le SEO, l'avant → après de chaque champ. */
+const NATURE = { pixel: 'pixels', seo: 'SEO', a11y: 'accessibilité', http: 'HTTP' };
+function pagesEl(pages) {
+  const par = new Map();
+  (pages || []).forEach(p => {
+    if (!p || !p.page) return;
+    const e = par.get(p.page) || { vues: new Set(), causes: new Set(), seo: new Map(), echec: false, http: null };
+    if (p.viewport) e.vues.add(p.viewport);
+    String(p.cause || '').split('+').filter(Boolean).forEach(c => e.causes.add(c));
+    (p.seo_changes || []).forEach(c => c && c.field && e.seo.set(c.field, c));
+    e.echec = e.echec || p.status === 'fail';
+    e.http = e.http || p.http_status || null;
+    par.set(p.page, e);
+  });
+  if (!par.size) return null;
+  return h('ul', { class: 'majpages' }, [...par].map(([page, e]) => h('li', {},
+    chipEl(e.echec ? 'échec' : 'à vérifier', e.echec ? 'err' : 'warn'), ' ',
+    h('b', { text: page }),
+    e.vues.size ? h('span', { class: 'muted', text: ' (' + [...e.vues].join(', ') + ')' }) : null,
+    ' — ', [...e.causes].map(c => NATURE[c] || c).join(', ') + (e.http ? ' ' + e.http : ''),
+    e.seo.size ? h('div', { class: 'sub' }, [...e.seo.values()].map(c => h('div', {},
+      h('code', { text: c.field }), ' ', h('span', { class: 'muted', text: String(c.before || '(vide)') }),
+      ' → ', String(c.after || '(vide)')))) : null)));
 }
 
 function ligneMaj(r) {
@@ -163,7 +190,7 @@ function ligneMaj(r) {
     h('td', {}, lienSite(r.domain)),
     h('td', { class: 'wrapcell' }, (r.items || []).join(', ') || '—', ec),
     h('td', {}, chipEl('dashboard', 'ok', { title: 'mise à jour Contrôlée lancée à 4 h' })),
-    h('td', { class: 'wrapcell' }, resultatMaj(r), lienRapport(r.report_url), cause));
+    h('td', { class: 'wrapcell' }, resultatMaj(r), lienRapport(r.report_url), cause, pagesEl(r.pages)));
 }
 
 function ligneNuit(r) {

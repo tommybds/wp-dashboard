@@ -385,13 +385,15 @@ def main():
     # Sites que le dashboard a mis à jour lui-même cette nuit (maj_nuit.py,
     # 4 h) : la chaîne Contrôlée a déjà scanné, jugé et, au besoin, annulé.
     # Repasser derrière ferait un second retour arrière et une seconde alerte.
-    # Seuls LES COMPOSANTS qu'elle a traités sont écartés : une mise à jour
+    # Seuls LES COMPOSANTS qu'elle a traités ET GARDÉS sont écartés (une mise
+    # à jour annulée puis refaite par un tiers — WP Toolkit, 03/10 — doit être
+    # contrôlée ici) ; et une mise à jour
     # faite par un tiers sur le même site (mise à jour de sécurité forcée par
     # WordPress.org, qui passe outre le réglage du site) reste contrôlée ici.
     faits = {d: {str(k).split(":", 1)[-1] for k in (r.get("visees") or {})}
              for d, r in ((load_json(MAJ_NUIT, {}) or {}).get("sites") or {}).items()
              if isinstance(r, dict) and now - (r.get("ts") or 0) < 26 * 3600
-             and r.get("verdict") not in ("rien à faire", "bloqué", "simulation")}
+             and r.get("verdict") in ("réussi", "réussie avec anomalies visuelles")}
     resultats = {}
     for srv_name, s in A.visible_sites():
         if s.get("via") == "rest" or s.get("preprod"):

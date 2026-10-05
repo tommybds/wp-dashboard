@@ -592,7 +592,18 @@ def vizproof_summary(data):
         "site_id": site_id,
         "pages": to_int(pages, 0) or 0,
         "last_run": last if isinstance(last, dict) else None,
+        # Poids des méta SEO et de l'arbre d'accessibilité dans le verdict
+        # (plugin ≥ 1.3.17) ; None avant : le réglage n'existe pas encore.
+        "checks": niveaux_checks(data.get("checks")),
     }
+
+
+def niveaux_checks(c):
+    """{"seo": …, "a11y": …} validés (fail / warn / off), ou None."""
+    if not isinstance(c, dict):
+        return None
+    out = {k: str(c.get(k) or "") for k in ("seo", "a11y")}
+    return out if all(v in ("fail", "warn", "off") for v in out.values()) else None
 
 
 def vizproof_field(raw, rc):

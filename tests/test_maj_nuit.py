@@ -220,3 +220,118 @@ class TestVizNuitApresDashboard(IncidentsBase):
         r = self.examiner([("elementor", "plugin", time.time(), "3.30.0"),
                            ("ninja-forms", "plugin", time.time(), "3.6.10")], {"elementor"})
         self.assertEqual(r["non_couvertes"], ["ninja-forms"])
+
+
+class TestTemoinEtEchecs(IncidentsBase):
+
+    RAPPORT = {"totals": {"fail": 2, "warn": 0, "ok": 1}, "items": [
+        {"page": "Accueil", "status": "fail", "cause": "pixel"},
+        {"page": "Contact", "status": "fail", "cause": "pixel+a11y"},
+        {"page": "Dojo", "status": "warn"}]}
+
+    def test_pages_instables(self):
+        sem, pix = A.pages_instables(self.RAPPORT)
+        self.assertEqual(sem, ["Contact (a11y)"])
+        self.assertEqual(pix, {"Accueil"})
+
+    def test_echec_de_pixels_seul_sur_page_instable_ne_bloque_pas(self):
+        self.assertEqual(A.totaux_bloquants(self.RAPPORT, {"Accueil"})["fail"], 1)
+        # l'accessibilité compte toujours, même sur une page instable en pixels
+        self.assertEqual(A.totaux_bloquants(self.RAPPORT, {"Accueil", "Contact"})["fail"], 1)
+        self.assertEqual(A.totaux_bloquants(self.RAPPORT, set())["fail"], 2)
+
+    def test_maj_par_extension(self):
+        sortie = ("Warning: Aucune archive de mise à jour disponible.\n"
+                  "name\told_version\tnew_version\tstatus\n"
+                  "modern-events-calendar\t6.8.10\t7.36.4\tError\n"
+                  "wp-rocket\t3.19\t3.20\tUpdated\n"
+                  "Error: Only updated 1 of 2 plugins.\n")
+        self.assertEqual(A.maj_par_extension(sortie, ["modern-events-calendar", "wp-rocket"]),
+                         (["wp-rocket"], ["modern-events-calendar"]))
+        self.assertEqual(A.maj_par_extension("Error: boom", ["x"]), (None, None))
+
+    def test_natives_recoupees_et_signalees(self):
+        s = site_maj(plugins_auto_update=6, themes_auto_update=0)
+        with mock.patch.object(A, "run_action", return_value=(0, "ok")) as run, \
+                mock.patch.object(A, "alert") as alerte:
+            self.assertEqual(maj_nuit.recouper_natives("vps1", s, False), 6)
+        self.assertEqual([c.args[2] for c in run.call_args_list], ["autoupdate_off", "themes_autoupdate_off"])
+        alerte.assert_called_once()
+        with mock.patch.object(A, "run_action") as run:
+            self.assertEqual(maj_nuit.recouper_natives("vps1", site_maj(plugins_auto_update=0), False), 0)
+        run.assert_not_called()
+
+    def test_incidents_page_instable_et_echec(self):
+        self.poser_fleet(self.serveur(sites=[site("auto.fr")]))
+        A.save_json(A.MAJ_NUIT_PATH, {"sites": {"auto.fr": {
+            "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["wp-rocket"],
+            "verdict": "réussi", "echecs": {"modern-events-calendar": "7.36.4"}}}})
+        inc = self.par_kind("auto_update_noop")
+        self.assertEqual(inc[0]["extra"]["item"], "modern-events-calendar")
+        A.save_json(A.MAJ_NUIT_PATH, {"sites": {"auto.fr": {
+            "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["x"],
+            "verdict": "page instable", "cause": "Scan témoin : Accueil (a11y)"}}})
+        self.vider_cache()
+        self.assertEqual(self.par_kind("auto_update_blocked")[0]["bucket"], "plan")
+
+    def test_refus_limite_aux_echecs(self):
+        self._p = maj_nuit.PATH
+        maj_nuit.PATH = os.path.join(self.data, "maj_nuit.json")
+        self.addCleanup(setattr, maj_nuit, "PATH", self._p)
+        r = {"domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["elementor"],
+             "verdict": "réussi", "visees": {"elementor": "3.30.1"}, "echecs": {"wordfence": "8.0.1"}}
+        with mock.patch.object(A, "auto_mode_load", return_value={"auto.fr": {}}), \
+                mock.patch.object(A, "visible_sites", return_value=[("vps1", site_maj())]), \
+                mock.patch.object(A, "attendre_envois"), \
+                mock.patch.object(maj_nuit, "traiter", return_value=r), \
+                mock.patch("builtins.print"):
+            maj_nuit.main()
+        self.assertEqual(A.load_json(maj_nuit.PATH, {})["refus"], {"auto.fr": {"wordfence": "8.0.1"}})
+
+
+class TestChecksSemantiques(RoutesBase):
+    """Poids des méta SEO et de l'arbre d'accessibilité (plugin ≥ 1.3.17)."""
+
+    def post(self, chemin, corps):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("POST", chemin, body=json.dumps(corps).encode(),
+                      headers={"Content-Type": "application/json", "X-Dash": "1", "Cookie": self.cookie})
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"null")
+        finally:
+            c.close()
+
+    def test_niveaux_ecrits_sur_le_site(self):
+        with mock.patch.object(A, "viz_cible", return_value=({"name": "vps1"}, {"domain": "auto.fr"})), \
+                mock.patch.object(A, "remote_bash",
+                                  return_value=(0, '{"ok":true,"changed":true,"checks":{"seo":"fail","a11y":"off"}}')) as rb:
+            st, j = self.post("/api/actions/viz_checks", {"server": "vps1", "domain": "auto.fr",
+                                                          "seo": "fail", "a11y": "off"})
+        self.assertEqual((st, j["checks"]), (200, {"seo": "fail", "a11y": "off"}))
+        self.assertIn("vizproof checks --seo=fail --a11y=off", rb.call_args.args[2])
+
+    def test_plugin_trop_ancien(self):
+        with mock.patch.object(A, "viz_cible", return_value=({"name": "vps1"}, {"domain": "auto.fr"})), \
+                mock.patch.object(A, "remote_bash", return_value=(1, "Error: 'checks' is not a registered subcommand")):
+            st, j = self.post("/api/actions/viz_checks", {"server": "vps1", "domain": "auto.fr",
+                                                          "seo": "fail", "a11y": "fail"})
+        self.assertEqual((st, j["rc"]), (200, A.VIZ_OLD_RC))
+        self.assertIn("1.3.17", j["error"])
+
+    def test_niveau_invalide_refuse(self):
+        st, _j = self.post("/api/actions/viz_checks", {"server": "vps1", "domain": "auto.fr",
+                                                       "seo": "rm -rf", "a11y": "fail"})
+        self.assertEqual(st, 400)
+        st, _j = self.post("/api/mgmt/settings", {"settings": {"viz_check_seo": "nimporte"}})
+        self.assertEqual(st, 400)
+
+
+class TestCollecteChecks(unittest.TestCase):
+
+    def test_niveaux_lus_ou_absents(self):
+        import collect
+        self.assertEqual(collect.niveaux_checks({"seo": "fail", "a11y": "warn"}), {"seo": "fail", "a11y": "warn"})
+        self.assertIsNone(collect.niveaux_checks(None))
+        self.assertIsNone(collect.niveaux_checks({"seo": "boom", "a11y": "warn"}))

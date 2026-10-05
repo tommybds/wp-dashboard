@@ -103,6 +103,27 @@ def ecart_ouvert(srv_name, s):
     return viz_nuit.pages_en_ecart(rapport)
 
 
+def recouper_natives(srv_name, s, dry):
+    """Recoupe les MAJ automatiques natives d'un site en automatique → nombre
+    d'éléments trouvés actifs (0 = rien à faire).
+
+    Le 03/10, celles de tiphainedesign s'étaient réactivées (restauration de
+    l'option, cause non établie) : WP Toolkit a refait à 4 h 56 la mise à jour
+    que le dashboard venait d'annuler. On les coupe donc chaque nuit, et on le
+    dit — une réactivation répétée a une cause qu'il faut trouver."""
+    n = int(s.get("plugins_auto_update") or 0) + int(s.get("themes_auto_update") or 0)
+    if not n:
+        return 0
+    if not dry:
+        for act in ("autoupdate_off", "themes_autoupdate_off"):
+            A.run_action(srv_name, s.get("domain"), act, None)
+        A.alert(f"natives:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly",
+                f"⚠️ <b>{A.esc_html(s.get('domain'))}</b> — {n} mise(s) à jour automatique(s) "
+                "native(s) réactivée(s) alors que le site est en mode automatique du dashboard : "
+                "recoupées. WordPress / WP Toolkit les auraient appliquées sans contrôle.")
+    return n
+
+
 def traiter(srv_name, s, mode, refus, dry):
     """Une mise à jour Contrôlée sur un site → bilan (dict) ou None (rien à faire)."""
     dom = s.get("domain")
@@ -123,7 +144,8 @@ def traiter(srv_name, s, mode, refus, dry):
 
     A.safe_update_run(srv_name, dom, slugs=plugs or None, do_backup=True, use_viz=True,
                       with_core=False, viz_rollback=bool(mode.get("rollback")),
-                      themes=themes or None, with_themes=bool(themes), with_plugins=bool(plugs))
+                      themes=themes or None, with_themes=bool(themes), with_plugins=bool(plugs),
+                      temoin=True)
     steps = list(A.SAFE.get("steps") or [])
     verdict = str(A.SAFE.get("verdict") or "")
     cause = next((f"{e['label']} : {str(e.get('detail') or '')[:200]}" for e in steps
@@ -141,7 +163,15 @@ def traiter(srv_name, s, mode, refus, dry):
             rapp2 = A.viz_report_payload(A.viz_json_tail(outv) or {})
             apres = (len(viz_nuit.pages_en_ecart(rapp2)) if isinstance(rapp2, dict)
                      and not rapp2.get("is_baseline") else None)
-    return dict(base, ecarts_apres=apres, verdict=verdict, cause=cause if verdict != "réussi" else "",
+    echecs = dict(A.SAFE.get("echecs") or {})
+    # Compte rendu par page : ce qui a bougé et pourquoi (pixels, SEO avec
+    # l'avant/après de chaque champ, accessibilité, HTTP).
+    pages = [{k: it.get(k) for k in ("page", "viewport", "status", "cause", "diff_percent",
+                                     "seo_changes", "http_status") if it.get(k) not in (None, "", [])}
+             for it in (rapport or {}).get("items") or []
+             if isinstance(it, dict) and (it.get("cause") or it.get("status") == "fail")][:16]
+    return dict(base, ecarts_apres=apres, verdict=verdict, echecs=echecs, pages=pages,
+                cause=cause if verdict != "réussi" else "",
                 report_url=(rapport or {}).get("report_url") or "",
                 steps=[{"label": e.get("label"), "ok": bool(e.get("ok")), "warn": bool(e.get("warn")),
                         "detail": str(e.get("detail") or "")[:400]} for e in steps],
@@ -153,12 +183,15 @@ def main():
     modes = A.auto_mode_load()
     precedent = load_json(PATH, {}) or {}
     refus_tous = precedent.get("refus") if isinstance(precedent.get("refus"), dict) else {}
-    sites, refus_neufs = {}, {}
+    sites, refus_neufs, natives = {}, {}, {}
     for srv_name, s in A.visible_sites():
         dom = s.get("domain")
         if dom not in modes or s.get("via") == "rest":
             continue
         refus = refus_tous.get(dom) if isinstance(refus_tous.get(dom), dict) else {}
+        n_nat = recouper_natives(srv_name, s, dry)
+        if n_nat:
+            natives[dom] = n_nat
         try:
             r = traiter(srv_name, s, modes[dom] if isinstance(modes[dom], dict) else {}, refus, dry)
         except Exception as e:           # un site en panne n'arrête pas les autres
@@ -173,6 +206,10 @@ def main():
         garde = {k: v for k, v in refus.items() if proposees.get(k) == v}
         if r and str(r.get("verdict", "")).startswith(("annulé (retour", "ÉCHEC")):
             garde.update(r.get("visees") or {})
+        # Extension dont la mise à jour a échoué seule (paquet indisponible) :
+        # elle seule est retenue, les autres ont été gardées.
+        if r and r.get("echecs"):
+            garde.update({k: v for k, v in r["echecs"].items() if v})
         if garde:
             refus_neufs[dom] = garde
         if r:
@@ -182,7 +219,7 @@ def main():
     if dry:
         return
     save_json(PATH, {"generated_at": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(),
-                     "sites": sites, "refus": refus_neufs})
+                     "sites": sites, "refus": refus_neufs, "natives_recoupees": natives})
     A.attendre_envois()
     print(f"{len(sites)} site(s) traité(s) cette nuit.")
 

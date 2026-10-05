@@ -39,7 +39,7 @@ import {
   openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
-  vizAnom, vizGravite, vizBaselinePartielle} from '../components/viz.js';
+  vizAnom, vizGravite, vizBaselinePartielle, vizInfo, selectNiveau, posterChecks } from '../components/viz.js';
 import { wpCredentials } from '../components/wpauth.js';
 import { loadWpCred } from './gestion.js';
 import { ensureSettings } from './reglages.js';
@@ -700,6 +700,45 @@ function dessinerOnglet() {
    ancienne, non reliée, reliée). Ce que le volet ajoute, c'est ce qui manquait :
    les deux actions de contrôle visuel, jusque-là enterrées dans le menu
    Actions, et une phrase qui dit à quoi tout cela sert. */
+/* Méta SEO et arbre d'accessibilité : leur poids dans le verdict du plugin.
+   « Bloquant » en fait un échec — compté dans le score, et cause d'un retour
+   arrière automatique ; le scan témoin des mises à jour de nuit refuse de
+   mettre à jour une page dont le SEO ou l'accessibilité bougent tout seuls. */
+function sectionChecks(s) {
+  const c = (vizInfo(s) || {}).checks;
+  const corps = [];
+  if (!c) {
+    corps.push(h('p', { class: 'hint hint-tight' },
+      'Réglage disponible à partir de ', h('code', { text: 'vizproof-timeline 1.3.17' }),
+      ' : mettez l’extension à jour depuis l’onglet Extensions et thèmes, puis relancez un re-scan.'));
+  } else {
+    const seo = selectNiveau('vzc-seo', c.seo, 'Méta SEO');
+    const a11y = selectNiveau('vzc-a11y', c.a11y, 'Arbre d’accessibilité');
+    const msg = h('span', { class: 'small' });
+    const bt = h('button', { type: 'button', class: 'btn sm primary', text: 'Enregistrer' });
+    bt.onclick = async () => {
+      setBusy(bt);
+      const r = await posterChecks(s, seo.value, a11y.value);
+      setIdle(bt, 'Enregistrer');
+      mount(msg, r.ok ? chipEl('enregistré sur le site', 'ok')
+        : [chipEl('échec', 'err'), ' ', h('span', { class: 'muted', text: r.error || '' })]);
+    };
+    corps.push(
+      h('div', { class: 'fieldrow' },
+        h('div', { class: 'field' }, h('label', { for: 'vzc-seo', text: 'Méta SEO' }), seo,
+          h('div', { class: 'aide', text: 'Title, description, canonical, robots, H1, Open Graph.' })),
+        h('div', { class: 'field' }, h('label', { for: 'vzc-a11y', text: 'Arbre d’accessibilité' }), a11y,
+          h('div', { class: 'aide', text: 'Rôles, noms et structure lus par les lecteurs d’écran.' }))),
+      h('div', { class: 'actions mt2' }, bt, ' ', msg));
+  }
+  return h('section', { class: 'sitesec', id: 'site-vzchecks' },
+    h('h3', { text: 'SEO et accessibilité dans le verdict' }),
+    h('p', { class: 'hint hint-tight', text: 'Un changement entre la référence et le scan compte selon ce '
+      + 'réglage, dans le score de VizProof comme dans les décisions du dashboard. Réglé dans '
+      + 'l’extension du site : wp-admin et le dashboard affichent la même chose.' }),
+    ...corps);
+}
+
 function ongletVizproof(s) {
   const blocs = [];
   const t = vizEtatTexte(s);
@@ -779,6 +818,7 @@ function ongletVizproof(s) {
         h('b', { text: 'scan' }), ' compare le rendu actuel à cette référence et signale ce qui a bougé. '
         + 'C’est ce que fait la MAJ contrôlée avant et après une mise à jour.'),
       h('div', { class: 'actions mt2' }, base, scan)));
+    blocs.push(sectionChecks(s));
     /* Seul geste de liaison que le bloc d'état ne porte pas (il a déjà « Pages
        surveillées… » et « Dissocier ») : le menu Actions, supprimé, l'offrait. */
     const recon = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), 'Reconnecter VizProof…');

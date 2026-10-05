@@ -722,3 +722,9 @@ table.synth td.synth-vide{background:none}
   .w-xs,.w-sm,.w-md,.w-lg,.w-num,input[type=search]{width:100%}
   .filters>select,.filters>input{flex:1 1 100%}
 }
+
+/* Mises à jour : compte rendu par page d'une mise à jour de nuit. */
+.majpages{list-style:none;margin:var(--s-4) 0 0;padding:0;font-size:var(--t-12)}
+.majpages li{margin:2px 0}
+.majpages .sub{max-width:none;white-space:normal;margin-left:var(--s-12)}
+.majpages code{font-size:var(--t-12)}

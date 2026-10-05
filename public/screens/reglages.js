@@ -29,13 +29,14 @@ import { api, logout } from '../lib/api.js';
 import { esc as H, h, mount, zoneMessage } from '../lib/dom.js';
 import { relTime, absTime } from '../lib/format.js';
 import { iconEl } from '../lib/icons.js';
-import { store, kumaActif, kumaRaison, loadKuma, DOC_KUMA } from '../lib/state.js';
+import { store, allSites, kumaActif, kumaRaison, loadKuma, DOC_KUMA } from '../lib/state.js';
 import { askConfirm } from '../components/confirm.js';
 import { setBusy, setIdle } from '../components/button.js';
 import { chipEl } from '../components/chip.js';
 import { setDensity } from '../components/table.js';
 import { loadSched, applyTheme, themeCourant } from '../components/shell.js';
 import { accordeon } from '../components/pliable.js';
+import { selectNiveau, posterChecks, vizConnected } from '../components/viz.js';
 
 /* ---- état du module -------------------------------------------------------- */
 let MONTE = false;
@@ -580,7 +581,7 @@ const CASES_VIZ = [
 
 function sectionVisuel() {
   return sectionEl('set-visuel', 'Contrôle visuel des mises à jour', null,
-    h('p', { class: 'hint', text: 'Ces quatre réglages pilotent ce qui se passe autour d’une mise à jour '
+    h('p', { class: 'hint', text: 'Ces réglages pilotent ce qui se passe autour d’une mise à jour '
       + 'lancée depuis le dashboard. Chacun s’enregistre à la volée.' }),
     h('div', { id: 'mset-body' }, h('span', { class: 'muted small', text: 'chargement…' })));
 }
@@ -608,10 +609,58 @@ function renderVisuel() {
       h('label', { class: 'fld' }, c, ' ' + titre, ' ', zoneMessage(id + 'msg')),
       h('div', { class: 'aide', text: aide }));
   }));
+  bd.append(blocChecks());
   resumeVisuel();
 }
 
+/* Méta SEO et arbre d'accessibilité : niveaux du parc. Le réglage vit dans
+   l'extension de CHAQUE site (c'est elle qui calcule verdict et score) ; ici on
+   choisit les niveaux et on les pousse sur tous les sites reliés. Un site peut
+   ensuite s'en écarter depuis son onglet VizProof. */
+function blocChecks() {
+  const cfg = store.settings || {};
+  const seo = selectNiveau('set-chk-seo', cfg.viz_check_seo || 'fail', 'Méta SEO (parc)');
+  const a11y = selectNiveau('set-chk-a11y', cfg.viz_check_a11y || 'fail', 'Arbre d’accessibilité (parc)');
+  const enregistrer = async () => {
+    attendre('chk-msg');
+    try {
+      const r = await api('/api/mgmt/settings', { settings: { viz_check_seo: seo.value, viz_check_a11y: a11y.value } }) || {};
+      if (r.settings) store.settings = r.settings;
+      dire('chk-msg', 'ok', 'enregistré');
+    } catch (e) { dire('chk-msg', 'err', 'échec', String(e)); }
+  };
+  seo.onchange = enregistrer;
+  a11y.onchange = enregistrer;
+  const bt = h('button', { type: 'button', class: 'btn sm' }, 'Appliquer à tous les sites reliés');
+  bt.onclick = async () => {
+    const cibles = allSites().filter(s => s.via !== 'rest' && vizConnected(s));
+    if (!cibles.length) { dire('chk-msg', 'warn', 'aucun site relié en SSH'); return; }
+    setBusy(bt);
+    let ok = 0;
+    const ko = [];
+    for (const s of cibles) {
+      dire('chk-msg', 'mut', `${ok + ko.length + 1} / ${cibles.length}`, s.domain);
+      const r = await posterChecks(s, seo.value, a11y.value);
+      if (r.ok) ok++; else ko.push(s.domain + (r.rc === 99 ? ' (extension < 1.3.17)' : ''));
+    }
+    setIdle(bt, 'Appliquer à tous les sites reliés');
+    dire('chk-msg', ko.length ? 'warn' : 'ok', `${ok} site(s) réglé(s)`,
+      ko.length ? 'non réglés : ' + ko.join(', ') : '');
+  };
+  return h('div', { class: 'field mt3' },
+    h('label', { text: 'SEO et accessibilité dans le verdict' }),
+    h('div', { class: 'fieldrow' },
+      h('div', { class: 'field' }, h('label', { for: 'set-chk-seo', text: 'Méta SEO' }), seo),
+      h('div', { class: 'field' }, h('label', { for: 'set-chk-a11y', text: 'Arbre d’accessibilité' }), a11y)),
+    h('div', { class: 'aide', text: '« Bloquant » : un changement de title, description, canonical, robots, '
+      + 'H1, Open Graph ou de l’arbre d’accessibilité fait échouer la page — score VizProof, retour '
+      + 'arrière des mises à jour Contrôlées et de nuit. Réglé dans l’extension de chaque site '
+      + '(vizproof-timeline ≥ 1.3.17) ; un site peut s’en écarter depuis son onglet VizProof.' }),
+    h('div', { class: 'filters mt2' }, bt, zoneMessage('chk-msg')));
+}
+
 /* Résumé replié : les cases cochées, nommées court. */
+const COURT_CHK = { fail: 'bloquant', warn: 'avertissement', off: 'ignoré' };
 const COURT_VIZ = {
   viz_scan_after_update: 'scan après MAJ', viz_baseline_before_update: 'baseline avant',
   viz_baseline_required: 'baseline exigée', viz_anomaly_rollback: 'retour arrière sur anomalie',
@@ -619,7 +668,10 @@ const COURT_VIZ = {
 function resumeVisuel() {
   const actifs = CASES_VIZ.filter(([, cle, defaut]) =>
     (store.settings[cle] === undefined ? defaut : !!store.settings[cle])).map(([, cle]) => COURT_VIZ[cle]);
-  resumer('set-visuel', h('span', { class: 'muted', text: actifs.length ? actifs.join(' · ') : 'tout désactivé' }));
+  const cfg = store.settings || {};
+  actifs.push('SEO ' + (COURT_CHK[cfg.viz_check_seo] || 'bloquant'),
+    'accessibilité ' + (COURT_CHK[cfg.viz_check_a11y] || 'bloquant'));
+  resumer('set-visuel', h('span', { class: 'muted', text: actifs.join(' · ') }));
 }
 
 /* ============================================================================
