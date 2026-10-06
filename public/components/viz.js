@@ -310,9 +310,10 @@ function vizReportResume(rep) {
   const mesure = it.some(x => x && x.cause);
   const tolere = mesure ? it.filter(vzTolere).length : 0;
   const aVoir = Math.max(0, vzNb(t.warn) - tolere);
+  const verdict = !vzNb(t.fail) && !aVoir ? 'aucun écart'
+    : vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + aVoir + ' à vérifier';
   return (vizEstReference(rep) ? 'run de référence · ' : '')
-    + [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
-      vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + aVoir + ' à vérifier',
+    + [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''), verdict,
     ].concat(tolere ? [tolere + ' écart' + (tolere > 1 ? 's' : '') + ' toléré' + (tolere > 1 ? 's' : '') + ' (sous le seuil)'] : [])
       .join(' · ');
 }
@@ -405,7 +406,7 @@ function vzSeoHtml(x) {
 }
 
 function vzLigneHtml(x, suite) {
-  const [c, l] = VZ_ST[x.status] || ['mut', String(x.status || '?')];
+  const [c, l] = vzTolere(x) ? ['ok', 'toléré'] : (VZ_ST[x.status] || ['mut', String(x.status || '?')]);
   const u = safeUrl(x.url), nom = String(x.page || '') || u || '—';
   // `suite` : deuxième écran de la même page — la cellule reste vide, le
   // groupe se lit d'un coup d'œil au lieu de répéter le titre.
@@ -414,7 +415,9 @@ function vzLigneHtml(x, suite) {
   return `<tr${suite ? ' class="vzr-suite"' : ''}><td>${page}</td><td>${H(x.viewport || '—')}</td>`
     + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
     + `<td><span class="pill ${c}">${H(l)}</span>`
-    + (lib && lib.toLowerCase() !== l ? ` <span class="muted">${H(lib)}</span>` : '')
+    // « inchangée Mineur » se contredisait : le libellé de l'extension n'est
+    // gardé que sur une ligne qui a quelque chose à dire.
+    + (lib && lib.toLowerCase() !== l && x.status !== 'ok' && !vzTolere(x) ? ` <span class="muted">${H(lib)}</span>` : '')
     + (vzHttpErreur(x) ? ` <span class="pill err" title="la page a répondu une erreur HTTP à la capture">HTTP ${H(String(x.http_status))}</span>` : '')
     + vzCauseHtml(x.cause, x.status) + '</td></tr>'
     + vzSeoHtml(x);
@@ -433,13 +436,17 @@ function vzLigneHtml(x, suite) {
    sera collecté et stocké, la même règle pourra alimenter une alerte sans être
    réécrite. Elle n'est pas exportée tant que rien ne l'importe — les alertes
    se décident côté serveur, et le rapport n'y est pas encore conservé. */
-function vizVerdicts(rep) {
+function vizVerdicts(rep, version) {
   if (!rep) return null;
   const it = (Array.isArray(rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
   const t = rep.totals || {};
   // `cause` n'existe qu'à partir de vizproof-timeline 1.3.10 : sans elle on ne
   // sait RIEN du SEO, ce qui n'est pas la même chose que « rien n'a changé ».
-  const mesure = it.some(x => x.cause);
+  // On le juge sur la VERSION de l'extension quand on la connaît : un rapport
+  // entièrement inchangé n'a aucune cause sur aucune ligne, et passait pour
+  // « non mesuré » sur une 1.3.18 (lesgeiq, 06/10).
+  const connue = version && version !== '?';
+  const mesure = connue ? !vizVersionAvant(version, '1.3.10') : it.some(x => x.cause);
   const a = (x, k) => String(x.cause || '').split('+').includes(k);
   const echec = x => x.status === 'fail';
   // Depuis la 1.3.17, un échec peut venir du SEO ou de l'accessibilité seuls
@@ -469,8 +476,8 @@ function vizVerdicts(rep) {
   return http.concat(masque, [visuel, seo]).concat(a11y ? [a11y] : []);
 }
 
-function vizVerdictsHtml(rep) {
-  const v = vizVerdicts(rep);
+function vizVerdictsHtml(rep, version) {
+  const v = vizVerdicts(rep, version);
   if (!v) return '';
   const tip = {
     mut: "l'extension VizProof de ce site est antérieure à la 1.3.10 : elle ne "
@@ -489,7 +496,7 @@ export function vizReportHtml(rep, opts) {
   const lien = u ? ` <a href="${H(u)}" target="_blank" rel="noopener noreferrer">voir le rapport</a>` : '';
   const part = o.site ? vizPartiel(o.site, rep) : null;
   const resume = `<div class="vzr-s">${H(vizReportResume(rep))}${lien}</div>`
-    + vizVerdictsHtml(rep)
+    + vizVerdictsHtml(rep, o.site ? vizVersion(o.site) : '')
     + (part ? `<div class="vzr-s muted">Ce rapport ne couvre qu'<b>une page sur `
       + `${H(String(part.surveillees))}</b> : VizProof enregistre un rapport par page, `
       + `et celui-ci est le dernier. Les autres se lisent dans VizProof.</div>` : '');
@@ -497,7 +504,10 @@ export function vizReportHtml(rep, opts) {
   // Sans ligne, le tableau n'aurait rien à dire — quelle que soit la nature du
   // run. Avec des lignes, on les montre, baseline ou pas.
   if (!lignes.length) return `<div class="vzr">${resume}</div>`;
-  const top = String((rep.summary || {}).top_page || '');
+  // Rien à voir (aucune ligne en échec ou à vérifier hors écarts tolérés) :
+  // le tableau de lignes « inchangée » est du bruit — replié, toujours.
+  const rien = !lignes.some(x => (x.status === 'fail' || x.status === 'warn') && !vzTolere(x));
+  const top = rien ? '' : String((rep.summary || {}).top_page || '');
   const tab = '<div class="vzr-w"><table class="vzr-t">'
     + '<thead><tr><th>Page</th><th>Écran</th><th>Écart</th><th>Statut</th></tr></thead>'
     + '<tbody>' + lignes.map((x, i) => vzLigneHtml(
@@ -505,7 +515,7 @@ export function vizReportHtml(rep, opts) {
     + '</tbody></table></div>'
     + (rep.has_more ? `<div class="vzr-s muted">liste tronquée — ${H(String(vzNb(rep.total_items)))} lignes au total, voir le rapport.</div>` : '')
     + (top ? `<div class="vzr-s muted">Page la plus impactée : <b>${H(top)}</b></div>` : '');
-  if (!o.replie && lignes.length <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
+  if (!o.replie && !rien && lignes.length <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
   // Repli natif : ouverture au clavier, aucun état à tenir dans le module.
   return `<div class="vzr">${resume}<details class="vzr-d"><summary>Voir le détail`
     + ` (${H(String(lignes.length))} ligne${lignes.length > 1 ? 's' : ''})</summary>${tab}</details></div>`;
