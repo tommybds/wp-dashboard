@@ -357,10 +357,17 @@ class TestAnomaliesSignificatives(unittest.TestCase):
         self.assertEqual(A.ecarts_significatifs({"items": [{"page": "A", "status": "warn"}]}), [])
 
     def test_pixels_d_une_page_instable_ignores_mais_pas_le_seo(self):
-        rap = {"items": [{"page": "Accueil", "status": "warn", "cause": "pixel"},
+        rap = {"items": [{"page": "Accueil", "status": "fail", "cause": "pixel"},
                          {"page": "Accueil", "status": "warn", "cause": "pixel+seo"}]}
         self.assertEqual(len(A.ecarts_significatifs(rap, {"Accueil"})), 1)
         self.assertEqual(len(A.ecarts_significatifs(rap, set())), 2)
+
+    def test_pixels_sous_le_seuil_toleres(self):
+        """WARN de pixels seuls = sous le seuil du site : toléré, sans alerte."""
+        rap = {"items": [{"page": "Accueil", "status": "warn", "cause": "pixel", "diff_percent": 0.02}]}
+        self.assertEqual(A.ecarts_significatifs(rap), [])
+        rap["items"][0]["cause"] = "a11y"
+        self.assertEqual(len(A.ecarts_significatifs(rap)), 1)
 
 
 class TestBruitGabarit(unittest.TestCase):

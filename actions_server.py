@@ -3061,7 +3061,12 @@ def ecarts_significatifs(rapport, instables_pix=()):
     """Lignes d'un rapport VizProof qui méritent un regard : avertissement ou
     échec AVEC une cause (pixels, SEO, accessibilité, HTTP, élément masqué),
     hors écart de pixels seul sur une page instable au scan témoin. Une ligne
-    sans cause n'a rien changé de mesurable."""
+    sans cause n'a rien changé de mesurable.
+
+    Un écart de PIXELS SEULS en avertissement est sous le seuil du site
+    (VizProof : < 0,001 % OK, jusqu'au seuil WARN, au-delà FAIL) : il est
+    toléré par définition — visible dans le rapport, mais ni alerte ni
+    incident (tiphainedesign, 0,02 % pour un seuil de 0,1 %, 06/10)."""
     out = []
     for it in (rapport or {}).get("items") or []:
         if not isinstance(it, dict) or it.get("status") not in ("fail", "warn"):
@@ -3069,7 +3074,7 @@ def ecarts_significatifs(rapport, instables_pix=()):
         cause = str(it.get("cause") or "")
         if not cause:
             continue
-        if cause == "pixel" and it.get("page") in (instables_pix or ()):
+        if cause == "pixel" and (it.get("status") == "warn" or it.get("page") in (instables_pix or ())):
             continue
         out.append(it)
     return out
