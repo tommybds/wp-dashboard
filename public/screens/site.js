@@ -720,7 +720,7 @@ function sectionChecks(s) {
       ' : mettez l’extension à jour depuis l’onglet Extensions et thèmes, puis relancez un re-scan.'));
   } else {
     const seo = selectNiveau('vzc-seo', c.seo, 'Méta SEO');
-    const a11y = selectNiveau('vzc-a11y', c.a11y, 'Arbre d’accessibilité');
+    const a11y = selectNiveau('vzc-a11y', c.a11y, 'Contenu');
     const msg = h('span', { class: 'small' });
     const bt = h('button', { type: 'button', class: 'btn sm primary', text: 'Enregistrer' });
     bt.onclick = async () => {
@@ -734,12 +734,12 @@ function sectionChecks(s) {
       h('div', { class: 'fieldrow' },
         h('div', { class: 'field' }, h('label', { for: 'vzc-seo', text: 'Méta SEO' }), seo,
           h('div', { class: 'aide', text: 'Title, description, canonical, robots, H1, Open Graph.' })),
-        h('div', { class: 'field' }, h('label', { for: 'vzc-a11y', text: 'Arbre d’accessibilité' }), a11y,
-          h('div', { class: 'aide', text: 'Rôles, noms et structure lus par les lecteurs d’écran.' }))),
+        h('div', { class: 'field' }, h('label', { for: 'vzc-a11y', text: 'Contenu' }), a11y,
+          h('div', { class: 'aide', text: 'Titres, liens, textes et structure de la page, tels que les lit un lecteur d’écran (arbre d’accessibilité).' }))),
       h('div', { class: 'actions mt2' }, bt, ' ', msg));
   }
   return h('section', { class: 'sitesec', id: 'site-vzchecks' },
-    h('h3', { text: 'SEO et accessibilité dans le verdict' }),
+    h('h3', { text: 'SEO et contenu dans le verdict' }),
     h('p', { class: 'hint hint-tight', text: 'Un changement entre la référence et le scan compte selon ce '
       + 'réglage, dans le score de VizProof comme dans les décisions du dashboard. Réglé dans '
       + 'l’extension du site : wp-admin et le dashboard affichent la même chose.' }),

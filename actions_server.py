@@ -3308,7 +3308,7 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                     if instables_sem:
                         safe_step("Scan témoin (sans modification)", False,
                                   "page(s) qui changent d'une capture à l'autre en SEO, en "
-                                  "accessibilité ou en HTTP : " + "; ".join(instables_sem)
+                                  "contenu ou en HTTP : " + "; ".join(instables_sem)
                                   + " — à stabiliser dans VizProof (éléments à masquer)")
                         safe_step("Interrompu", False, "aucune modification : le contrôle "
                                   "de ces pages ne dirait rien de la mise à jour")

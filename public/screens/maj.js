@@ -158,7 +158,7 @@ function resultatMaj(r) {
 
 /* Compte rendu par page : une ligne par page (ses écrans regroupés), avec la
    nature du changement et, pour le SEO, l'avant → après de chaque champ. */
-const NATURE = { pixel: 'pixels', seo: 'SEO', a11y: 'accessibilité', http: 'HTTP', masque: 'élément masqué absent' };
+const NATURE = { pixel: 'pixels', seo: 'SEO', a11y: 'contenu', http: 'HTTP', masque: 'élément masqué absent' };
 function pagesEl(pages) {
   const par = new Map();
   (pages || []).forEach(p => {

@@ -354,8 +354,7 @@ p.hint{color:var(--muted);font-size:var(--t-12);line-height:1.55}
 
 /* Deuxième écran d'une même page : le trait de séparation disparaît pour que
    les deux lignes se lisent comme un seul bloc. */
-.vzr-t tr.vzr-suite>td{border-top:0}
-.vzr-t tr:not(.vzr-suite)>td{border-top:1px solid var(--line-2)}
+.vzr-t tbody tr>td{border-top:1px solid var(--line-2)}
 .vzr-seo td{padding-top:0;padding-bottom:var(--s-8)}
 .vzr-seo td>div{margin-left:var(--s-12);padding-left:var(--s-8);
   border-left:2px solid var(--line);white-space:normal;word-break:break-word;line-height:1.6}
@@ -630,3 +629,14 @@ textarea.code.short{min-height:70px}
    barre plus tout le bloc) et laisse de l'air avant les boutons. */
 .vzr-d>summary{display:inline-block;margin-bottom:var(--s-4)}
 .agroup .vzr-slot+.actions{margin-top:var(--s-8)}
+/* Rapport VizProof : une ligne par page, quatre questions. Lignes aérées,
+   nom de page en clair (souligné au survol seulement), problèmes seuls en
+   pastille. */
+.vzr-pages{width:100%;max-width:980px}
+.vzr-pages th,.vzr-pages td{padding:6px var(--s-12) 6px 0;border-top:1px solid var(--line-2)}
+.vzr-pages thead th{border-top:0}
+.vzr-pages td:first-child{max-width:30ch}
+.vzr-page{color:var(--ink);text-decoration:none;font-weight:500}
+.vzr-page:hover{color:var(--accent);text-decoration:underline}
+.vzr-pages tr.vzr-seo td{border-top:0}
+.t-err{color:var(--err)}

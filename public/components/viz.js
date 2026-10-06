@@ -253,7 +253,6 @@ export function vizCellEl(s) {
    sert les quatre endroits qui montraient ce compte : la console d'exécution
    (fond sombre, écrite en innerHTML), le bloc de l'onglet Aperçu, la modale et
    — en texte seul — la barre de notifications. */
-const VZ_ST = { fail: ['err', 'échec'], warn: ['warn', 'à vérifier'], ok: ['ok', 'inchangée'] };
 const VZ_ORDRE = { fail: 0, warn: 1, other: 2, ok: 3 };
 const VZ_REPLI = 6;            // au-delà, le tableau s'ouvre sur demande
 
@@ -372,23 +371,6 @@ function vizReportLignes(rep) {
   return lots.flat();
 }
 
-/* `cause` (vizproof-timeline 1.3.10) : « pixel », « seo », « a11y », ou une
-   combinaison jointe par « + ». On teste donc par INCLUSION, jamais par égalité
-   — « pixel+seo » doit compter comme du SEO. Les items d'un parc encore en
-   1.3.9 n'ont pas la clé : absence = rien à expliquer, pas « aucune cause ». */
-const VZ_CAUSE = { masque: ['err', 'élément masqué absent'], pixel: ['mut', 'pixels'], seo: ['warn', 'SEO'], a11y: ['warn', 'accessibilité'] };
-// `http` n'a pas de pastille ici : la ligne porte déjà « HTTP 404 », avec le code.
-
-function vzCauseHtml(cause, status) {
-  const c = String(cause || '');
-  if (!c) return '';
-  const bouts = Object.keys(VZ_CAUSE).filter(k => c.includes(k));
-  if (!bouts.length) return '';
-  // Ligne en échec sans écart de pixels : c'est le SEO ou l'accessibilité,
-  // réglés sur « bloquant », qui la font échouer — pastille rouge.
-  const semBloquant = status === 'fail' && !c.includes('pixel') && !c.includes('http') && !c.includes('masque');
-  return ' ' + bouts.map(k => `<span class="pill ${semBloquant && k !== 'pixel' ? 'err' : VZ_CAUSE[k][0]}">${H(VZ_CAUSE[k][1])}</span>`).join(' ');
-}
 
 /* Une ligne SEO par champ modifié : c'est CE qui explique un « à vérifier » à
    0,00 % d'écart, et c'est exactement ce que le dashboard ne pouvait pas dire
@@ -397,31 +379,78 @@ function vzSeoHtml(x) {
   const ch = Array.isArray(x.seo_changes) ? x.seo_changes.filter(c => c && c.field) : [];
   // Éléments masqués disparus (vizproof-timeline 1.3.18) : nommés sous la ligne.
   const mm = Array.isArray(x.masked_missing) ? x.masked_missing.filter(Boolean) : [];
-  const masques = mm.length ? `<tr class="vzr-seo"><td colspan="4"><b>absent ou vide :</b> ${mm.map(m => H(String(m))).join(', ')}</td></tr>` : '';
+  const masques = mm.length ? `<tr class="vzr-seo"><td colspan="5"><b>absent ou vide :</b> ${mm.map(m => H(String(m))).join(', ')}</td></tr>` : '';
   if (!ch.length) return masques;
-  return `<tr class="vzr-seo"><td colspan="4">` + ch.map(c =>
+  return `<tr class="vzr-seo"><td colspan="5">` + ch.map(c =>
     `<div><b>${H(String(c.field))}</b> `
     + `<span class="muted">${H(String(c.before ?? '—') || '(vide)')}</span>`
     + ` → <b>${H(String(c.after ?? '—') || '(vide)')}</b></div>`).join('') + '</td></tr>' + masques;
 }
 
-function vzLigneHtml(x, suite) {
-  const [c, l] = vzTolere(x) ? ['ok', 'toléré'] : (VZ_ST[x.status] || ['mut', String(x.status || '?')]);
-  const u = safeUrl(x.url), nom = String(x.page || '') || u || '—';
-  // `suite` : deuxième écran de la même page — la cellule reste vide, le
-  // groupe se lit d'un coup d'œil au lieu de répéter le titre.
-  const page = suite ? '' : (u ? `<a href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(nom)}</a>` : H(nom));
-  const lib = String(x.label || '');
-  return `<tr${suite ? ' class="vzr-suite"' : ''}><td>${page}</td><td>${H(x.viewport || '—')}</td>`
-    + `<td class="num">${H(vzPct(x.diff_percent))}</td>`
-    + `<td><span class="pill ${c}">${H(l)}</span>`
-    // « inchangée Mineur » se contredisait : le libellé de l'extension n'est
-    // gardé que sur une ligne qui a quelque chose à dire.
-    + (lib && lib.toLowerCase() !== l && x.status !== 'ok' && !vzTolere(x) ? ` <span class="muted">${H(lib)}</span>` : '')
-    + (vzHttpErreur(x) ? ` <span class="pill err" title="la page a répondu une erreur HTTP à la capture">HTTP ${H(String(x.http_status))}</span>` : '')
-    + vzCauseHtml(x.cause, x.status) + '</td></tr>'
-    + vzSeoHtml(x);
+/* Tableau du rapport : UNE LIGNE PAR PAGE, quatre questions — l'image a-t-elle
+   bougé (par écran), le SEO, le contenu (arbre d'accessibilité : titres,
+   liens, textes, rôles), et le verdict. L'ancien tableau alignait une ligne
+   par écran avec une pastille verte sur chacune, et ne disait rien du SEO ni
+   du contenu page par page. Une pastille n'apparaît que là où il y a quelque
+   chose à voir ; « inchangé » est du texte gris. */
+function vzPageCellule(lignes, k, mesure) {
+  if (!mesure) return '<span class="muted" title="extension antérieure à la 1.3.10 : non mesuré">—</span>';
+  const touchees = lignes.filter(x => String(x.cause || '').split('+').includes(k));
+  if (!touchees.length) return '<span class="muted">inchangé</span>';
+  const bloq = touchees.some(x => x.status === 'fail');
+  const vues = [...new Set(touchees.map(x => x.viewport).filter(Boolean))];
+  return `<span class="pill ${bloq ? 'err' : 'warn'}">modifié</span>`
+    + (vues.length && vues.length < lignes.length ? ` <span class="muted">${H(vues.join(', '))}</span>` : '');
 }
+
+function vzPageVisuel(lignes) {
+  const pix = lignes.filter(x => Number(x.diff_percent) > 0 || String(x.cause || '').includes('pixel'));
+  if (!pix.length) return '<span class="muted">inchangé</span>';
+  return lignes.map(x => {
+    const v = H(String(x.viewport || '?')) + ' ' + H(vzPct(x.diff_percent));
+    if (x.status === 'fail' && String(x.cause || '').includes('pixel')) return `<b class="t-err">${v}</b>`;
+    if (vzTolere(x) || !(Number(x.diff_percent) > 0)) return `<span class="muted">${v}</span>`;
+    return `<b>${v}</b>`;
+  }).join('<span class="muted"> · </span>');
+}
+
+function vzPageStatut(lignes) {
+  const http = lignes.find(vzHttpErreur);
+  const masque = lignes.some(x => String(x.cause || '').includes('masque'));
+  const echec = lignes.some(x => x.status === 'fail');
+  const aVoir = lignes.some(x => x.status === 'warn' && !vzTolere(x));
+  const tol = lignes.some(vzTolere);
+  return (http ? `<span class="pill err" title="la page a répondu une erreur HTTP à la capture">HTTP ${H(String(http.http_status))}</span> ` : '')
+    + (masque ? '<span class="pill err" title="un élément masqué de la comparaison a disparu ou est vide">élément masqué absent</span> ' : '')
+    + (echec ? '<span class="pill err">échec</span>'
+      : aVoir ? '<span class="pill warn">à vérifier</span>'
+        : tol ? '<span class="muted" title="écart de pixels sous le seuil du site">toléré</span>'
+          : '<span class="muted">inchangée</span>');
+}
+
+function vzTableHtml(lignes, mesure) {
+  const pages = new Map();
+  lignes.forEach(x => {
+    const cle = String(x.page || x.url || '—');
+    if (!pages.has(cle)) pages.set(cle, []);
+    pages.get(cle).push(x);
+  });
+  const corps = [...pages].map(([nom, ls]) => {
+    const u = safeUrl((ls.find(x => x.url) || {}).url);
+    const page = u ? `<a class="vzr-page" href="${H(u)}" target="_blank" rel="noopener noreferrer">${H(nom)}</a>` : H(nom);
+    // Détail SEO (avant → après, dédoublonné entre écrans) et éléments masqués absents.
+    const champs = new Map();
+    ls.forEach(x => (Array.isArray(x.seo_changes) ? x.seo_changes : []).forEach(c => c && c.field && champs.set(c.field, c)));
+    const absents = [...new Set(ls.flatMap(x => Array.isArray(x.masked_missing) ? x.masked_missing : []))];
+    const det = vzSeoHtml({ seo_changes: [...champs.values()], masked_missing: absents });
+    return `<tr><td>${page}</td><td>${vzPageVisuel(ls)}</td><td>${vzPageCellule(ls, 'seo', mesure)}</td>`
+      + `<td>${vzPageCellule(ls, 'a11y', mesure)}</td><td>${vzPageStatut(ls)}</td></tr>` + det;
+  }).join('');
+  return '<div class="vzr-w"><table class="vzr-t vzr-pages">'
+    + '<thead><tr><th>Page</th><th>Visuel</th><th>SEO</th><th>Contenu</th><th>Statut</th></tr></thead>'
+    + `<tbody>${corps}</tbody></table></div>`;
+}
+
 
 /* ---- verdicts par NATURE de changement ------------------------------------
    Deux questions distinctes, deux réponses distinctes : « est-ce que ça a
@@ -466,7 +495,7 @@ function vizVerdicts(rep, version) {
     return [bloq ? 'err' : 'warn', lib + ' : ' + (fem ? 'modifiée' : 'modifié') + (bloq ? ' (bloquant)' : '')];
   };
   const seo = !mesure ? ['mut', 'SEO : non mesuré'] : nature('seo', 'SEO', false);
-  const a11y = !mesure ? null : nature('a11y', 'accessibilité', true);
+  const a11y = !mesure ? null : nature('a11y', 'contenu', false);
   // Pages en erreur : en tête, c'est le verdict le plus grave. Comptées par
   // PAGE (le bureau et le mobile d'une même page ne font qu'une).
   const enErreur = new Set(it.filter(vzHttpErreur).map(x => String(x.page || x.url || '')));
@@ -508,17 +537,16 @@ export function vizReportHtml(rep, opts) {
   // le tableau de lignes « inchangée » est du bruit — replié, toujours.
   const rien = !lignes.some(x => (x.status === 'fail' || x.status === 'warn') && !vzTolere(x));
   const top = rien ? '' : String((rep.summary || {}).top_page || '');
-  const tab = '<div class="vzr-w"><table class="vzr-t">'
-    + '<thead><tr><th>Page</th><th>Écran</th><th>Écart</th><th>Statut</th></tr></thead>'
-    + '<tbody>' + lignes.map((x, i) => vzLigneHtml(
-      x, i > 0 && String(lignes[i - 1].page || '') === String(x.page || ''))).join('')
-    + '</tbody></table></div>'
+  const ver = o.site ? vizVersion(o.site) : '';
+  const mesure = ver && ver !== '?' ? !vizVersionAvant(ver, '1.3.10') : lignes.some(x => x.cause);
+  const tab = vzTableHtml(lignes, mesure)
     + (rep.has_more ? `<div class="vzr-s muted">liste tronquée — ${H(String(vzNb(rep.total_items)))} lignes au total, voir le rapport.</div>` : '')
     + (top ? `<div class="vzr-s muted">Page la plus impactée : <b>${H(top)}</b></div>` : '');
-  if (!o.replie && !rien && lignes.length <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
+  if (!o.replie && !rien && new Set(lignes.map(x => String(x.page || x.url || ''))).size <= VZ_REPLI) return `<div class="vzr">${resume}${tab}</div>`;
   // Repli natif : ouverture au clavier, aucun état à tenir dans le module.
+  const nPages = new Set(lignes.map(x => String(x.page || x.url || ''))).size;
   return `<div class="vzr">${resume}<details class="vzr-d"><summary>Voir le détail`
-    + ` (${H(String(lignes.length))} ligne${lignes.length > 1 ? 's' : ''})</summary>${tab}</details></div>`;
+    + ` (${nPages} page${nPages > 1 ? 's' : ''})</summary>${tab}</details></div>`;
 }
 
 /* ---- bloc VizProof de la page site --------------------------------------- */

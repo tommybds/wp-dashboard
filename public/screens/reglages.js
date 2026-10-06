@@ -620,7 +620,7 @@ function renderVisuel() {
 function blocChecks() {
   const cfg = store.settings || {};
   const seo = selectNiveau('set-chk-seo', cfg.viz_check_seo || 'fail', 'Méta SEO (parc)');
-  const a11y = selectNiveau('set-chk-a11y', cfg.viz_check_a11y || 'fail', 'Arbre d’accessibilité (parc)');
+  const a11y = selectNiveau('set-chk-a11y', cfg.viz_check_a11y || 'fail', 'Contenu (parc)');
   const enregistrer = async () => {
     attendre('chk-msg');
     try {
@@ -648,12 +648,12 @@ function blocChecks() {
       ko.length ? 'non réglés : ' + ko.join(', ') : '');
   };
   return h('div', { class: 'field mt3' },
-    h('label', { text: 'SEO et accessibilité dans le verdict' }),
+    h('label', { text: 'SEO et contenu dans le verdict' }),
     h('div', { class: 'fieldrow' },
       h('div', { class: 'field' }, h('label', { for: 'set-chk-seo', text: 'Méta SEO' }), seo),
-      h('div', { class: 'field' }, h('label', { for: 'set-chk-a11y', text: 'Arbre d’accessibilité' }), a11y)),
+      h('div', { class: 'field' }, h('label', { for: 'set-chk-a11y', text: 'Contenu' }), a11y)),
     h('div', { class: 'aide', text: '« Bloquant » : un changement de title, description, canonical, robots, '
-      + 'H1, Open Graph ou de l’arbre d’accessibilité fait échouer la page — score VizProof, retour '
+      + 'H1, Open Graph ou du contenu (titres, liens, textes : l’arbre d’accessibilité) fait échouer la page — score VizProof, retour '
       + 'arrière des mises à jour Contrôlées et de nuit. Réglé dans l’extension de chaque site '
       + '(vizproof-timeline ≥ 1.3.17) ; un site peut s’en écarter depuis son onglet VizProof.' }),
     h('div', { class: 'filters mt2' }, bt, zoneMessage('chk-msg')));
@@ -670,7 +670,7 @@ function resumeVisuel() {
     (store.settings[cle] === undefined ? defaut : !!store.settings[cle])).map(([, cle]) => COURT_VIZ[cle]);
   const cfg = store.settings || {};
   actifs.push('SEO ' + (COURT_CHK[cfg.viz_check_seo] || 'bloquant'),
-    'accessibilité ' + (COURT_CHK[cfg.viz_check_a11y] || 'bloquant'));
+    'contenu ' + (COURT_CHK[cfg.viz_check_a11y] || 'bloquant'));
   resumer('set-visuel', h('span', { class: 'muted', text: actifs.join(' · ') }));
 }
 
