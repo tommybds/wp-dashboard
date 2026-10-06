@@ -626,3 +626,7 @@ textarea.code.short{min-height:70px}
 .sheet-al{flex:1;min-width:0;text-align:left}
 .sheet-ar{flex-basis:100%}
 .sheet-b .menu-i{min-height:44px;padding:10px var(--s-8);font-size:var(--t-14)}
+/* Le lien « Voir le détail » ne prend que sa largeur (le contour de focus ne
+   barre plus tout le bloc) et laisse de l'air avant les boutons. */
+.vzr-d>summary{display:inline-block;margin-bottom:var(--s-4)}
+.agroup .vzr-slot+.actions{margin-top:var(--s-8)}

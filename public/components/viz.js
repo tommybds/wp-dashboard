@@ -276,6 +276,21 @@ function vizEstReference(rep) {
   return !!(rep && (rep.is_baseline || rep.promoted_as_baseline));
 }
 
+/* Écart de pixels seuls en avertissement = sous le seuil du site (VizProof :
+   < 0,001 % OK, jusqu'au seuil WARN, au-delà FAIL) : toléré, comme le fait la
+   décision de nuit du dashboard (`ecarts_significatifs`). */
+function vzTolere(x) {
+  return !!x && x.status === 'warn' && String(x.cause || '') === 'pixel';
+}
+
+/** Le rapport porte-t-il un écart qui mérite un regard ? (hors tolérés et
+    lignes sans cause). Null quand on ne sait pas (rapport sans `cause`). */
+function vizRapportSignificatif(rep) {
+  const it = (Array.isArray(rep && rep.items) ? rep.items : []).filter(x => x && typeof x === 'object');
+  if (!it.some(x => x.cause)) return null;
+  return it.some(x => (x.status === 'fail' || x.status === 'warn') && x.cause && !vzTolere(x));
+}
+
 function vizReportResume(rep) {
   if (!rep) return '';
   const lignes = Array.isArray(rep.items) ? rep.items.length : 0;
@@ -286,12 +301,20 @@ function vizReportResume(rep) {
      venait de jeter. On ne masque plus des données qui sont là. */
   if (vizEstReference(rep) && !lignes) return 'baseline de référence — rien à comparer';
   const s = rep.summary || {}, t = rep.totals || {};
-  const n = vzNb(s.pages_scanned), c = vzNb(s.pages_changed);
+  const n = vzNb(s.pages_scanned);
+  /* « 4 avec différence » venait de VizProof, qui compte toute page dont un
+     seul pixel a bougé — même classée OK. À côté de « 1 à vérifier », il se
+     lisait comme une contradiction : on ne le montre plus. Un écart de PIXELS
+     SEULS en avertissement est sous le seuil du site : toléré, compté à part. */
+  const it = Array.isArray(rep.items) ? rep.items : [];
+  const mesure = it.some(x => x && x.cause);
+  const tolere = mesure ? it.filter(vzTolere).length : 0;
+  const aVoir = Math.max(0, vzNb(t.warn) - tolere);
   return (vizEstReference(rep) ? 'run de référence · ' : '')
     + [n + ' page' + (n > 1 ? 's' : '') + ' scannée' + (n > 1 ? 's' : ''),
-      c + ' avec différence',
-      vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + vzNb(t.warn) + ' à vérifier',
-    ].join(' · ');
+      vzNb(t.fail) + ' échec' + (vzNb(t.fail) > 1 ? 's' : '') + ', ' + aVoir + ' à vérifier',
+    ].concat(tolere ? [tolere + ' écart' + (tolere > 1 ? 's' : '') + ' toléré' + (tolere > 1 ? 's' : '') + ' (sous le seuil)'] : [])
+      .join(' · ');
 }
 
 /* Écart en pour cent. Quatre décimales sous le centième : c'est là que se
@@ -425,12 +448,13 @@ function vizVerdicts(rep) {
   const visuel = !mesure
     ? (vzNb(t.fail) ? ['err', 'visuel : cassé'] : (vzNb(t.warn) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']))
     : (it.some(x => a(x, 'pixel') && echec(x)) ? ['err', 'visuel : cassé']
-      : (it.some(x => a(x, 'pixel')) ? ['warn', 'visuel : à vérifier'] : ['ok', 'visuel : inchangé']));
+      : (it.some(x => a(x, 'pixel') && !vzTolere(x)) ? ['warn', 'visuel : à vérifier']
+        : (it.some(vzTolere) ? ['ok', 'visuel : écart toléré'] : ['ok', 'visuel : inchangé'])));
   // Rouge quand le site règle ce contrôle sur « bloquant » : la ligne est alors
   // en échec par ce seul changement (visuel resté OK).
   const nature = (k, lib, fem) => {
     const lignes = it.filter(x => a(x, k));
-    if (!lignes.length) return k === 'seo' ? ['ok', lib + ' : inchangé'] : null;
+    if (!lignes.length) return ['ok', lib + ' : ' + (fem ? 'inchangée' : 'inchangé')];
     const bloq = lignes.some(x => echec(x) && !a(x, 'pixel') && !a(x, 'http'));
     return [bloq ? 'err' : 'warn', lib + ' : ' + (fem ? 'modifiée' : 'modifié') + (bloq ? ' (bloquant)' : '')];
   };
@@ -573,7 +597,13 @@ export function vizBlocEl(s, { titre = true, compact = false } = {}) {
       bp.onclick = () => openVizPages(s);
       const b = h('button', { type: 'button', class: 'btn sm', text: 'Dissocier' });
       b.onclick = () => vizDisconnect(b, s);
-      btns.append(bp, b);
+      // Geste de dépannage (projet VizProof changé, jeton révoqué) : à côté
+      // des autres, discret, plutôt qu'une section entière toujours visible.
+      const rc = h('button', { type: 'button', class: 'btn sm',
+        title: 'À refaire si le site a changé de projet VizProof ou si le jeton de l’extension a été révoqué',
+        text: 'Reconnecter…' });
+      rc.onclick = () => openVizConnect([s]);
+      btns.append(bp, b, rc);
     } else {
       txt.append(' Ce site est géré sans SSH : le choix des pages se fait dans wp-admin.');
     }
@@ -613,6 +643,13 @@ export async function chargerVizRapport(s, slot, opts) {
   // le demande. Sur l'onglet VizProof, il EST ce qu'on est venu voir.
   const o = opts || {};
   slot.innerHTML = vizReportHtml(j.report, { replie: o.replie !== false, site: o.site || s });
+  /* La pastille de l'onglet vient de l'inventaire, qui ne connaît que les
+     totaux : un écart toléré y comptait comme « à voir ». Le rapport, lui,
+     sait : on retire la pastille orange quand rien n'est significatif. */
+  if (vizRapportSignificatif(j.report) === false) {
+    const p = document.querySelector('#sitetab-vizproof .tab-p.warn');
+    if (p) p.remove();
+  }
 }
 
 /* ---- contrôle visuel automatique après une MAJ unitaire (réponse `viz`) ----
@@ -1084,7 +1121,7 @@ function pgDire(niveau, texte) {
 }
 
 /** Ouvre la modale VizProof directement sur le choix des pages. */
-export async function openVizPages(s) {
+async function openVizPages(s) {
   if (!s) return;
   PG.site = s;
   PG.pages = []; PG.sel = new Set(); PG.scope = 'selected_pages';

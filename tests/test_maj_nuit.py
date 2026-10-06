@@ -381,3 +381,14 @@ class TestBruitGabarit(unittest.TestCase):
         self.assertEqual(phperrors.famille_bruit({
             "message": "Uncaught Error: Call to undefined function wp_get_current_user()",
             "file": "/var/www/x/wp-content/plugins/foo/foo.php"}), "")
+
+
+class TestCollecteModeAuto(IncidentsBase):
+
+    def test_sites_en_automatique_marques(self):
+        import collect
+        A.save_json(A.AUTO_MODE_PATH, {"auto.fr": {"rollback": True}})
+        fleet = {"servers": [{"name": "vps1", "sites": [{"domain": "auto.fr"}, {"domain": "manuel.fr"}]}]}
+        with mock.patch.object(collect, "DATA", self.data):
+            collect.annotate_auto_mode(fleet)
+        self.assertEqual([s["auto_mode"] for s in fleet["servers"][0]["sites"]], [True, False])

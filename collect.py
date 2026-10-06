@@ -1419,6 +1419,18 @@ def append_line(path, text, mode=0o600):
         fh.write(text if text.endswith("\n") else text + "\n")
 
 
+def annotate_auto_mode(fleet):
+    """`auto_mode` sur chaque site : le dashboard le met à jour la nuit
+    (data/auto_mode.json). La page site en a besoin pour ne pas afficher
+    « Auto-MAJ toutes » en vert là où les auto-MAJ natives doivent être à zéro."""
+    modes = load_json(os.path.join(DATA, "auto_mode.json"), {})
+    modes = modes if isinstance(modes, dict) else {}
+    for srv in fleet.get("servers") or []:
+        for site in srv.get("sites") or []:
+            if isinstance(site, dict):
+                site["auto_mode"] = site.get("domain") in modes
+
+
 def write_fleet(fleet, rotate=False, probe_only=None):
     # Bascule « Kuma facultatif » : la sélection actuellement AFFICHÉE est
     # recopiée dans data/followed.json avant tout, et calculée sur le fleet.json
@@ -1426,6 +1438,7 @@ def write_fleet(fleet, rotate=False, probe_only=None):
     # la clé `kuma` de chaque site. Idempotent : sans effet aux appels suivants.
     ensure_followed_migrated(DATA)
     annotate_kuma(fleet)
+    annotate_auto_mode(fleet)
     probe_fleet(fleet, probe_only)
     if rotate and os.path.exists(os.path.join(DATA, "fleet.json")):
         try:

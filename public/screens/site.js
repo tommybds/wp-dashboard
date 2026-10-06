@@ -36,7 +36,7 @@ import { askVersion, pointsListeEl, setRollbackPoints, rollbackPoints } from '..
 import { NOTIF } from '../components/toast.js';
 import { setMetaSite, setScreenTitle } from '../components/shell.js';
 import {
-  openVizConnect, openVizPages, vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
+  vizBlocEl, vizConnected, vizConsoleLigne, vizDisconnect, vizEtat,
   vizEtatTexte, vizInstall, vizPhrase, vizPhraseLongue, vizState, setVizConsole, setVizRefresh,
   VIZ_PHASES, suivreVizLast, chargerVizRapport, vizReportHtml,
   vizAnom, vizGravite, vizBaselinePartielle, vizInfo, selectNiveau, posterChecks } from '../components/viz.js';
@@ -562,6 +562,13 @@ function bandeau(s) {
     const t = extensionsMajables(s).n;
     // plafonné : les relevés d'avant le 24/09 comptaient les extensions désinstallées
     const n = (s.plugins_auto_update == null || t == null) ? s.plugins_auto_update : Math.min(s.plugins_auto_update, t);
+    // Mode automatique du dashboard : les auto-MAJ NATIVES doivent être à zéro
+    // (c'est le dashboard qui met à jour, de nuit, sous contrôle). Un chiffre
+    // non nul n'est pas « toutes » en vert : elles se sont réactivées.
+    if (s.auto_mode) {
+      if (n) return ['warn', n + ' native' + (n > 1 ? 's' : ''), 'réactivée' + (n > 1 ? 's' : '') + ' — recoupée' + (n > 1 ? 's' : '') + ' la nuit'];
+      return ['ok', 'dashboard', 'chaque nuit, contrôlée'];
+    }
     if (n == null || t == null) return ['', '?', 'inconnu'];
     if (t === 0) return ['', '—', 'aucune extension'];
     if (n === 0) return ['warn', '0/' + t, 'désactivées'];
@@ -819,15 +826,6 @@ function ongletVizproof(s) {
         + 'C’est ce que fait la MAJ contrôlée avant et après une mise à jour.'),
       h('div', { class: 'actions mt2' }, base, scan)));
     blocs.push(sectionChecks(s));
-    /* Seul geste de liaison que le bloc d'état ne porte pas (il a déjà « Pages
-       surveillées… » et « Dissocier ») : le menu Actions, supprimé, l'offrait. */
-    const recon = h('button', { type: 'button', class: 'btn sm' }, iconEl('link'), 'Reconnecter VizProof…');
-    recon.onclick = () => openVizConnect([s]);
-    blocs.push(h('section', { class: 'sitesec' },
-      h('h3', { text: 'Liaison' }),
-      h('p', { class: 'hint hint-tight', text: 'À refaire si le site a changé de projet VizProof, '
-        + 'ou si le jeton de l’extension a été révoqué.' }),
-      h('div', { class: 'actions mt2' }, recon)));
   }
 
   blocs.push(h('section', { class: 'sitesec' },

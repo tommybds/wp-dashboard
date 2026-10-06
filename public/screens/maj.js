@@ -306,6 +306,9 @@ async function poserMode(s, corps) {
     return false;
   }
   ETAT.modes = r.modes || {};
+  // La page site lit `auto_mode` dans l'inventaire (posé par la collecte) :
+  // on l'aligne tout de suite plutôt qu'au prochain relevé.
+  allSites().forEach(x => { x.auto_mode = !!ETAT.modes[x.domain]; });
   rendreSites();
   return true;
 }

@@ -123,6 +123,7 @@ def faux_site(i, srv, rng):
                     "interval": "daily", "retain": 42, "interval_db": "daily",
                     "retain_db": 42, "service": "sftp", "extrarules": {}},
     }
+    s["auto_mode"] = i in (0, 3, 6, 8)    # comme AUTO_MODES (+ site-08, VizProof relié)
     if i % 4 == 0:
         s["vizproof"] = {
             "connected": True, "configured": True, "version": vzver, "has_cli": True,
@@ -611,7 +612,8 @@ def ack_vu(e):
 
 # Mode automatique bouchonné : le retour arrière se coche depuis l'écran
 # Mises à jour, et la case doit rester cochée au rechargement.
-AUTO_MODES = {"site-00.exemple.fr": {"rollback": True, "depuis": "2026-09-29 10:00"},
+AUTO_MODES = {"site-08.exemple.fr": {"rollback": True, "depuis": "2026-10-01 15:00"},
+              "site-00.exemple.fr": {"rollback": True, "depuis": "2026-09-29 10:00"},
               "site-03.exemple.fr": {"rollback": True, "depuis": "2026-10-01 15:00"},
               "site-06.exemple.fr": {"rollback": False, "depuis": "2026-10-01 15:00"}}
 
@@ -703,7 +705,7 @@ def safe_update_status():
 VIZ_REPORT = {
     "run_id": "run-9182", "status": "completed", "created_at": now(0),
     "report_url": "https://vizproof.example/r/9182", "is_baseline": False,
-    "totals": {"fail": 2, "warn": 3, "ok": 2, "other": 0}, "total_items": 7,
+    "totals": {"fail": 2, "warn": 4, "ok": 2, "other": 0}, "total_items": 8,
     "summary": {"pages_scanned": 1, "pages_changed": 2, "top_page": "Contact"},
     "items": [
         # 1.3.14 — la page répond 404 : ce n'est pas un rendu qui a bougé, c'est
@@ -732,6 +734,9 @@ VIZ_REPORT = {
         # pas de « cause inconnue » inventée par l'écran.
         {"page": "Applications", "url": "https://site-12.exemple.fr/applications/",
          "viewport": "Mobile", "status": "warn", "diff_percent": 0.0009, "label": "Mineur"},
+        # écart de pixels seuls sous le seuil du site : toléré
+        {"page": "Services", "url": "https://site-12.exemple.fr/services/",
+         "viewport": "Desktop", "status": "warn", "diff_percent": 0.02, "label": "Mineur", "cause": "pixel"},
         {"page": "Accueil", "url": "https://site-12.exemple.fr/",
          "viewport": "Desktop", "status": "ok", "diff_percent": 0.0, "label": "Identique"},
         {"page": "Accueil", "url": "https://site-12.exemple.fr/",
