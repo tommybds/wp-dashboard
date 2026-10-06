@@ -348,3 +348,29 @@ class TestElementMasque(unittest.TestCase):
         it = A.viz_report_item({"page": "Accueil", "status": "fail", "cause": "masque",
                                 "masked_missing": ["Flux Instagram", ""]})
         self.assertEqual(it["masked_missing"], ["Flux Instagram"])
+
+
+class TestAnomaliesSignificatives(unittest.TestCase):
+
+    def test_rapport_propre_ou_sans_cause(self):
+        self.assertEqual(A.ecarts_significatifs({"items": [{"page": "A", "status": "ok"}]}), [])
+        self.assertEqual(A.ecarts_significatifs({"items": [{"page": "A", "status": "warn"}]}), [])
+
+    def test_pixels_d_une_page_instable_ignores_mais_pas_le_seo(self):
+        rap = {"items": [{"page": "Accueil", "status": "warn", "cause": "pixel"},
+                         {"page": "Accueil", "status": "warn", "cause": "pixel+seo"}]}
+        self.assertEqual(len(A.ecarts_significatifs(rap, {"Accueil"})), 1)
+        self.assertEqual(len(A.ecarts_significatifs(rap, set())), 2)
+
+
+class TestBruitGabarit(unittest.TestCase):
+
+    def test_gabarit_de_theme_appele_directement(self):
+        import phperrors
+        self.assertEqual(phperrors.famille_bruit({
+            "message": "Uncaught Error: Call to undefined function get_header()",
+            "file": "/var/www/vhosts/la-kage.fr/httpdocs/wp-content/themes/Divi/index.php"}), "acces_direct")
+        # une fonction « pluggable » appelée trop tôt par une extension reste un vrai bug
+        self.assertEqual(phperrors.famille_bruit({
+            "message": "Uncaught Error: Call to undefined function wp_get_current_user()",
+            "file": "/var/www/x/wp-content/plugins/foo/foo.php"}), "")

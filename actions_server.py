@@ -3057,6 +3057,24 @@ def totaux_bloquants(rapport, instables_pix):
     return dict(tot, fail=fail)
 
 
+def ecarts_significatifs(rapport, instables_pix=()):
+    """Lignes d'un rapport VizProof qui méritent un regard : avertissement ou
+    échec AVEC une cause (pixels, SEO, accessibilité, HTTP, élément masqué),
+    hors écart de pixels seul sur une page instable au scan témoin. Une ligne
+    sans cause n'a rien changé de mesurable."""
+    out = []
+    for it in (rapport or {}).get("items") or []:
+        if not isinstance(it, dict) or it.get("status") not in ("fail", "warn"):
+            continue
+        cause = str(it.get("cause") or "")
+        if not cause:
+            continue
+        if cause == "pixel" and it.get("page") in (instables_pix or ()):
+            continue
+        out.append(it)
+    return out
+
+
 RE_LIGNE_MAJ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\t([^\t]*)\t([^\t]*)\t(\w+)\s*$")
 
 
@@ -3583,6 +3601,15 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
             rapp = viz_report_payload(viz_json_tail(outv) or {})
             bloquant, libelle, viz_anomaly = viz_decide(
                 rcv, viz_rollback, totaux_bloquants(rapp, instables_pix))
+            # Le code retour du scan peut dire « anomalies » alors que le rapport
+            # final est propre (FlakeShield a requalifié les écarts infimes) : la
+            # nuit du 06/10, quatre alertes pour 0,00 %. Une anomalie qui ne
+            # bloque pas n'est retenue que si une page reste VRAIMENT en écart.
+            if viz_anomaly and not bloquant and rapp and isinstance(rapp.get("items"), list):
+                if not ecarts_significatifs(rapp, instables_pix):
+                    viz_anomaly = False
+                    libelle = ("aucun écart significatif (écarts infimes absorbés par FlakeShield, "
+                               "ou pixels d'une page instable au témoin)")
             viz_ok = not bloquant
             detail = libelle or (outv or "")[-300:]
             if rapp and rapp.get("message"):

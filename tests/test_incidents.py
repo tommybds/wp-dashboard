@@ -1806,8 +1806,11 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
         f = "/x/wp-content/themes/Divi/404.php"
         msg = "Uncaught Error: Call to undefined function get_header()"
         self.assertEqual(self._famille(f, msg, ["#0 {main}"]), "acces_direct")
-        # sans pile, on ne sait pas ; avec un appelant, c'est un défaut du site
-        self.assertEqual(self._famille(f, msg), "")
+        # sans pile : get_header() & co sont TOUJOURS définies quand WordPress
+        # affiche un thème — leur absence suffit (la-kage, 05/10, journal sans
+        # pile) ; avec un appelant, c'est un défaut du site
+        self.assertEqual(self._famille(f, msg), "acces_direct")
+        self.assertEqual(self._famille(f, "Uncaught Error: Call to undefined function wp_head()"), "")
         self.assertEqual(self._famille(f, msg, ["#0 /x/index.php(17): require()", "#1 {main}"]), "")
         # une fonction qui n'est pas du cœur : vrai défaut de l'extension
         self.assertEqual(self._famille("/x/wp-content/plugins/a/b.php",

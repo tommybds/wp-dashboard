@@ -467,6 +467,13 @@ RE_WP_ABSENT = re.compile(
     r"|Undefined constant\s+\"?(ABSPATH|WPINC|WP_CONTENT_DIR|WP_PLUGIN_DIR)"
     r"|Class \"?\\?WP_\w+\"? not found", re.I)
 RE_BATCH = re.compile(r"serve_batch_request_v1|/batch/v1", re.I)
+# Gabarit de thème sans WordPress autour : ces fonctions sont TOUJOURS définies
+# quand WordPress affiche un thème (general-template.php est chargé bien avant).
+# Leur absence dit à elle seule que le fichier a été demandé par son URL — même
+# quand le journal n'a pas gardé la pile (la-kage, themes/Divi/index.php, 05/10).
+RE_GABARIT_HORS_WP = re.compile(
+    r"Call to undefined function\s+\\?get_(header|footer|sidebar|template_part)\s*\(", re.I)
+RE_THEME = re.compile(r"/wp-content/themes/[^/]+/")
 RE_HORS_WP = re.compile(
     r"Undefined constant\s+\"?ABSPATH"          # wp-settings.php appelé seul
     r"|ABSPATHWPINC"                            # ABSPATH . WPINC non résolus
@@ -495,6 +502,11 @@ def famille_bruit(groupe):
         # et un message qui dit que WordPress n'est pas chargé.
         if (RE_CONTENU.search(fichier) and cadres and all(RE_MAIN.match(c) for c in cadres)
                 and RE_WP_ABSENT.search(message)):
+            return "acces_direct"
+        # Sans pile (journal qui ne l'a pas gardée) ou pile réduite à {main} :
+        # un appelant réel resterait un défaut du site.
+        if (RE_THEME.search(fichier) and RE_GABARIT_HORS_WP.search(message)
+                and all(RE_MAIN.match(c) for c in cadres)):
             return "acces_direct"
         return ""
     # Aucun appelant : la requête n'est pas passée par index.php.
