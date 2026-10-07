@@ -91,6 +91,56 @@ def iso_epoch(v):
         return None
 
 
+# Contenus modifiés à la main : un écart vu après une mise à jour peut venir
+# d'une retouche faite entre la référence (prise la veille) et le scan. Le
+# 07/10, Tiphaine avait retiré le lien « Confidentialité » de son pied de page
+# à 15 h 34 ; le scan de 6 h 45 l'a attribué à la mise à jour du cœur.
+PHP_CONTENUS = r'''
+$depuis = gmdate('Y-m-d H:i:s', time() - %d);
+$types = array('page', 'post', 'wp_template', 'wp_template_part', 'wp_navigation', 'wp_global_styles', 'wp_block');
+$q = get_posts(array('post_type' => $types, 'post_status' => array('publish', 'private'), 'numberposts' => 12,
+  'orderby' => 'modified', 'order' => 'DESC', 'suppress_filters' => true,
+  'date_query' => array(array('column' => 'post_modified_gmt', 'after' => $depuis))));
+$out = array();
+foreach ($q as $p) {
+  $qui = get_post_meta($p->ID, '_edit_last', true);
+  if (!$qui) { $r = wp_get_post_revisions($p->ID, array('numberposts' => 1)); $r = $r ? array_shift($r) : null; $qui = $r ? $r->post_author : $p->post_author; }
+  $u = get_userdata((int) $qui);
+  $out[] = array('type' => $p->post_type, 'titre' => $p->post_title ?: $p->post_name, 'quand' => get_date_from_gmt($p->post_modified_gmt, 'd/m H:i'),
+                 'qui' => $u ? $u->display_name : '');
+}
+echo 'VIZCONTENU:' . json_encode($out) . PHP_EOL;
+'''
+TYPES_FR = {"page": "page", "post": "article", "wp_template": "modèle", "wp_template_part": "partie de modèle",
+            "wp_navigation": "menu", "wp_global_styles": "styles du site", "wp_block": "composition"}
+
+
+def contenus_modifies(srv, site, fenetre_s=FENETRE_H * 3600):
+    """Contenus modifiés dans la fenêtre → [{type, titre, quand, qui}] ([] si illisible)."""
+    ligne = 'eval(base64_decode("%s"));' % base64.b64encode((PHP_CONTENUS % int(fenetre_s)).encode()).decode()
+    try:   # un indice, jamais une condition : son échec ne doit rien bloquer
+        rc, out = A.run_wp_remote(srv, site, "eval " + A.sq(A.sq(ligne)) + " --skip-plugins --skip-themes", timeout=60)
+    except Exception:
+        return []
+    m = re.search(r"VIZCONTENU:(\[.*\])", out or "")
+    if rc != 0 or not m:
+        return []
+    try:
+        return [c for c in json.loads(m.group(1)) if isinstance(c, dict)]
+    except ValueError:
+        return []
+
+
+def texte_contenus(cs):
+    """« Pied de page (partie de modèle, Tiphaine Doria, 06/10 15:34) »."""
+    # Les gabarits (pied de page, menus, styles) touchent TOUTES les pages :
+    # nommés en premier.
+    tri = sorted(cs, key=lambda c: c.get("type") in ("page", "post"))
+    txt = ", ".join(f"{c.get('titre') or '?'} ({TYPES_FR.get(c.get('type'), c.get('type'))}"
+                    + (f", {c['qui']}" if c.get("qui") else "") + f", {c.get('quand') or '?'})" for c in tri[:4])
+    return txt + (f" et {len(cs) - 4} autre(s)" if len(cs) > 4 else "")
+
+
 def evenements(srv, site):
     """Mises à jour relevées par l'extension, les plus récentes d'abord."""
     ligne = 'eval(base64_decode("%s"));' % base64.b64encode(PHP.encode()).decode()
@@ -304,6 +354,7 @@ def examiner(srv_name, s, now, rattraper=False, deja=None):
     # Retour arrière automatique (mode automatique, réglage du site) : seulement
     # sur une page en ÉCHEC ou en erreur HTTP, jamais sur une simple différence
     # « à vérifier » ; puis un scan de contrôle dit si le site est revenu.
+    contenus = contenus_modifies(srv, site) if ecarts else []
     retour = None
     if ecarts and rattraper and A.auto_rollback_actif(s.get("domain")):
         retour = retour_arriere(srv_name, s, majs, set(items))
@@ -327,6 +378,7 @@ def examiner(srv_name, s, now, rattraper=False, deja=None):
         "rattrapage": (rattrapage or {}).get("rc"),
         "ecarts": [{"page": p, "formats": f, "http": h} for p, f, h in ecarts],
         "retour": retour,
+        "contenus_modifies": contenus,
         "run_id": (rapport or {}).get("run_id") if isinstance(rapport, dict) else None,
         "report_url": (rapport or {}).get("report_url") if isinstance(rapport, dict) else None,
     }
@@ -367,7 +419,20 @@ def texte_retour(r):
         lignes.append("Après retour : " + ("plus aucune page en échec ✅" if ea == 0
                                             else f"{ea} page(s) encore en échec ⚠️" if ea
                                             else "contrôle impossible, à vérifier"))
+    if r.get("contenus_modifies"):
+        lignes.append("✏️ Contenu modifié dans l'intervalle : " + e(texte_contenus(r["contenus_modifies"])))
     return "\n".join(lignes)
+
+
+def suite_alerte(r):
+    """Ce qui aide à juger l'écart : retouches de contenu, retour impossible."""
+    bouts = []
+    if r.get("contenus_modifies"):
+        bouts.append("✏️ Contenu modifié dans l'intervalle : " + texte_contenus(r["contenus_modifies"])
+                     + " — l'écart vient peut-être de là, pas de la mise à jour.")
+    for x in ((r.get("retour") or {}).get("impossibles") or []):
+        bouts.append(f"{x.get('slug')} : retour impossible — {x.get('raison')}")
+    return "\n".join(bouts)
 
 
 def texte_alerte(r):
@@ -375,7 +440,8 @@ def texte_alerte(r):
              + (f" ({', '.join(f.lower() for f in e.get('formats') or [])})" if e.get("formats") else "")
              for e in r["ecarts"]]
     return A.texte_ecart_visuel(r["domain"] or r["site"], "écart visuel après la mise à jour automatique de la nuit",
-                                mises_a_jour=r["items"], pages=pages, report_url=r.get("report_url") or "")
+                                mises_a_jour=r["items"], pages=pages, report_url=r.get("report_url") or "",
+                                suite=suite_alerte(r))
 
 
 def main():
@@ -424,7 +490,10 @@ def main():
     for r in resultats.values():
         if r["ecarts"] and not r.get("confirme"):
             A.alert(f"viz_nuit:{r['site']}:{r['at'][:10]}", "viz_anomaly",
-                    texte_retour(r) if r.get("retour") else texte_alerte(r))
+                    # « annulée » seulement si quelque chose a VRAIMENT été rétabli :
+                    # le cœur ne se rétablit pas, et le 07/10 l'alerte disait
+                    # « annulée » pour une mise à jour restée en place.
+                    texte_retour(r) if (r.get("retour") or {}).get("retablis") else texte_alerte(r))
     A.attendre_envois()
     print(f"{len(resultats)} site(s) mis à jour cette nuit.")
 

@@ -392,3 +392,36 @@ class TestCollecteModeAuto(IncidentsBase):
         with mock.patch.object(collect, "DATA", self.data):
             collect.annotate_auto_mode(fleet)
         self.assertEqual([s["auto_mode"] for s in fleet["servers"][0]["sites"]], [True, False])
+
+
+class TestContenusEtRetour(IncidentsBase):
+
+    def test_texte_contenus_gabarits_d_abord(self):
+        import viz_nuit
+        cs = [{"type": "post", "titre": "Article", "quand": "06/10 15:20", "qui": "T"},
+              {"type": "wp_template_part", "titre": "Pied de page", "quand": "06/10 15:34", "qui": "Tiphaine Doria"}]
+        self.assertTrue(viz_nuit.texte_contenus(cs).startswith("Pied de page (partie de modèle, Tiphaine Doria, 06/10 15:34)"))
+
+    def test_rien_retabli_n_est_pas_une_annulation(self):
+        self.poser_fleet(self.serveur(sites=[site("tip.fr")]))
+        A.save_json(A.VIZ_NUIT_PATH, {"sites": {"tip.fr": {
+            "site": "tip.fr", "domain": "tip.fr", "server": "vps1",
+            "at": datetime_iso(time.time() - 3600), "items": ["wordpress-core"],
+            "ecarts": [{"page": "Accueil", "formats": ["desktop"], "http": None}],
+            "retour": {"retablis": [], "impossibles": [{"slug": "wordpress-core", "raison": "le cœur ne se rétablit pas"}]},
+            "contenus_modifies": [{"type": "wp_template_part", "titre": "Pied de page", "quand": "06/10 15:34", "qui": "Tiphaine"}]}}})
+        self.assertEqual(self.par_kind("auto_rollback"), [])
+        inc = self.par_kind("viz_auto_update")[0]
+        self.assertIn("retour impossible", inc["detail"].replace("le cœur ne se rétablit pas", "retour impossible"))
+        self.assertIn("Pied de page", inc["detail"])
+
+    def test_page_de_maintenance_wpt_pas_a_verifier(self):
+        import digest
+        out = digest.maintenance_wpt([{"kind": "plugin_add", "severity": "warn", "detail": "+ extension maintenance.php"},
+                                      {"kind": "plugin_add", "severity": "warn", "detail": "+ extension inconnu 1.0"}])
+        self.assertEqual([c["severity"] for c in out], ["info", "warn"])
+
+
+def datetime_iso(ts):
+    import datetime
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()

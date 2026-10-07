@@ -5766,7 +5766,16 @@ def inc_viz_nuit(index, now):
         # reste à traiter — la mise à jour annulée est à reprendre à la main, et
         # le composant est sorti des mises à jour automatiques.
         retour = r.get("retour") if isinstance(r.get("retour"), dict) else None
-        if retour and (retour.get("retablis") or retour.get("impossibles")):
+        contenus = [c for c in (r.get("contenus_modifies") or []) if isinstance(c, dict)]
+        indice = ""
+        if contenus:
+            indice = (" — contenu modifié dans l'intervalle : "
+                      + ", ".join(f"{c.get('titre') or '?'} ({c.get('qui') or '?'}, {c.get('quand') or '?'})"
+                                  for c in contenus[:3]) + " : l'écart vient peut-être de là")
+        impossibles = [f"{x.get('slug')} : {x.get('raison')}" for x in (retour or {}).get("impossibles") or []]
+        # Rien de rétabli (le cœur ne se rétablit pas) : ce n'est PAS une
+        # annulation, c'est un écart à regarder — incident viz_auto_update plus bas.
+        if retour and retour.get("retablis"):
             faits = [f"{x.get('slug')} rétabli en {x.get('version')}" for x in retour.get("retablis") or []]
             ko = [f"{x.get('slug')} : {x.get('raison')}" for x in retour.get("impossibles") or []]
             ea = retour.get("ecarts_apres")
@@ -5788,9 +5797,11 @@ def inc_viz_nuit(index, now):
             out.append(make_incident(
                 "viz_auto_update", "critical" if http else "warning", cle,
                 f"Écart visuel après mise à jour automatique sur {cle}",
-                f"{items} → {pages}", site=cle, server=server, since=since, now=now,
+                f"{items} → {pages}" + ("" if not impossibles else " · " + " ; ".join(impossibles)) + indice,
+                site=cle, server=server, since=since, now=now,
                 link={"tab": "parc", "sub": ""},
-                extra={"items": r.get("items") or [], "pages": ecarts, "report_url": r.get("report_url") or ""}))
+                extra={"items": r.get("items") or [], "pages": ecarts, "report_url": r.get("report_url") or "",
+                       "contenus_modifies": contenus}))
         # Mise à jour que le plugin n'a pas scannée ET que le rattrapage n'a pas
         # pu couvrir : personne n'a regardé le site après. Rien n'indique qu'il
         # soit cassé — d'où « à planifier » — mais le contrôle n'a pas eu lieu.

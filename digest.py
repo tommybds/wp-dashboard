@@ -119,9 +119,19 @@ def reinstallations(changes):
     return [ajouts.get(k, c) for k, c in enumerate(changes) if k not in sautes or k in ajouts]
 
 
+def maintenance_wpt(changes):
+    """`maintenance.php` qui apparaît pendant une mise à jour du cœur : c'est la
+    page de maintenance que Plesk WP Toolkit génère (« DO NOT MODIFY THIS FILE
+    BECAUSE IT WAS GENERATED AUTOMATICALLY »), pas une extension inconnue.
+    Rangée en information ; le scan structurel reste là pour un faux de ce nom."""
+    return [dict(c, kind="maintenance_wpt", severity="info") if c.get("kind") == "plugin_add"
+            and str(c.get("detail") or "").replace("+ extension ", "", 1).strip().split(" ")[0] == "maintenance.php"
+            else c for c in changes]
+
+
 def resume_changements(changes):
     """Changements de PRODUCTION → lignes du bloc « Changements »."""
-    changes = reinstallations(changes)
+    changes = maintenance_wpt(reinstallations(changes))
     lignes = []
 
     # 1. sécurité, détaillée : c'est là qu'un piratage se voit. Les admins
