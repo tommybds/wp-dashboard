@@ -89,8 +89,9 @@ function monter() {
         h('dd', { text: 'La nuit, sans vous : à 4 h, le dashboard fait une mise à jour Contrôlée de '
           + 'chaque site en automatique qui en a besoin — et la défait si une page casse, quand le '
           + 'retour arrière automatique est coché. Une version annulée n’est pas retentée ; un site '
-          + 'dont VizProof montre un écart non réglé attend. WordPress et l’hébergeur ne mettent plus '
-          + 'ces sites à jour, sauf les correctifs mineurs du cœur.' }))),
+          + 'dont VizProof montre un écart non réglé attend. Le cœur WordPress suit le même chemin pour '
+          + 'ses versions mineures ; une version majeure reste un geste manuel. WordPress et l’hébergeur '
+          + '(WP Toolkit) ne mettent plus rien à jour sur ces sites.' }))),
     h('section', { class: 'section secsec', id: 'maj-nuit' },
       h('div', { class: 'sechead' }, h('h2', { text: 'Cette nuit' }),
         h('span', { class: 'muted small', id: 'maj-nuit-quand' })),
@@ -331,7 +332,7 @@ function activer(s, e) {
     <p class="hint hint-loose">${viz
       ? 'Chaque nuit à 4 h, mise à jour Contrôlée : référence VizProof, sauvegarde, archive, mise à jour, scan. Si une page casse, le site est remis depuis l’archive — extensions premium comprises — et une alerte Telegram le dit. Un site tombé est remis dans tous les cas.'
       : '<b>VizProof n’est pas relié à ce site</b> : seul un site tombé ferait annuler la mise à jour. Reliez-le depuis l’onglet VizProof du site.'}</p>
-    <p class="hint hint-loose">Les mises à jour automatiques de WordPress et de l’hébergeur (WP Toolkit) sont <b>coupées</b> sur ce site${e.natives ? ` (${e.natives} élément(s) aujourd’hui)` : ''} : c’est le dashboard qui s’en charge.</p>`;
+    <p class="hint hint-loose">Les mises à jour automatiques de WordPress et de l’hébergeur (WP Toolkit) sont <b>coupées</b> sur ce site, cœur compris (le dashboard en fait les versions mineures)${e.natives ? ` (${e.natives} élément(s) aujourd’hui)` : ''} : c’est le dashboard qui s’en charge.</p>`;
   askOpen('Activer le mode automatique',
     `Confier les mises à jour de <b>${H(nomDeSite(s))}</b> au dashboard (toutes les extensions et tous les thèmes) ?`,
     corps,

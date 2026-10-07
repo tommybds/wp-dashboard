@@ -32,9 +32,9 @@ Deux garde-fous propres à la nuit :
     à la même version (elle casserait de nouveau) : on retient
     {composant: version visée} et on ne réessaie qu'à la version suivante.
 
-Le cœur WordPress n'est pas concerné : ses correctifs mineurs restent appliqués
-par WordPress/WP Toolkit — des correctifs de sécurité qu'une panne du dashboard
-ne doit pas retarder.
+Le cœur WordPress : depuis le 07/10 ses versions MINEURES passent aussi par ici
+(`--minor`, référence d'avant comprise) ; WordPress et WP Toolkit ne mettent
+plus le cœur à jour sur ces sites. Une version majeure reste un geste manuel.
 
 Résultat dans data/maj_nuit.json (file d'incidents `inc_maj_nuit`, écran Mises
 à jour, bilan de 8 h) ; viz_nuit.py ne repasse pas sur ces sites. Cron 4 h.
@@ -82,13 +82,33 @@ def a_mettre_a_jour(s, refus):
     return plugs, themes, ecartees
 
 
-def versions_visees(s, plugs, themes):
-    """{composant: version visée} — clé `theme:<slug>` pour un thème."""
+def coeur_mineur(s, refus):
+    """Version MINEURE du cœur à appliquer (« 7.1.3 » depuis « 7.1.2 »), ou "".
+
+    Depuis le 07/10 le cœur mineur passe lui aussi par le dashboard : WP
+    Toolkit l'appliquait à 4 h 58 sans référence d'avant, et le scan de
+    contrôle prenait des retouches de contenu de l'après-midi pour un effet
+    de la mise à jour (tiphainedesign). Une version majeure n'est jamais prise
+    ici : elle reste un geste à la main."""
+    cur, cible = str(s.get("core_version") or ""), str(s.get("core_update") or "")
+    a, b = cur.split("."), cible.split(".")
+    if len(a) < 2 or len(b) < 2 or a[:2] != b[:2] or cible == cur:
+        return ""
+    if refus.get("core") == cible:
+        return ""
+    return cible
+
+
+def versions_visees(s, plugs, themes, core=""):
+    """{composant: version visée} — clé `theme:<slug>` pour un thème, `core`
+    pour le cœur."""
     v = {str(p.get("name")): str(p.get("to") or "") for p in s.get("plugins_updates_list") or []
          if isinstance(p, dict) and p.get("name") in plugs}
     for t in s.get("themes_list") or []:
         if isinstance(t, dict) and t.get("name") in themes:
             v["theme:" + str(t["name"])] = str(t.get("update_version") or "")
+    if core:
+        v["core"] = core
     return v
 
 
@@ -124,13 +144,41 @@ def recouper_natives(srv_name, s, dry):
     return n
 
 
+def recouper_coeur(srv_name, s, dry):
+    """Mise à jour automatique du CŒUR par WordPress / WP Toolkit sur un site en
+    automatique → True si elle était active (et vient d'être coupée).
+
+    Depuis le 07/10 le cœur mineur passe par le dashboard. WP Toolkit (réglage
+    « core: disabled ») écrit `WP_AUTO_UPDATE_CORE = false` dans wp-config ; une
+    constante absente laisse WordPress appliquer seul les mineures, une valeur
+    « minor » / true aussi. Lecture : false → chaîne vide, code 0."""
+    srv, site = A.find_site(srv_name, s.get("domain"))
+    if not site:
+        return False
+    rc, out = A.remote_bash(srv, site, "run config get WP_AUTO_UPDATE_CORE --skip-plugins --skip-themes", timeout=60)
+    val = (out or "").strip().splitlines()[-1].strip() if (out or "").strip() else ""
+    if rc == 0 and val.lower() in ("", "false", "0"):
+        return False
+    if not dry:
+        A.remote_bash(srv, site, "run config set WP_AUTO_UPDATE_CORE false --raw --skip-plugins --skip-themes", timeout=60)
+        A.alert(f"natives-coeur:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly",
+                f"⚠️ <b>{A.esc_html(s.get('domain'))}</b> — mise à jour automatique du cœur réactivée "
+                f"(WP_AUTO_UPDATE_CORE = {A.esc_html(val or 'absent')}) alors que le site est en mode automatique "
+                "du dashboard : coupée. Si WP Toolkit la remet, régler son « Cœur » sur « désactivé ».")
+    return True
+
+
 def traiter(srv_name, s, mode, refus, dry):
     """Une mise à jour Contrôlée sur un site → bilan (dict) ou None (rien à faire)."""
     dom = s.get("domain")
     plugs, themes, ecartees = a_mettre_a_jour(s, refus)
+    core = coeur_mineur(s, refus)
+    if not core and refus.get("core") and refus.get("core") == s.get("core_update"):
+        ecartees = ecartees + [f"WordPress {refus['core']}"]
     base = {"domain": dom, "server": srv_name, "ts": time.time(),
-            "items": plugs + [f"thème {t}" for t in themes], "ecartees": ecartees}
-    if not plugs and not themes:
+            "items": ([f"WordPress {core}"] if core else []) + plugs + [f"thème {t}" for t in themes],
+            "ecartees": ecartees}
+    if not plugs and not themes and not core:
         return dict(base, verdict="rien à faire") if ecartees else None
 
     pages = ecart_ouvert(srv_name, s)
@@ -143,9 +191,9 @@ def traiter(srv_name, s, mode, refus, dry):
         return dict(base, verdict="simulation")
 
     A.safe_update_run(srv_name, dom, slugs=plugs or None, do_backup=True, use_viz=True,
-                      with_core=False, viz_rollback=bool(mode.get("rollback")),
+                      viz_rollback=bool(mode.get("rollback")),
                       themes=themes or None, with_themes=bool(themes), with_plugins=bool(plugs),
-                      temoin=True)
+                      temoin=True, with_core=bool(core), core_minor=True)
     steps = list(A.SAFE.get("steps") or [])
     verdict = str(A.SAFE.get("verdict") or "")
     cause = next((f"{e['label']} : {str(e.get('detail') or '')[:200]}" for e in steps
@@ -175,7 +223,7 @@ def traiter(srv_name, s, mode, refus, dry):
                 report_url=(rapport or {}).get("report_url") or "",
                 steps=[{"label": e.get("label"), "ok": bool(e.get("ok")), "warn": bool(e.get("warn")),
                         "detail": str(e.get("detail") or "")[:400]} for e in steps],
-                visees=versions_visees(s, plugs, themes))
+                visees=versions_visees(s, plugs, themes, core))
 
 
 def main():
@@ -190,6 +238,11 @@ def main():
             continue
         refus = refus_tous.get(dom) if isinstance(refus_tous.get(dom), dict) else {}
         n_nat = recouper_natives(srv_name, s, dry)
+        try:
+            if recouper_coeur(srv_name, s, dry):
+                n_nat = (n_nat or 0) + 1
+        except Exception as e:      # un contrôle, jamais une condition
+            print(f"{dom} : contrôle du cœur impossible ({type(e).__name__})")
         if n_nat:
             natives[dom] = n_nat
         try:
@@ -202,7 +255,8 @@ def main():
         proposees = versions_visees(s, [str(p.get("name")) for p in s.get("plugins_updates_list") or []
                                         if isinstance(p, dict)],
                                     [str(t.get("name")) for t in s.get("themes_list") or []
-                                     if isinstance(t, dict)])
+                                     if isinstance(t, dict)],
+                                    str(s.get("core_update") or ""))
         garde = {k: v for k, v in refus.items() if proposees.get(k) == v}
         if r and str(r.get("verdict", "")).startswith(("annulé (retour", "ÉCHEC")):
             garde.update(r.get("visees") or {})

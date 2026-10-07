@@ -425,3 +425,50 @@ class TestContenusEtRetour(IncidentsBase):
 def datetime_iso(ts):
     import datetime
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()
+
+
+class TestCoeurMineur(IncidentsBase):
+
+    def test_seulement_une_mineure_de_la_meme_branche(self):
+        self.assertEqual(maj_nuit.coeur_mineur({"core_version": "7.1.2", "core_update": "7.1.3"}, {}), "7.1.3")
+        self.assertEqual(maj_nuit.coeur_mineur({"core_version": "7.1.3", "core_update": "7.2"}, {}), "")
+        self.assertEqual(maj_nuit.coeur_mineur({"core_version": "7.1.3", "core_update": ""}, {}), "")
+        self.assertEqual(maj_nuit.coeur_mineur({"core_version": "7.1.2", "core_update": "7.1.3"}, {"core": "7.1.3"}), "")
+
+    def test_la_nuit_met_le_coeur_mineur_a_jour_avec_la_chaine(self):
+        s = site_maj(plugins_updates_list=[], themes_list=[], core_version="7.1.2", core_update="7.1.3")
+        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=[]), \
+                mock.patch.object(A, "safe_update_run") as run:
+            A.SAFE.update({"verdict": "réussi", "steps": [], "echecs": {}})
+            r = maj_nuit.traiter("vps1", s, {"rollback": True}, {}, False)
+        kw = run.call_args.kwargs
+        self.assertTrue(kw["with_core"])
+        self.assertTrue(kw["core_minor"])
+        self.assertEqual(r["items"], ["WordPress 7.1.3"])
+        self.assertEqual(r["visees"], {"core": "7.1.3"})
+
+
+class TestRecouperCoeur(IncidentsBase):
+
+    def lancer(self, sortie, rc=0):
+        appels = []
+        def faux(srv, site, cmd, **kw):
+            appels.append(cmd)
+            return (rc, sortie) if "config get" in cmd else (0, "Success")
+        with mock.patch.object(A, "find_site", return_value=({"name": "vps1"}, {"domain": "auto.fr"})), \
+                mock.patch.object(A, "remote_bash", side_effect=faux), mock.patch.object(A, "alert") as alerte:
+            r = maj_nuit.recouper_coeur("vps1", {"domain": "auto.fr"}, False)
+        return r, appels, alerte
+
+    def test_deja_coupe(self):
+        r, appels, alerte = self.lancer("")
+        self.assertFalse(r)
+        self.assertEqual(len(appels), 1)
+        alerte.assert_not_called()
+
+    def test_minor_ou_absent_coupe_et_signale(self):
+        for sortie, rc in (("minor", 0), ("Error: The constant does not exist", 1)):
+            r, appels, alerte = self.lancer(sortie, rc)
+            self.assertTrue(r)
+            self.assertIn("config set WP_AUTO_UPDATE_CORE false --raw", appels[-1])
+            alerte.assert_called_once()

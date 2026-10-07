@@ -3105,7 +3105,8 @@ def cibles_maj(site):
 
 def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=True,
                     with_core=False, dry_run=False, viz_rollback=None,
-                    themes=None, with_themes=True, with_plugins=True, temoin=False):
+                    themes=None, with_themes=True, with_plugins=True, temoin=False,
+                    core_minor=False):
     """Orchestration complète.
 
     `slugs` None = toutes les extensions ayant une mise à jour en attente.
@@ -3124,6 +3125,8 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
     sauvegarde UpdraftPlus qui sert de recours pour la base.
     `viz_rollback` None = on suit le réglage `viz_anomaly_rollback` ;
     True/False le surchargent pour cette exécution seulement.
+    `core_minor` (mises à jour de nuit) : le cœur ne va que vers la dernière
+    version MINEURE de sa branche (`--minor`), jamais vers une majeure.
     `temoin` (mises à jour de nuit) : juste après la référence, un scan SANS
     rien changer. Une page qui y bouge déjà en SEO, en accessibilité ou en
     HTTP rend le contrôle aveugle : on s'arrête avant toute modification
@@ -3227,7 +3230,8 @@ def safe_update_run(server_name, domain, slugs=None, do_backup=True, use_viz=Tru
                 core_before = vues[-1]
             rcc, outc = remote_bash(srv, site,
                                     'asuser "$base wp core check-update --field=version '
-                                    '--format=csv --skip-plugins --skip-themes $extra --no-color"',
+                                    + ('--minor ' if core_minor else '')
+                                    + '--format=csv --skip-plugins --skip-themes $extra --no-color"',
                                     timeout=120)
             cand = [l.strip() for l in (outc or "").splitlines()
                     if re.match(r"^\d+\.\d+(\.\d+)?$", l.strip())]
@@ -3539,7 +3543,7 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
         if with_core:
             rcc, outc = remote_bash(srv, site,
                                     REMOTE_MAINT_ON
-                                    + f'run core update {VIZ_SKIP_DURING_SAFE}\n'
+                                    + f'run core update {"--minor " if core_minor else ""}{VIZ_SKIP_DURING_SAFE}\n'
                                     f'run core update-db {VIZ_SKIP_DURING_SAFE}', timeout=900)
             safe_step(f"Mise à jour du cœur → {core_target}", rcc == 0, (outc or "")[-400:])
             rc = rc or rcc
