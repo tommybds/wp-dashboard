@@ -1351,6 +1351,12 @@ class TestDigest(unittest.TestCase):
         self.assertIn("• PHP, correctifs de l’hébergeur : 8.3.33 → 8.3.35 (3 sites)"
                       " · 8.5.10 → 8.5.11 (d.fr)", lignes)
 
+    def test_declasse_n_est_pas_regle(self):
+        prev = {"php_fatal:a.fr:x": "<b>a</b> — erreur fatale", "fini": "<b>b</b> — réparé"}
+        texte, _ = digest.build_message([], 24, [], prev, ailleurs={"php_fatal:a.fr:x"})
+        self.assertIn("✅ <b>Réglé</b> (1)", texte)
+        self.assertNotIn("erreur fatale", texte)
+
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
         self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")

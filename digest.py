@@ -310,7 +310,7 @@ def libelle(i):
         if site:
             for motif in (f" sur {site}", f" — {site}", f"{site} : ", f"{site} "):
                 quoi = quoi.replace(motif, " ")
-        quoi = quoi.strip()
+        quoi = " ".join(quoi.split())
         quoi = quoi[:1].lower() + quoi[1:]
     return f"<b>{A.esc_html(court(site))}</b> — {A.esc_html(quoi)}"
 
@@ -485,13 +485,16 @@ def contexte_parc():
 #  Message
 # ---------------------------------------------------------------------------
 def build_message(changes, hours=24, incidents=None, previous=None,
-                  preprod=frozenset(), n_sites=None, url="", now=None, nuit=None):
+                  preprod=frozenset(), n_sites=None, url="", now=None, nuit=None,
+                  ailleurs=frozenset()):
     """(texte HTML Telegram, état à mémoriser) — toujours un texte.
 
     `incidents` : file « à traiter » (bucket now) du dashboard ;
     `previous` : {id: libellé} des incidents vus au bilan précédent, None si
     aucun bilan n'a encore été mémorisé (premier passage : rien n'est
-    « nouveau », tout est « ouvert »).
+    « nouveau », tout est « ouvert ») ; `ailleurs` : ids encore présents mais
+    hors de « à traiter » (déclassés en « à planifier ») — sortis de la file,
+    ils ne sont pas pour autant « réglés ».
     """
     now = now or datetime.datetime.now()
     incidents = list(incidents or [])
@@ -510,7 +513,7 @@ def build_message(changes, hours=24, incidents=None, previous=None,
         ids_publies = {i["id"] for i in publies}
         nouveaux = [i for i in nouveaux if i["id"] not in ids_publies]
         regles = [lib for iid, lib in previous.items()
-                  if iid not in etat["incidents"] and iid not in retires]
+                  if iid not in etat["incidents"] and iid not in retires and iid not in ailleurs]
     ids_nouveaux = {i["id"] for i in nouveaux} | {i["id"] for i in publies}
     ouverts = [i for i in inc_prod if i["id"] not in ids_nouveaux]
 
@@ -587,10 +590,12 @@ def main():
     changes = load_recent(hours)
     try:
         payload, _extra = A.incidents_snapshot()
-        incidents = [i for i in payload.get("incidents") or [] if i.get("bucket") == "now"]
+        tous = payload.get("incidents") or []
+        incidents = [i for i in tous if i.get("bucket") == "now"]
+        ailleurs = {i.get("id") for i in tous if i.get("bucket") != "now"}
     except Exception as e:           # le bilan des changements part quand même
         print(f"incidents indisponibles : {type(e).__name__}: {e}")
-        incidents = []
+        incidents, ailleurs = [], set()
     preprod, n_sites = contexte_parc()
     etat_prec = load_json(STATE_PATH, None)
     previous = etat_prec.get("incidents") if isinstance(etat_prec, dict) else None
@@ -598,7 +603,7 @@ def main():
 
     nuit = load_json(MAJ_NUIT_PATH, None)
     text, etat = build_message(changes, hours, incidents, previous, preprod, n_sites, url,
-                               nuit=nuit)
+                               nuit=nuit, ailleurs=ailleurs)
     if dry:
         print(text)
         return
