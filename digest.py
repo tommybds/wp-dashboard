@@ -333,9 +333,20 @@ A_FAIRE = {
 }
 
 
+def lien_ecart(url):
+    """« voir l'écart » vers le passage VizProof, ou '' (seul https est lié)."""
+    url = str(url or "")
+    return (f'<a href="{html.escape(url, quote=True)}">voir l’écart</a>'
+            if url.startswith("https://") else "")
+
+
 def ligne_nouveau(i):
     faire = A_FAIRE.get(i.get("kind"))
-    return f"• {libelle(i)}" + (f"\n   👉 {A.esc_html(faire)}" if faire else "")
+    x = i.get("extra") if isinstance(i.get("extra"), dict) else {}
+    lien = lien_ecart(x.get("report_url"))
+    if faire:
+        return f"• {libelle(i)}\n   👉 {A.esc_html(faire)}" + (f" · {lien}" if lien else "")
+    return f"• {libelle(i)}" + (f" · {lien}" if lien else "")
 
 
 FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert »
@@ -445,19 +456,22 @@ def resume_nuit(nuit, now=None):
         echecs = r.get("echecs") if isinstance(r.get("echecs"), dict) else {}
         items = [str(x) for x in r.get("items") or [] if str(x) not in echecs]
         cause = str(r.get("cause") or "")
+        lien = lien_ecart(r.get("report_url")) if (v in ("bloqué", "page instable") or "anomalies" in v
+                                                    or v.startswith(("annulé (retour", "ÉCHEC"))) else ""
+        lien = f" · {lien}" if lien else ""
         if v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
             lignes.append(f"• {'⛔' if v.startswith('ÉCHEC') else '↩️'} {d} — {A.esc_html(v)}"
-                          + (f" : {A.esc_html(cause[:90])}" if cause else ""))
+                          + (f" : {A.esc_html(cause[:90])}" if cause else "") + lien)
         elif v.startswith("réussi") and items:
             lignes.append(f"• ✅ {d} — {A.esc_html(', '.join(items))}"
-                          + (" (écart visuel à regarder)" if "anomalies" in v else ""))
+                          + (" (écart visuel à regarder)" if "anomalies" in v else "") + lien)
         elif v in ("bloqué", "page instable"):
             m = re.search(r"\(([^)]*)\)", cause)
             motif = ("écart VizProof non réglé" + (f" ({m.group(1)})" if m else "")
                      if cause.startswith("écart VizProof") else (cause or v))
             nuits = int(r.get("nuits_attente") or 1)
             lignes.append(f"• ⏸ {d} — bloqué" + (f" depuis {nuits} nuits" if nuits > 1 else "")
-                          + f" : {A.esc_html(motif[:90])}")
+                          + f" : {A.esc_html(motif[:90])}" + lien)
         for slug, vers in echecs.items():
             lignes.append(f"• ⚠️ {d} — {A.esc_html(f'{slug} {vers}'.strip())} impossible "
                           "(paquet indisponible, licence ?)")

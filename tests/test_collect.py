@@ -1262,6 +1262,11 @@ class TestDigest(unittest.TestCase):
         self.assertIn("• ⏸ <b>c</b> — bloqué : écart VizProof non réglé (Accueil)", texte)
         self.assertIn("• ↩️ <b>e</b> — annulé (retour arrière) : Contrôle : 500", texte)
         self.assertNotIn("<b>d</b>", texte)
+        nuit["sites"]["c.fr"]["report_url"] = "https://vizproof.com/runs/abc123"
+        self.assertIn('Accueil) · <a href="https://vizproof.com/runs/abc123">voir l’écart</a>',
+                      "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW)))
+        nuit["sites"]["c.fr"]["report_url"] = "javascript:alert(1)"
+        self.assertNotIn("javascript", "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW)))
         nuit["sites"]["c.fr"]["nuits_attente"] = 3
         self.assertIn("bloqué depuis 3 nuits", "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW)))
 

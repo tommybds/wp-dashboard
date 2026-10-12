@@ -113,15 +113,24 @@ def versions_visees(s, plugs, themes, core=""):
     return v
 
 
-def ecart_ouvert(srv_name, s):
-    """Pages en échec dans le dernier rapport VizProof du site, ou []."""
+def ecart_ouvert(srv_name, s, run_garde=""):
+    """(pages en échec dans le dernier rapport VizProof du site, id du passage).
+
+    `run_garde` : passage de fin d'une mise à jour que la chaîne a jugée saine
+    (« réussi ») malgré des pages en échec — page instable au scan témoin. Ce
+    jugement vaut pour les nuits suivantes : le 10/10, terrainnova a gardé sa
+    mise à jour (accueil desktop 1,88 %, la page bougeait seule), puis ce même
+    rapport a bloqué le site les 11 et 12/10."""
     v = s.get("vizproof") or {}
     if not (v.get("connected") and v.get("has_cli")):
-        return []
+        return [], ""
     rapport = viz_nuit.lire_rapport(srv_name, s.get("domain"))
     if not isinstance(rapport, dict) or rapport.get("is_baseline"):
-        return []
-    return viz_nuit.pages_en_ecart(rapport)
+        return [], ""
+    rid = str(rapport.get("run_id") or "")
+    if rid and rid == run_garde:
+        return [], rid
+    return viz_nuit.pages_en_ecart(rapport), rid
 
 
 def recouper_natives(srv_name, s, dry):
@@ -171,7 +180,7 @@ def recouper_coeur(srv_name, s, dry):
     return True
 
 
-def traiter(srv_name, s, mode, refus, dry):
+def traiter(srv_name, s, mode, refus, dry, run_garde=""):
     """Une mise à jour Contrôlée sur un site → bilan (dict) ou None (rien à faire)."""
     dom = s.get("domain")
     plugs, themes, ecartees = a_mettre_a_jour(s, refus)
@@ -184,10 +193,10 @@ def traiter(srv_name, s, mode, refus, dry):
     if not plugs and not themes and not core:
         return dict(base, verdict="rien à faire") if ecartees else None
 
-    pages = ecart_ouvert(srv_name, s)
+    pages, rid = ecart_ouvert(srv_name, s, run_garde)
     if pages:
         noms = ", ".join(sorted({p for p, _f, _h in pages}))
-        return dict(base, verdict="bloqué",
+        return dict(base, verdict="bloqué", report_url=A.viz_lien_run(rid),
                     cause=f"écart VizProof non réglé ({noms}) : mettre à jour par-dessus en ferait "
                           "la nouvelle référence — à régler ou accepter dans VizProof")
     if dry:
@@ -221,9 +230,11 @@ def traiter(srv_name, s, mode, refus, dry):
                                      "seo_changes", "http_status", "masked_missing") if it.get(k) not in (None, "", [])}
              for it in (rapport or {}).get("items") or []
              if isinstance(it, dict) and (it.get("cause") or it.get("status") == "fail")][:16]
+    rid = str((rapport or {}).get("run_id") or "")
     return dict(base, ecarts_apres=apres, verdict=verdict, echecs=echecs, pages=pages,
                 cause=cause if verdict != "réussi" else "",
-                report_url=(rapport or {}).get("report_url") or "",
+                run_id=rid,
+                report_url=A.viz_lien_run(rid) or (rapport or {}).get("report_url") or "",
                 steps=[{"label": e.get("label"), "ok": bool(e.get("ok")), "warn": bool(e.get("warn")),
                         "detail": str(e.get("detail") or "")[:400]} for e in steps],
                 visees=versions_visees(s, plugs, themes, core))
@@ -235,6 +246,7 @@ def main():
     precedent = load_json(PATH, {}) or {}
     refus_tous = precedent.get("refus") if isinstance(precedent.get("refus"), dict) else {}
     sites_avant = precedent.get("sites") if isinstance(precedent.get("sites"), dict) else {}
+    gardes = dict(precedent.get("runs_gardes") or {}) if isinstance(precedent.get("runs_gardes"), dict) else {}
     sites, refus_neufs, natives = {}, {}, {}
     for srv_name, s in A.visible_sites():
         dom = s.get("domain")
@@ -250,7 +262,8 @@ def main():
         if n_nat:
             natives[dom] = n_nat
         try:
-            r = traiter(srv_name, s, modes[dom] if isinstance(modes[dom], dict) else {}, refus, dry)
+            r = traiter(srv_name, s, modes[dom] if isinstance(modes[dom], dict) else {}, refus, dry,
+                        run_garde=str(gardes.get(dom) or ""))
         except Exception as e:           # un site en panne n'arrête pas les autres
             r = {"domain": dom, "server": srv_name, "ts": time.time(), "items": [],
                  "verdict": "erreur", "cause": f"{type(e).__name__}: {e}"[:300]}
@@ -270,6 +283,9 @@ def main():
             garde.update({k: v for k, v in r["echecs"].items() if v})
         if garde:
             refus_neufs[dom] = garde
+        # Passage de fin jugé sain : il ne bloquera pas les nuits suivantes.
+        if r and r.get("verdict") == "réussi" and r.get("run_id"):
+            gardes[dom] = r["run_id"]
         if r and r.get("verdict") in ATTENTE:
             # Nuits d'attente consécutives : un site bloqué ne reçoit plus rien,
             # et la durée dit l'urgence (« depuis 3 nuits »).
@@ -286,7 +302,8 @@ def main():
     if dry:
         return
     save_json(PATH, {"generated_at": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(),
-                     "sites": sites, "refus": refus_neufs, "natives_recoupees": natives})
+                     "sites": sites, "refus": refus_neufs, "natives_recoupees": natives,
+                     "runs_gardes": gardes})
     A.attendre_envois()
     print(f"{len(sites)} site(s) traité(s) cette nuit.")
 

@@ -307,6 +307,13 @@ function extraEl(extra) {
     lignes.push(h('div', { class: 'incp-x' },
       h('span', { class: 'incp-k', text: lib }), h('span', { text: txt })));
   }
+  // Lien vers le passage VizProof (captures avant / après) : sans lui, un
+  // écart se lisait « Page d'accueil » sans moyen de le VOIR.
+  const rapport = String(extra.report_url || '');
+  if (/^https:\/\//.test(rapport)) {
+    lignes.push(h('div', { class: 'incp-x' }, h('span', { class: 'incp-k', text: 'Rapport' }),
+      h('a', { href: rapport, target: '_blank', rel: 'noopener noreferrer', text: 'voir l’écart dans VizProof' })));
+  }
   return lignes.length ? h('div', { class: 'incp-xs' }, lignes) : null;
 }
 

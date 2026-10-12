@@ -1380,6 +1380,13 @@ def viz_token_stored():
     return str(settings_cfg().get("vizproof_token") or "")
 
 
+def viz_lien_run(run_id):
+    """Page du passage dans l'appli VizProof (captures avant / après, diff) —
+    la page wp-admin du plugin ne montre que la liste des passages."""
+    rid = str(run_id or "").strip()
+    return f"{viz_api_base()}/runs/{urllib.parse.quote(rid, safe='')}" if re.fullmatch(r"[A-Za-z0-9_-]{6,80}", rid) else ""
+
+
 def viz_api_base(override=None):
     """Base de l'API VizProof : surcharge ponctuelle, réglage, puis défaut."""
     base = str(override or "").strip() or str(settings_cfg().get("vizproof_api_base") or "").strip()

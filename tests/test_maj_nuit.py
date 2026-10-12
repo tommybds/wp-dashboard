@@ -58,7 +58,7 @@ class TestTraiter(IncidentsBase):
         run.assert_not_called()
 
     def test_ecart_non_regle_bloque_sans_toucher_au_site(self):
-        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=[("Accueil", ["mobile"], None)]), \
+        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=([("Accueil", ["mobile"], None)], "run9")), \
                 mock.patch.object(A, "safe_update_run") as run:
             r = maj_nuit.traiter("vps1", site_maj(), {"rollback": True}, {}, False)
         run.assert_not_called()
@@ -70,7 +70,7 @@ class TestTraiter(IncidentsBase):
             A.SAFE.update({"verdict": "réussi", "steps": [
                 {"label": "Contrôle visuel VizProof", "ok": True, "detail": "ok",
                  "report": {"report_url": "https://v/r"}}]})
-        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=[]), \
+        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=([], "")), \
                 mock.patch.object(A, "safe_update_run", side_effect=faux) as run:
             r = maj_nuit.traiter("vps1", site_maj(), {"rollback": False}, {}, False)
         kw = run.call_args.kwargs
@@ -87,7 +87,7 @@ class TestTraiter(IncidentsBase):
         """slugs=[] voudrait dire « toutes » : un site qui n'a qu'un thème à jour
         doit passer with_plugins=False."""
         s = site_maj(plugins_updates_list=[])
-        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=[]), \
+        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=([], "")), \
                 mock.patch.object(A, "safe_update_run") as run:
             A.SAFE.update({"verdict": "réussi", "steps": []})
             maj_nuit.traiter("vps1", s, {}, {}, False)
@@ -300,6 +300,17 @@ class TestTemoinEtEchecs(IncidentsBase):
         out = nuit(r)
         self.assertEqual(out["nuits_attente"], 1)
 
+    def test_run_garde_ne_bloque_pas(self):
+        """Un passage jugé sain par la chaîne ne bloque pas les nuits suivantes."""
+        s = {"domain": "auto.fr", "vizproof": {"connected": True, "has_cli": True}}
+        rapport = {"run_id": "run1", "items": [{"page": "Accueil", "status": "fail", "viewport": "desktop"}]}
+        with mock.patch.object(maj_nuit.viz_nuit, "lire_rapport", return_value=rapport):
+            self.assertEqual(maj_nuit.ecart_ouvert("vps1", s, "run1"), ([], "run1"))
+            pages, rid = maj_nuit.ecart_ouvert("vps1", s, "autre")
+        self.assertEqual((pages, rid), ([("Accueil", ["desktop"], None)], "run1"))
+        self.assertEqual(A.viz_lien_run("cmv1rcxue0d9"), A.viz_api_base() + "/runs/cmv1rcxue0d9")
+        self.assertEqual(A.viz_lien_run("../x"), "")
+
     def test_refus_limite_aux_echecs(self):
         self._p = maj_nuit.PATH
         maj_nuit.PATH = os.path.join(self.data, "maj_nuit.json")
@@ -463,7 +474,7 @@ class TestCoeurMineur(IncidentsBase):
 
     def test_la_nuit_met_le_coeur_mineur_a_jour_avec_la_chaine(self):
         s = site_maj(plugins_updates_list=[], themes_list=[], core_version="7.1.2", core_update="7.1.3")
-        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=[]), \
+        with mock.patch.object(maj_nuit, "ecart_ouvert", return_value=([], "")), \
                 mock.patch.object(A, "safe_update_run") as run:
             A.SAFE.update({"verdict": "réussi", "steps": [], "echecs": {}})
             r = maj_nuit.traiter("vps1", s, {"rollback": True}, {}, False)
