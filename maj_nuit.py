@@ -50,6 +50,7 @@ import actions_server as A  # noqa: E402
 import viz_nuit  # noqa: E402
 
 PATH = os.path.join(DATA, "maj_nuit.json")
+ATTENTE = ("bloqué", "page instable")     # rien n'est fait tant que ce n'est pas réglé
 
 
 def a_mettre_a_jour(s, refus):
@@ -137,10 +138,11 @@ def recouper_natives(srv_name, s, dry):
     if not dry:
         for act in ("autoupdate_off", "themes_autoupdate_off"):
             A.run_action(srv_name, s.get("domain"), act, None)
-        A.alert(f"natives:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly",
-                f"⚠️ <b>{A.esc_html(s.get('domain'))}</b> — {n} mise(s) à jour automatique(s) "
-                "native(s) réactivée(s) alors que le site est en mode automatique du dashboard : "
-                "recoupées. WordPress / WP Toolkit les auraient appliquées sans contrôle.")
+        A.alert(f"natives:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly", A.carte(
+            "⚠️", s.get("domain"), "mises à jour automatiques de WordPress réactivées",
+            [f"{n} élément(s) en mise à jour native alors que le dashboard s'en charge : recoupé(s)"],
+            faire="Si ça revient, chercher qui les rallume (WP Toolkit, une extension, "
+                  "une restauration).", onglet="reglages"))
     return n
 
 
@@ -161,10 +163,11 @@ def recouper_coeur(srv_name, s, dry):
         return False
     if not dry:
         A.remote_bash(srv, site, "run config set WP_AUTO_UPDATE_CORE false --raw --skip-plugins --skip-themes", timeout=60)
-        A.alert(f"natives-coeur:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly",
-                f"⚠️ <b>{A.esc_html(s.get('domain'))}</b> — mise à jour automatique du cœur réactivée "
-                f"(WP_AUTO_UPDATE_CORE = {A.esc_html(val or 'absent')}) alors que le site est en mode automatique "
-                "du dashboard : coupée. Si WP Toolkit la remet, régler son « Cœur » sur « désactivé ».")
+        A.alert(f"natives-coeur:{s.get('domain')}:{time.strftime('%Y-%m-%d')}", "viz_anomaly", A.carte(
+            "⚠️", s.get("domain"), "mise à jour automatique du cœur réactivée",
+            [f"WP_AUTO_UPDATE_CORE = {val or 'absent'} alors que le dashboard s'en charge : coupée"],
+            faire="Si WP Toolkit la remet, régler son « Cœur » sur « désactivé ».",
+            onglet="reglages"))
     return True
 
 
@@ -231,6 +234,7 @@ def main():
     modes = A.auto_mode_load()
     precedent = load_json(PATH, {}) or {}
     refus_tous = precedent.get("refus") if isinstance(precedent.get("refus"), dict) else {}
+    sites_avant = precedent.get("sites") if isinstance(precedent.get("sites"), dict) else {}
     sites, refus_neufs, natives = {}, {}, {}
     for srv_name, s in A.visible_sites():
         dom = s.get("domain")
@@ -266,6 +270,15 @@ def main():
             garde.update({k: v for k, v in r["echecs"].items() if v})
         if garde:
             refus_neufs[dom] = garde
+        if r and r.get("verdict") in ATTENTE:
+            # Nuits d'attente consécutives : un site bloqué ne reçoit plus rien,
+            # et la durée dit l'urgence (« depuis 3 nuits »).
+            av = sites_avant.get(dom) if isinstance(sites_avant.get(dom), dict) else {}
+            if av.get("verdict") in ATTENTE:
+                r["nuits_attente"] = int(av.get("nuits_attente") or 1) + 1
+                r["attente_depuis"] = av.get("attente_depuis") or av.get("ts")
+            else:
+                r["nuits_attente"], r["attente_depuis"] = 1, r.get("ts")
         if r:
             sites[dom] = r
             print(f"{dom:28} {r['verdict']:32} {', '.join(r.get('items') or []) or '-'}"

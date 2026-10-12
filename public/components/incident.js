@@ -47,7 +47,7 @@ const KINDS = {
   viz_not_scanned: 'MAJ auto sans contrôle visuel',
   auto_update_noop: 'MAJ auto sans effet',
   auto_rollback: 'MAJ auto annulée',
-  auto_update_blocked: 'MAJ auto en attente',
+  auto_update_blocked: 'MAJ auto bloquée',
   auto_update_failed: 'MAJ auto non faite',
 };
 
@@ -188,9 +188,9 @@ function queFaire(kind, d) {
       + "comprendre ce qui cassait ; pour forcer cette version-là malgré tout, faites une "
       + "mise à jour contrôlée depuis la page du site. Le retour arrière remet les fichiers, "
       + "pas les données : une extension qui a migré ses tables peut demander une vérification.",
-    auto_update_blocked: "Le site est en mise à jour automatique, mais le dernier rapport "
-      + "VizProof montre des pages en échec. Mettre à jour par-dessus prendrait l'état cassé "
-      + "comme nouvelle référence : la nuit attend. Ouvrez le rapport : si l'écart est voulu "
+    auto_update_blocked: "Plus aucune mise à jour n'est faite sur ce site tant que ce n'est "
+      + "pas réglé. Le dernier rapport VizProof montre des pages en échec ; mettre à jour "
+      + "par-dessus prendrait l'état cassé comme nouvelle référence. Ouvrez le rapport : si l'écart est voulu "
       + "(contenu modifié, carrousel), acceptez-le comme référence dans VizProof ; sinon, "
       + "réparez la page. Les mises à jour reprennent la nuit suivante.",
     auto_update_failed: "La mise à jour de la nuit s'est arrêtée avant de toucher au site : "
@@ -225,6 +225,13 @@ const PHP_BRUIT = {
     + "et l'erreur ne s'est pas répétée. Rien à corriger ; vérifiez seulement que le site "
     + "s'affiche. Si le compteur grimpe aux relevés suivants, ce n'est plus passager : "
     + "la mise à jour a laissé l'extension incomplète, réinstallez-la.",
+  isolee:
+    "Vue une ou deux fois seulement, et aucune mise à jour récente de ce composant : "
+    + "rien ne dit que des visiteurs en souffrent. Le plus souvent, c'est un robot qui "
+    + "envoie une requête trafiquée (un scanner de failles qui injecte des caractères dans "
+    + "un paramètre) ou une page lente qui a dépassé une fois son délai. Rien à faire tant "
+    + "qu'elle ne se répète pas ; si le compteur grimpe, elle remonte d'elle-même dans "
+    + "« à traiter ».",
   rest_batch:
     "Un robot sonde la route REST /batch/v1. Le cœur lui renvoie une erreur, puis la "
     + "traite comme une requête — d'où la fatale. Elle vient de l'extérieur : le site "

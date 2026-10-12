@@ -146,10 +146,12 @@ class TestIncidents(IncidentsBase):
         self.poser("ÉCHEC — intervention requise")
         self.assertEqual(self.par_kind("auto_rollback")[0]["severity"], "critical")
 
-    def test_bloque_a_planifier(self):
-        self.poser("bloqué", cause="écart VizProof non réglé (Accueil)")
+    def test_bloque_a_traiter(self):
+        # plus aucune mise à jour tant que ce n'est pas réglé (terrainnova, 11-12/10)
+        self.poser("bloqué", cause="écart VizProof non réglé (Accueil)", nuits_attente=3)
         inc = self.par_kind("auto_update_blocked")
-        self.assertEqual(inc[0]["bucket"], "plan")
+        self.assertEqual(inc[0]["bucket"], "now")
+        self.assertIn("depuis 3 nuits", inc[0]["title"])
 
     def test_ecart_conserve(self):
         self.poser("réussie avec anomalies visuelles")
@@ -272,7 +274,31 @@ class TestTemoinEtEchecs(IncidentsBase):
             "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["x"],
             "verdict": "page instable", "cause": "Scan témoin : Accueil (a11y)"}}})
         self.vider_cache()
-        self.assertEqual(self.par_kind("auto_update_blocked")[0]["bucket"], "plan")
+        self.assertEqual(self.par_kind("auto_update_blocked")[0]["bucket"], "now")
+
+    def test_nuits_attente_cumulees(self):
+        self._p = maj_nuit.PATH
+        maj_nuit.PATH = os.path.join(self.data, "maj_nuit.json")
+        self.addCleanup(setattr, maj_nuit, "PATH", self._p)
+        A.save_json(maj_nuit.PATH, {"sites": {"auto.fr": {
+            "verdict": "bloqué", "ts": 100.0, "nuits_attente": 2, "attente_depuis": 50.0}}})
+        r = {"domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["x"],
+             "verdict": "bloqué", "cause": "écart VizProof non réglé (Accueil)"}
+
+        def nuit(res):
+            with mock.patch.object(A, "auto_mode_load", return_value={"auto.fr": {}}), \
+                    mock.patch.object(A, "visible_sites", return_value=[("vps1", site_maj())]), \
+                    mock.patch.object(A, "attendre_envois"), \
+                    mock.patch.object(maj_nuit, "traiter", return_value=dict(res)), \
+                    mock.patch("builtins.print"):
+                maj_nuit.main()
+            return A.load_json(maj_nuit.PATH, {})["sites"]["auto.fr"]
+        out = nuit(r)
+        self.assertEqual((out["nuits_attente"], out["attente_depuis"]), (3, 50.0))
+        out = nuit(dict(r, verdict="réussi"))            # réglé : le compteur repart
+        self.assertNotIn("nuits_attente", out)
+        out = nuit(r)
+        self.assertEqual(out["nuits_attente"], 1)
 
     def test_refus_limite_aux_echecs(self):
         self._p = maj_nuit.PATH

@@ -1002,8 +1002,17 @@ class TestBucket(IncidentsBase):
         self.poser_fleet(self.serveur(sites=[site("a.fr")]))
         self.poser_json(A.PHPERR_PATH, {"sites": [{"domain": "a.fr", "groups": [
             {"severity": "Fatal error", "message": "boom", "short": "a.php", "line": 3,
-             "count": 1, "first": ts_local(time.time()), "last": ts_local(time.time())}]}]})
+             "count": 4, "first": ts_local(time.time()), "last": ts_local(time.time())}]}]})
         self.assertEqual(self.bucket("php_fatal"), "now")
+
+    def test_php_fatal_isolee_a_planifier(self):
+        """×1 sans mise à jour récente : un scanner, une requête anormale (ffhbi,
+        12/10) — elle ne dit rien de l'état du site."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        self.poser_json(A.PHPERR_PATH, {"sites": [{"domain": "a.fr", "groups": [
+            {"severity": "Fatal error", "message": "boom", "short": "a.php", "line": 3,
+             "count": 1, "first": ts_local(time.time()), "last": ts_local(time.time())}]}]})
+        self.assertEqual(self.bucket("php_fatal"), "plan")
 
     def test_vuln_critique_corrigeable_est_a_traiter(self):
         self.poser_fleet(self.serveur(sites=[site("a.fr")]))
@@ -1835,10 +1844,14 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
                 return [(i["extra"]["famille"], i["bucket"]) for i in A.inc_php_fatal(index, time.time())]
 
         self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t]}), [("maj_en_cours", "plan")])
-        # aucune mise à jour de ce composant : vrai problème
-        self.assertEqual(familles([grp(1)], {("a.fr", "autre"): [t]}), [("", "now")])
-        # mise à jour trop loin dans le temps
+        # aucune mise à jour de ce composant, une seule fois : isolée
+        self.assertEqual(familles([grp(1)], {("a.fr", "autre"): [t]}), [("isolee", "plan")])
+        # … mais répétée : vrai problème
+        self.assertEqual(familles([grp(3)], {("a.fr", "autre"): [t]}), [("", "now")])
+        # mise à jour hors de la fenêtre « passagère » mais récente : régression possible
         self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t - 6 * 3600]}), [("", "now")])
+        # mise à jour vieille de plus de 48 h : isolée
+        self.assertEqual(familles([grp(1)], {("a.fr", "seo"): [t - 50 * 3600]}), [("isolee", "plan")])
         # l'erreur se répète : le site est cassé pour de bon
         self.assertEqual(familles([grp(40)], {("a.fr", "seo"): [t]}), [("", "now")])
         # même instant, autre symptôme : l'autoloader ne trouve pas la classe
@@ -1856,7 +1869,7 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
              "famille": "acces_direct"},
             {"severity": "Fatal error", "message": "Maximum execution time exceeded",
              "file": "/x/wp-content/plugins/divi/a.php", "short": "a.php", "line": 9,
-             "count": 1, "first": "2026-09-09 07:07", "trace": []},
+             "count": 5, "first": "2026-09-09 07:07", "trace": []},
         ]}]}
         index = {"a.fr": ("srv1", {"domain": "a.fr", "via": "ssh"})}
         with mock.patch.object(A, "incident_json", return_value=errs):
@@ -1866,3 +1879,33 @@ class FatalesDeclencheesDeLExterieur(unittest.TestCase):
         self.assertEqual((par["acces_direct"]["severity"], par["acces_direct"]["bucket"]),
                          ("warning", "plan"))
         self.assertEqual((par[""]["severity"], par[""]["bucket"]), ("critical", "now"))
+
+
+class TestCarteAlerte(unittest.TestCase):
+    """Format commun des alertes Telegram : quoi, détail, que faire, lien."""
+
+    def test_carte(self):
+        with mock.patch.object(A, "nom_usage", side_effect=lambda d: d), \
+                mock.patch.object(A, "settings_cfg", return_value={"public_url": "https://d.fr/"}):
+            t = A.carte("💾", "a.fr", "aucune sauvegarde depuis 30 j", ["Seuil : <48 h>", ""],
+                        faire="Relancer", onglet="sauvegardes")
+        lignes = t.split("\n")
+        self.assertEqual(lignes[0], "💾 <b>a.fr</b> — aucune sauvegarde depuis 30 j")
+        self.assertEqual(lignes[1], "• Seuil : &lt;48 h&gt;")      # échappé, vide écarté
+        self.assertEqual(lignes[2], "👉 Relancer")
+        self.assertEqual(lignes[3], '<a href="https://d.fr/#site/a.fr/sauvegardes">Ouvrir dans le dashboard</a>')
+
+    def test_rappel_etat(self):
+        """Un état qui dure n'est pas renvoyé chaque jour."""
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(A, "ALERTS_STATE_PATH", os.path.join(d, "s.json")), \
+                mock.patch.object(A, "alerts_cfg", return_value={"enabled": True, "rules": {}}), \
+                mock.patch.object(A, "send_telegram") as envoi:
+            self.assertTrue(A.alert("k", None, "x", rappel=A.RAPPEL_ETAT))
+            etat = A.load_json(os.path.join(d, "s.json"), {})
+            etat["k"] -= 2 * 86400                         # deux jours plus tard
+            A.save_json(os.path.join(d, "s.json"), etat)
+            self.assertFalse(A.alert("k", None, "x", rappel=A.RAPPEL_ETAT))
+            self.assertTrue(A.alert("j", None, "x"))
+        self.assertEqual(envoi.call_count, 2)
+

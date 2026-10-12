@@ -2279,8 +2279,12 @@ def pct_fr(v):
     return (f"{n:.4f}" if n and abs(n) < 0.01 else f"{n:.2f}").replace(".", ",") + " %"
 
 
+ECART_A_FAIRE = ("Regarder les pages ci-dessus : si c'est cassé, revenir en arrière "
+                 "(onglet Sauvegardes) ; si c'est voulu, accepter l'écart dans VizProof.")
+
+
 def texte_ecart_visuel(domain, titre, mises_a_jour=None, rapport=None, report_url="",
-                       suite="", pages=None):
+                       suite="", pages=None, faire=ECART_A_FAIRE):
     """Alerte Telegram d'un écart visuel : quoi, où, combien, et où regarder.
 
     L'ancien texte (« VizProof signale des anomalies visuelles : à vérifier à
@@ -2289,7 +2293,7 @@ def texte_ecart_visuel(domain, titre, mises_a_jour=None, rapport=None, report_ur
     `rapport` = payload de viz_report_payload (items, totals) ; `pages` = lignes
     déjà rédigées quand l'appelant n'a pas de rapport complet.
     """
-    lignes = [f"🟠 <b>{esc_html(nom_usage(domain))}</b> · {esc_html(titre)}"]
+    lignes = [f"🟠 <b>{esc_html(nom_usage(domain))}</b> — {esc_html(titre)}"]
     if mises_a_jour:
         lignes.append("Mis à jour : " + esc_html(", ".join(mises_a_jour)))
     items = [x for x in ((rapport or {}).get("items") or []) if isinstance(x, dict)]
@@ -2313,14 +2317,16 @@ def texte_ecart_visuel(domain, titre, mises_a_jour=None, rapport=None, report_ur
         lignes.append("• " + esc_html(l))
     identiques = sum(1 for x in items if x.get("status") == "ok")
     if identiques:
-        lignes.append(f"{identiques} autre(s) capture(s) identique(s).")
+        lignes.append(f"({identiques} autre(s) capture(s) identique(s))")
     if suite:
         lignes.append(esc_html(suite))
+    if faire:
+        lignes.append("👉 " + esc_html(faire))
     liens = []
     base = str(settings_cfg().get("public_url") or "").rstrip("/")
     if base:
         cible = urllib.parse.quote(str(domain), safe="")
-        liens.append(f'<a href="{esc_html(base)}/#site/{cible}/vizproof">Voir dans le dashboard</a>')
+        liens.append(f'<a href="{esc_html(base)}/#site/{cible}/vizproof">Ouvrir dans le dashboard</a>')
     if report_url and str(report_url).startswith("https://"):
         liens.append(f'<a href="{esc_html(report_url)}">Rapport VizProof</a>')
     if liens:
@@ -2344,7 +2350,9 @@ def viz_verdict_publish(server, domain, action, res, duree=0):
             domain, f"écart visuel après « {libelle} »",
             rapport=res.get("report") if isinstance(res.get("report"), dict) else None,
             report_url=res.get("report_url") or "",
-            suite="Rien n'a été annulé : la mise à jour simple ne garde pas d'archive."))
+            suite="Rien n'a été annulé : la mise à jour simple ne garde pas d'archive.",
+            faire="Regarder les pages ci-dessus : si c'est cassé, réinstaller la version "
+                  "précédente à la main ; si c'est voulu, accepter l'écart dans VizProof."))
 
 
 def viz_after_update_worker(server, domain, action, t0=None, prev_id=""):
@@ -3658,9 +3666,10 @@ echo "TAILLE_ARCHIVES_MO=$(du -sm {sq(arc)} 2>/dev/null | cut -f1)"
                 faites = [f"{p} {versions_avant.get(p) or '?'} → {(cibles.get(p) or {}).get('to') or '?'}"
                           for p in pending] + list(pending_th) + (["WordPress"] if core_target else [])
                 alert(f"viz_anomaly:{domain}", "viz_anomaly", texte_ecart_visuel(
-                    domain, "écart visuel après la MAJ sûre", mises_a_jour=faites,
+                    domain, "écart visuel après la mise à jour contrôlée", mises_a_jour=faites,
                     rapport=rapp, report_url=rapport or "",
-                    suite="Mise à jour conservée (réglage) · point de restauration dans l'onglet Sauvegardes."))
+                    suite="Mise à jour conservée (le retour arrière automatique est désactivé "
+                          "pour ce site) · point de restauration gardé."))
         else:
             rb = f'''
 PLUGDIR={sq(plugdir or "$D/wp-content/plugins")}
@@ -3712,9 +3721,26 @@ echo "MAINTENANCE_POSEE=$POSE"
             ok3, _st3, size3, msg3 = health_probe(site)
             safe_step("Contrôle après retour arrière", ok3, msg3)
             SAFE["verdict"] = "annulé (retour arrière)" if ok3 else "ÉCHEC — intervention requise"
-            alert(f"safeupdate:{domain}", None,
-                  f"⛔ <b>{esc_html(domain)}</b> — mise à jour annulée automatiquement "
-                  f"({n_res} élément(s) remis en arrière). Verdict : {esc_html(SAFE['verdict'])}")
+            pourquoi = next((f"{e['label']} : {str(e.get('detail') or '')[:120]}" for e in SAFE["steps"]
+                             if not e.get("ok") and not e["label"].startswith(("Retour arrière",
+                                                                                "Contrôle après retour"))), "")
+            vises = ", ".join(list(pending) + [f"thème {t}" for t in pending_th]
+                              + (["WordPress"] if with_core else []))
+            if ok3:
+                alert(f"safeupdate:{domain}", None, carte(
+                    "↩️", domain, "mise à jour annulée, site rétabli",
+                    [f"Visé : {vises}" if vises else "", f"Cause : {pourquoi}" if pourquoi else "",
+                     f"{n_res} élément(s) remis à leur version d'avant"],
+                    faire="Rien d'urgent : le site tourne comme avant. Ces versions ne seront "
+                          "pas retentées ; regarder le rapport pour décider.",
+                    onglet="historique"))
+            else:
+                alert(f"safeupdate:{domain}", None, carte(
+                    "⛔", domain, "mise à jour ratée, le retour arrière n'a pas suffi",
+                    [f"Visé : {vises}" if vises else "", f"Cause : {pourquoi}" if pourquoi else "",
+                     f"Point de restauration : {arc}"],
+                    faire="Intervenir maintenant : le site est peut-être en erreur.",
+                    onglet="historique"))
         try:
             duree = round((datetime.datetime.now() - datetime.datetime.strptime(
                 SAFE["started"], "%Y-%m-%d %H:%M:%S")).total_seconds())
@@ -4743,8 +4769,47 @@ def nom_usage(domain):
     return str(domain)
 
 
-def alert(key, rule, text):
-    """Alerte Telegram : alertes activées + règle active + anti-spam de 24 h sur la clé."""
+def lien_site(domain, onglet=""):
+    """Lien HTML vers la page du site dans le dashboard ('' sans `public_url`)."""
+    base = str(settings_cfg().get("public_url") or "").rstrip("/")
+    if not base or not domain:
+        return ""
+    cible = urllib.parse.quote(str(domain), safe="")
+    return (f'<a href="{esc_html(base)}/#site/{cible}' + (f"/{onglet}" if onglet else "")
+            + '">Ouvrir dans le dashboard</a>')
+
+
+def carte(emoji, domain, quoi, lignes=(), faire="", onglet="", lien=True):
+    """Alerte Telegram au format commun — trois questions, dans cet ordre :
+
+        🔐 <b>site</b> — ce qui se passe, en mots simples
+        • le détail utile (une ligne chacun, quatre au plus)
+        👉 ce qu'il faut faire (ou « rien à faire »)
+        Ouvrir dans le dashboard
+
+    Chaque alerte avait son format (« Site : », « Moniteur : », « Verdict : »,
+    « (plesk-mutu) », « il y a 716 h — seuil 48 h ») et aucune ne disait quoi
+    faire. `lignes` et `faire` sont du texte brut, échappé ici."""
+    tete = (f"{emoji} <b>{esc_html(nom_usage(domain))}</b> — {esc_html(quoi)}" if domain
+            else f"{emoji} <b>{esc_html(quoi)}</b>")
+    out = [tete] + [f"• {esc_html(l)}" for l in list(lignes)[:4] if str(l).strip()]
+    if faire:
+        out.append(f"👉 {esc_html(faire)}")
+    l = lien_site(domain, onglet) if lien else ""
+    if l:
+        out.append(l)
+    return "\n".join(out)
+
+
+RAPPEL_ETAT = 7 * 86400   # un ÉTAT qui dure (sauvegarde, certificat) : rappel hebdomadaire
+
+
+def alert(key, rule, text, rappel=None):
+    """Alerte Telegram : alertes activées + règle active + anti-spam sur la clé.
+
+    `rappel` : délai avant de renvoyer la même clé (24 h par défaut). Un état
+    qui dure — sauvegarde en retard d'un site suspendu — revenait chaque jour
+    sans rien d'autre à dire : il est déjà dans le bilan quotidien."""
     cfg = alerts_cfg()
     if not cfg.get("enabled"):
         return False
@@ -4759,12 +4824,12 @@ def alert(key, rule, text):
             last = float(state.get(key) or 0)
         except (TypeError, ValueError):
             last = 0
-        if now - last < ALERT_COOLDOWN:
+        if now - last < (rappel or ALERT_COOLDOWN):
             return False
         state[key] = now
-        # purge des clés devenues inutiles (plus de 7 jours)
+        # purge des clés devenues inutiles (plus de 14 jours)
         state = {k: v for k, v in state.items()
-                 if isinstance(v, (int, float)) and now - v < 7 * ALERT_COOLDOWN}
+                 if isinstance(v, (int, float)) and now - v < 14 * ALERT_COOLDOWN}
         save_json(ALERTS_STATE_PATH, state)
     send_telegram(text)
     return True
@@ -4808,37 +4873,43 @@ def evaluate_alerts(changes=None):
             login = compte.split(" <")[0]
             if login in ((base.get(ch.get("domain")) or {}).get("logins") or []):
                 continue
-            sent += alert(f"new_admin:{ch.get('domain')}:{compte}", "new_admin",
-                          "🛑 <b>Nouvel administrateur</b>"
-                          f"\nSite : <b>{esc_html(nom_usage(ch.get('domain')))}</b>"
-                          f"\nCompte : <code>{esc_html(compte)}</code>")
+            sent += alert(f"new_admin:{ch.get('domain')}:{compte}", "new_admin", carte(
+                "🛑", ch.get("domain"), "nouvel administrateur", [f"Compte : {compte}"],
+                faire="Si ni toi ni le client ne l'avez créé, le site est probablement "
+                      "compromis : supprimer le compte et lancer un scan.",
+                onglet="securite"))
 
     # 2) sauvegardes UpdraftPlus périmées
     stale_h = to_number(rules.get("backup_stale_h"))
     if stale_h:
         for server, s in visible_sites():
             up = s.get("updraft")
-            if not up:
-                continue  # pas d'UpdraftPlus configuré : rien à comparer
+            if not up or s.get("preprod"):
+                continue  # pas d'UpdraftPlus configuré, ou préprod (repliée au bilan)
             ts = to_number(up.get("last_backup_ts"))
             age_h = (now - ts) / 3600 if ts else None
             if age_h is not None and age_h <= stale_h:
                 continue
-            detail = f"il y a {age_h:.0f} h" if age_h is not None else "aucune sauvegarde connue"
-            sent += alert(f"backup_stale:{s.get('domain')}", "backup_stale_h",
-                          "💾 <b>Sauvegarde périmée</b>"
-                          f"\nSite : <b>{esc_html(nom_usage(s.get('domain')))}</b> ({esc_html(server)})"
-                          f"\nDernière : {esc_html(detail)} — seuil {stale_h:g} h")
+            quoi = (f"aucune sauvegarde depuis {duree_h(age_h)}" if age_h is not None
+                    else "aucune sauvegarde connue")
+            sent += alert(f"backup_stale:{s.get('domain')}", "backup_stale_h", carte(
+                "💾", s.get("domain"), quoi, [f"Seuil d'alerte : {duree_h(stale_h)}"],
+                faire="Regarder pourquoi UpdraftPlus ne tourne plus (planification, "
+                      "sémaphore bloqué, stockage distant), puis lancer une sauvegarde.",
+                onglet="sauvegardes"), rappel=RAPPEL_ETAT)
 
     # 3) checksums du core en échec (data/checksums.json)
     if rules.get("checksum_fail"):
         for dom, rec in (load_json(CHECKSUMS_PATH, {}) or {}).items():
             if not isinstance(rec, dict) or rec.get("ok") is not False:
                 continue
-            sent += alert(f"checksum_fail:{dom}", "checksum_fail",
-                          "🧬 <b>Checksums du core en échec</b>"
-                          f"\nSite : <b>{esc_html(nom_usage(dom))}</b>"
-                          f"\n<code>{esc_html((rec.get('output_tail') or '')[-300:])}</code>")
+            fichiers = [l.strip() for l in str(rec.get("output_tail") or "").splitlines()
+                        if l.strip()][-3:]
+            sent += alert(f"checksum_fail:{dom}", "checksum_fail", carte(
+                "🧬", dom, "fichiers du cœur WordPress modifiés", [x[:140] for x in fichiers],
+                faire="Un fichier du cœur ne devrait jamais changer : vérifier qu'il ne "
+                      "s'agit pas d'un code malveillant, puis réinstaller le cœur.",
+                onglet="securite"), rappel=RAPPEL_ETAT)
 
     # 4) certificats TLS proches de l'expiration (info relevée par Kuma)
     cert_days = to_number(rules.get("cert_days"))
@@ -4848,13 +4919,14 @@ def evaluate_alerts(changes=None):
             if days is None or days > cert_days:
                 continue
             auto = cert_auto(c.get("issuer"))
-            sent += alert(f"cert:{c.get('monitor')}", "cert_days",
-                          ("🔐 <b>Renouvellement TLS automatique en échec</b>" if auto
-                           else "🔐 <b>Certificat proche de l'expiration</b>")
-                          + f"\nSite : <b>{esc_html(c.get('monitor'))}</b>"
-                          + f"\nExpire dans {days} jour(s)"
-                          + (f"\n{esc_html(c.get('issuer'))} renouvelle normalement à 30 j : "
-                             "le renouvellement ne passe plus." if auto else ""))
+            sent += alert(f"cert:{c.get('monitor')}", "cert_days", carte(
+                "🔐", c.get("monitor"), f"certificat HTTPS expire dans {days} j",
+                [f"{c.get('issuer')} renouvelle normalement à 30 j : le renouvellement "
+                 "automatique ne passe plus"] if auto else [],
+                faire=("Relancer l'émission dans Plesk (SSL It!) ; si elle échoue, chercher "
+                       "un sous-domaine qui ne pointe plus sur le serveur." if auto
+                       else "Renouveler le certificat avant l'échéance."),
+                onglet="securite"), rappel=RAPPEL_ETAT if days > 7 else None)
 
     # 5) collecteur muet (dernière ligne de collect_history.jsonl)
     dead_h = to_number(rules.get("collect_dead_h"))
@@ -4864,9 +4936,10 @@ def evaluate_alerts(changes=None):
         age_h = (now - last) / 3600 if last else None
         if age_h is None or age_h > dead_h:
             detail = f"il y a {age_h:.0f} h" if age_h is not None else "aucun historique"
-            sent += alert("collect_dead", "collect_dead_h",
-                          "🕳 <b>Collecteur muet</b>"
-                          f"\nDernière collecte : {esc_html(detail)} — seuil {dead_h:g} h")
+            sent += alert("collect_dead", "collect_dead_h", carte(
+                "🕳", "", f"Dashboard — plus de collecte ({detail})", [],
+                faire="Le dashboard ne voit plus le parc : vérifier le cron et "
+                      "/var/log/wp-dashboard.log sur le VPS."))
     return {"enabled": True, "sent": sent}
 
 
@@ -5333,6 +5406,14 @@ RE_FICHIER_MANQUANT = re.compile(
 RE_SLUG_CONTENU = re.compile(r"(?:^|/)wp-content/(?:plugins|themes)/([^/]+)/")
 MAJ_FENETRE_S = 3 * 3600      # écart toléré entre la fatale et la MAJ journalisée
 MAJ_MAX_OCCURRENCES = 5       # au-delà, ce n'est plus passager : le site est cassé
+# Fatale « isolée » : moins de FATALE_REPETEE occurrences dans la fenêtre, et
+# aucune mise à jour de son composant dans les MAJ_REGRESSION_S précédentes.
+# Les fatales ×1 restées dans la file en octobre 2026 étaient des scanners de
+# vulnérabilités (ffhbi, 12/10 : `'XRGywI<'">` injecté dans ?pdfemb-data, la
+# même requête propre répond 200) ou un délai dépassé ponctuel. Un défaut qui
+# touche les visiteurs se répète ; une régression suit une mise à jour.
+FATALE_REPETEE = 3
+MAJ_REGRESSION_S = 48 * 3600
 
 
 def maj_recentes(now, jours=3):
@@ -5367,6 +5448,20 @@ def fatale_de_mise_a_jour(dom, g, n, majs):
     if not quand:
         return False
     return any(abs(t - quand) <= MAJ_FENETRE_S for t in majs.get((dom, m.group(1)), ()))
+
+
+def fatale_isolee(dom, g, n, majs):
+    """Vrai si la fatale ne dit rien de l'état du site : peu d'occurrences, et
+    pas de mise à jour récente du composant fautif (sinon c'est peut-être une
+    régression, même vue une seule fois)."""
+    if n >= FATALE_REPETEE:
+        return False
+    m = RE_SLUG_CONTENU.search(str(g.get("file") or g.get("short") or ""))
+    quand = parse_ts(g.get("last") or g.get("first"))
+    if m and quand:
+        if any(0 <= quand - t <= MAJ_REGRESSION_S for t in majs.get((dom, m.group(1)), ())):
+            return False
+    return True
 
 
 def inc_php_fatal(index, now):
@@ -5408,6 +5503,8 @@ def inc_php_fatal(index, now):
             famille = str(g.get("famille") or "")
             if not famille and fatale_de_mise_a_jour(dom, g, n, majs):
                 famille = "maj_en_cours"
+            if not famille and fatale_isolee(dom, g, n, majs):
+                famille = "isolee"
             out.append(make_incident(
                 "php_fatal", "warning" if famille else "critical", dom,
                 f"{g.get('severity') or 'Fatal error'} sur {dom}",
@@ -5879,17 +5976,24 @@ def inc_maj_nuit(index, now):
                 "viz_auto_update", "warning", cle, f"Écart visuel après la mise à jour de nuit sur {cle}",
                 f"{items} → mise à jour conservée, écart à regarder",
                 site=cle, server=server, since=since, now=now, link=lien, extra=x))
-        elif verdict == "page instable":
+        elif verdict in ("page instable", "bloqué"):
+            # « À traiter », pas « à planifier » : tant que l'écart n'est pas
+            # réglé dans VizProof, le site ne reçoit PLUS AUCUNE mise à jour.
+            # Rangé en « à planifier », terrainnova est resté bloqué deux nuits
+            # (11-12/10) sans que personne le voie.
+            nuits = int(to_number(r.get("nuits_attente")) or 1)
+            if verdict == "page instable":
+                motif = ((cause or "page instable") + " — tant qu'elle bouge seule, son "
+                         "contrôle ne dit rien de la mise à jour")
+            else:
+                motif = cause or "un écart VizProof n'est pas réglé"
             out.append(make_incident(
-                "auto_update_blocked", "warning", cle, f"Mises à jour de nuit en attente sur {cle}",
-                (cause or "page instable") + " — tant qu'elle bouge seule, son contrôle ne dit rien "
-                "de la mise à jour",
-                site=cle, server=server, since=since, now=now, link=lien, bucket="plan", extra=x))
-        elif verdict == "bloqué":
-            out.append(make_incident(
-                "auto_update_blocked", "warning", cle, f"Mises à jour de nuit en attente sur {cle}",
-                cause or "un écart VizProof n'est pas réglé",
-                site=cle, server=server, since=since, now=now, link=lien, bucket="plan", extra=x))
+                "auto_update_blocked", "warning", cle,
+                f"Mises à jour de nuit bloquées sur {cle}"
+                + (f" depuis {nuits} nuits" if nuits > 1 else ""),
+                motif, site=cle, server=server,
+                since=to_number(r.get("attente_depuis")) or since, now=now, link=lien,
+                bucket="now", extra=dict(x, nuits=nuits)))
         elif verdict in ("annulé", "impossible", "erreur"):
             out.append(make_incident(
                 "auto_update_failed", "warning", cle, f"Mise à jour de nuit non faite sur {cle}",
@@ -5897,8 +6001,8 @@ def inc_maj_nuit(index, now):
         for slug, vers in (r.get("echecs") or {}).items():
             out.append(make_incident(
                 "auto_update_noop", "warning", cle, f"Mise à jour impossible sur {cle}",
-                f"{slug} {vers} : paquet indisponible (licence expirée ?) — les autres mises à jour "
-                "ont été faites ; celle-ci sera retentée à la version suivante",
+                f"{slug} {vers} : paquet indisponible (licence expirée ?) — cette version ne "
+                "sera pas retentée, la suivante le sera",
                 site=cle, server=server, arg=str(slug), since=since, now=now, link=lien,
                 bucket="plan", extra={"item": slug, "version": vers}))
     return out
@@ -6267,11 +6371,10 @@ def ingest_event(domain, body):
              "domain": domain, "event": event, "detail": detail}
     append_event(entry)
     if event_is_critical(event, detail):
-        alert(f"event:{domain}:{event}:{detail[:60]}", "new_admin",
-              "🚨 <b>Évènement critique</b>"
-              f"\nSite : <b>{esc_html(nom_usage(domain))}</b>"
-              f"\nÉvènement : <code>{esc_html(event)}</code>"
-              f"\n{esc_html(detail[:300])}")
+        alert(f"event:{domain}:{event}:{detail[:60]}", "new_admin", carte(
+            "🚨", domain, f"évènement critique : {event}", [detail[:300]],
+            faire="Vérifier dans l'historique du site que c'est une action légitime.",
+            onglet="historique"))
     return entry
 
 
@@ -7439,9 +7542,10 @@ def wp_provision_bot(url, user, password, domain):
         try:
             # alert(clé, règle, texte) : la règle manquait, l'alerte ne partait
             # jamais (TypeError avalé par le except ci-dessous).
-            alert(f"admin_dedie:{domain}", "new_admin",
-                  f"👤 Compte <b>{esc_html(WP_BOT_LOGIN)}</b> (administrateur) créé sur "
-                  f"<b>{esc_html(domain)}</b> par le dashboard, pour la gestion à distance.")
+            alert(f"admin_dedie:{domain}", "new_admin", carte(
+                "👤", domain, f"compte {WP_BOT_LOGIN} créé par le dashboard",
+                ["Administrateur dédié à la gestion à distance"],
+                faire="Rien à faire : c'est le dashboard (pour information).", lien=False))
         except Exception:
             pass
     return WP_BOT_LOGIN, data["password"], ("compte dédié créé" if created

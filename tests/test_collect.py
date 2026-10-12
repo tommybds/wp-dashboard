@@ -1209,12 +1209,12 @@ class TestDigest(unittest.TestCase):
             return digest.libelle(i)
         self.assertEqual(
             f("wp-content/plugins/divi-builder/core/Utils.php", "Maximum execution time of 30 seconds exceeded", 4),
-            "<b>a.fr</b> : erreur fatale dans l’extension divi-builder (délai d’exécution dépassé), 4 fois")
+            "<b>a</b> — erreur fatale dans l’extension divi-builder (délai d’exécution dépassé), 4 fois")
         self.assertEqual(
             f("wp-content/themes/Divi/404.php", "Uncaught Error: Call to undefined function get_header()"),
-            "<b>a.fr</b> : erreur fatale dans le thème Divi (fonction introuvable)")
+            "<b>a</b> — erreur fatale dans le thème Divi (fonction introuvable)")
         # rien de reconnu : on garde le message brut, faute de mieux
-        self.assertEqual(f("", "Uncaught Error: Bidule"), "<b>a.fr</b> : erreur fatale : Uncaught Error: Bidule")
+        self.assertEqual(f("", "Uncaught Error: Bidule"), "<b>a</b> — erreur fatale : Uncaught Error: Bidule")
 
     def test_mise_a_jour_vue_en_cours_n_est_ni_ajout_ni_retrait(self):
         ch = [self.maj("a.fr", "− extension wp-mail-smtp", kind="plugin_remove"),
@@ -1224,7 +1224,7 @@ class TestDigest(unittest.TestCase):
         ch = [self.maj("a.fr", "− extension vieux", kind="plugin_remove"),
               self.maj("a.fr", "+ extension inconnue 1.0", kind="plugin_add", sev="warn")]
         lignes = digest.resume_changements(ch)
-        self.assertIn("  a.fr : + inconnue 1.0", lignes)
+        self.assertIn("  a : + inconnue 1.0", lignes)
         self.assertIn("• 1 extension retirée", lignes)
 
     def test_themes_comptes(self):
@@ -1255,35 +1255,34 @@ class TestDigest(unittest.TestCase):
             "d.fr": {"verdict": "rien à faire", "items": [], "ecartees": ["mec 7"]},
             "e.fr": {"verdict": "annulé (retour arrière)", "items": ["y"], "cause": "Contrôle : 500"},
         })
-        lignes = digest.resume_nuit(nuit, self.NUIT_NOW)
-        texte = "\n".join(lignes)
-        self.assertIn("✅ 1 site mis à jour", texte)
-        self.assertIn("<b>a.fr</b> : seo", texte)
-        self.assertNotIn("site mis à jour\n    <b>b.fr", texte)    # rien de fait sur b.fr
-        self.assertIn("<b>b.fr</b> : astra-addon 4.13.10", texte)
-        self.assertIn("⏸ En attente", texte)
-        self.assertIn("<b>c.fr</b> : écart VizProof non réglé", texte)
-        self.assertIn("<b>e.fr</b> : annulé (retour arrière) — Contrôle : 500", texte)
-        self.assertNotIn("d.fr", texte)
+        texte = "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW))
+        self.assertIn("• ✅ <b>a</b> — seo\n", texte)              # astra-addon n'est pas fait
+        self.assertIn("• ⚠️ <b>b</b> — astra-addon 4.13.10 impossible", texte)
+        self.assertNotIn("✅ <b>b</b>", texte)                    # rien de fait sur b
+        self.assertIn("• ⏸ <b>c</b> — bloqué : écart VizProof non réglé (Accueil)", texte)
+        self.assertIn("• ↩️ <b>e</b> — annulé (retour arrière) : Contrôle : 500", texte)
+        self.assertNotIn("<b>d</b>", texte)
+        nuit["sites"]["c.fr"]["nuits_attente"] = 3
+        self.assertIn("bloqué depuis 3 nuits", "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW)))
 
     def test_nuit_vide_et_absente(self):
         self.assertEqual(digest.resume_nuit(None, self.NUIT_NOW), [])
         self.assertEqual(digest.resume_nuit(self.nuit({}), self.NUIT_NOW),
-                         ["🌙 <b>Cette nuit</b>", "  rien à mettre à jour"])
+                         ["🌙 <b>Cette nuit</b> : rien à mettre à jour"])
         vieille = digest.resume_nuit(self.nuit({}, heures=28), self.NUIT_NOW)
         self.assertIn("Passe de nuit absente", vieille[0])
         texte, _ = digest.build_message([], 24, [], {}, now=self.NUIT_NOW, nuit=self.nuit({}))
-        self.assertIn("🌙 <b>Cette nuit</b>\n  rien à mettre à jour", texte)
+        self.assertIn("🌙 <b>Cette nuit</b> : rien à mettre à jour", texte)
 
     def test_nouveaux_et_regles(self):
         inc = [self.inc("i1", "a.fr"), self.inc("i2", "b.fr", kind="cert_expiring",
                                                   detail="expire dans 3 jour(s)")]
         texte, _ = digest.build_message([], 24, inc, {"i1": "x", "vieux": "<b>c.fr</b> : réparé"})
         self.assertIn("1 nouveau problème", texte)
-        self.assertIn("<b>b.fr</b> : certificat, expire dans 3 j", texte)
+        self.assertIn("<b>b</b> — certificat, expire dans 3 j\n   👉 relancer le certificat", texte)
         self.assertIn("✅ <b>Réglé</b> (1)", texte)
         self.assertIn("c.fr</b> : réparé", texte)
-        self.assertIn("Toujours ouvert</b> : 1 erreur fatale", texte)
+        self.assertIn("Toujours ouvert</b> (1)\n• 1 erreur fatale : a", texte)
 
     def test_premier_passage_rien_de_nouveau(self):
         texte, _ = digest.build_message([], 24, [self.inc("i1", "a.fr")], None)
@@ -1301,7 +1300,7 @@ class TestDigest(unittest.TestCase):
         self.assertNotIn("Changements", texte)
         ch.append(self.maj("a.fr", "seo 1 → 2"))
         texte, etat = digest.build_message(ch, 24, inc, {}, preprod={"test.x.fr"})
-        self.assertIn("🧪 Préprod : 6 changements · 1 incident (test.x.fr)", texte)
+        self.assertIn("🧪 Préprod : 6 changements · 1 incident (test.x)", texte)
         self.assertNotIn("À vérifier", texte)
         self.assertNotIn("Depuis hier", texte)
         self.assertEqual(etat["incidents"], {})       # la préprod n'entre pas dans l'état
@@ -1312,7 +1311,7 @@ class TestDigest(unittest.TestCase):
         ch += [self.maj("a.fr", f"− extension q{i}", kind="plugin_remove") for i in range(6)]
         ch.append(self.maj("a.fr", "+ admin bob <b@a.fr>", kind="admin_add", sev="warn"))
         texte, _ = digest.build_message(ch, 24, [], {})
-        self.assertIn("a.fr : changement massif, +6 / −6 extensions", texte)
+        self.assertIn("a : changement massif, +6 / −6 extensions", texte)
         self.assertIn("+ admin bob", texte)
         self.assertNotIn("p3", texte)
 
@@ -1334,7 +1333,7 @@ class TestDigest(unittest.TestCase):
         texte, _ = digest.build_message([], 24, [fix], prev)
         self.assertIn("🟠 1 correctif à appliquer", texte)
         self.assertIn("Correctif publié", texte)
-        self.assertIn("<b>a.fr</b> : gravityforms <code>3.1.0.2</code> → <code>3.1.0.3</code>", texte)
+        self.assertIn("<b>a</b> — gravityforms <code>3.1.0.2</code> → <code>3.1.0.3</code>", texte)
         self.assertNotIn("Depuis hier", texte)
         self.assertIn("✅ <b>Réglé</b> (1)", texte)     # seul b.fr
         self.assertNotIn("1 faille", texte)
@@ -1351,6 +1350,17 @@ class TestDigest(unittest.TestCase):
         self.assertIn("• PHP : e.fr 8.2.29 → 8.3.35", lignes)
         self.assertIn("• PHP, correctifs de l’hébergeur : 8.3.33 → 8.3.35 (3 sites)"
                       " · 8.5.10 → 8.5.11 (d.fr)", lignes)
+
+    def test_court(self):
+        self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
+        self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")
+        self.assertEqual(digest.court("jupiter.com/zavus-calculator"), "jupiter/zavus-calculator")
+        self.assertEqual(digest.court("localhost"), "localhost")
+
+    def test_toujours_ouvert_nomme_les_sites(self):
+        inc = [self.inc(f"v{i}", f"s{i}.fr", kind="vuln_critical_fixable") for i in range(8)]
+        lignes = digest.resume_familles(inc)
+        self.assertEqual(lignes, ["• 8 failles critiques corrigeables : s0, s1, s2, s3, s4, s5 … +2"])
 
     def test_lien_echappe(self):
         texte, _ = digest.build_message([self.maj("a.fr", "x 1 → 2")], 24, [], {},

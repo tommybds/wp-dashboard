@@ -78,6 +78,17 @@ def load_recent(hours):
     return out
 
 
+def court(site):
+    """« terrainnova.fr » → « terrainnova » : le nom se lit aussi bien, et
+    Telegram ne le transforme plus en lien bleu vers le site public (tous les
+    noms de site du bilan l'étaient, et rien n'y était utile)."""
+    site = str(site or "").removeprefix("www.")
+    hote, sep, chemin = site.partition("/")
+    if "." in hote:
+        hote = hote.rsplit(".", 1)[0]
+    return hote + sep + chemin
+
+
 def pluriel(n, mot, mots=None):
     return f"{n} {mot if n == 1 else (mots or mot + 's')}"
 
@@ -171,7 +182,7 @@ def resume_changements(changes):
         else:
             det = admins + autres + ajouts
         txt = ", ".join(det[:4]) + (f" … +{len(det) - 4}" if len(det) > 4 else "")
-        blocs.append(f"  {A.esc_html(dom)} : {A.esc_html(txt)}")
+        blocs.append(f"  {A.esc_html(court(dom))} : {A.esc_html(txt)}")
     if blocs:
         lignes.append("⚠️ <b>À vérifier</b>")
         lignes += blocs[:MAX_SECU]
@@ -301,7 +312,30 @@ def libelle(i):
                 quoi = quoi.replace(motif, " ")
         quoi = quoi.strip()
         quoi = quoi[:1].lower() + quoi[1:]
-    return f"<b>{A.esc_html(site)}</b> : {A.esc_html(quoi)}"
+    return f"<b>{A.esc_html(court(site))}</b> — {A.esc_html(quoi)}"
+
+
+# Le geste attendu, pour les incidents qui en ont un évident. Une nouveauté
+# sans « que faire » obligeait à ouvrir le dashboard pour le savoir.
+A_FAIRE = {
+    "auto_update_blocked": "régler l'écart dans VizProof (accepter ou corriger)",
+    "auto_update_failed": "voir la cause dans Mises à jour",
+    "auto_rollback": "intervenir sur le site",
+    "viz_auto_update": "regarder l'écart, revenir en arrière si c'est cassé",
+    "vuln_critical_fixable": "lancer la mise à jour",
+    "vuln_critical_unfixed": "désactiver ou remplacer l'extension",
+    "backup_late": "relancer UpdraftPlus",
+    "cert_expiring": "relancer le certificat (SSL It!)",
+    "admin_unknown": "vérifier ce compte, compromission possible",
+    "checksums_modified": "vérifier les fichiers du cœur, compromission possible",
+    "down": "vérifier le site",
+    "down_probe": "vérifier le site",
+}
+
+
+def ligne_nouveau(i):
+    faire = A_FAIRE.get(i.get("kind"))
+    return f"• {libelle(i)}" + (f"\n   👉 {A.esc_html(faire)}" if faire else "")
 
 
 FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert »
@@ -354,7 +388,7 @@ def libelle_correctif(i):
         quoi = f"{slug} {de} → {vers}".replace("  ", " ")
     else:
         quoi = re.sub(r" · .*$", "", str(i.get("title") or ""))
-    return f"<b>{A.esc_html(site)}</b> : {A.esc_html(quoi)}"
+    return f"<b>{A.esc_html(court(site))}</b> — {A.esc_html(quoi)}"
 
 
 # Telegram transforme en lien tout ce qui ressemble à une adresse IPv4 : une
@@ -367,18 +401,27 @@ def sans_lien_ip(ligne):
     return RE_IPV4.sub(r"<code>\1</code>", ligne)
 
 
-def resume_familles(incidents):
-    compte = collections.Counter(i.get("kind") for i in incidents)
+def resume_familles(incidents, max_sites=6):
+    """« Toujours ouvert » : une ligne par famille, avec les sites concernés.
+    Un compteur seul (« 6 failles critiques corrigeables ») ne disait pas où."""
+    par_kind = collections.defaultdict(list)
+    for i in incidents:
+        par_kind[i.get("kind")].append(i)
     out, vus = [], set()
+
+    def sites_de(xs):
+        noms = sorted({court(i.get("site") or i.get("server") or "") for i in xs} - {""})
+        txt = ", ".join(noms[:max_sites]) + (f" … +{len(noms) - max_sites}" if len(noms) > max_sites else "")
+        return f" : {A.esc_html(txt)}" if txt else ""
     for kinds, un, plusieurs in FAMILLES:
-        n = sum(compte.get(k, 0) for k in kinds)
+        xs = [i for k in kinds for i in par_kind.get(k, [])]
         vus.update(kinds)
-        if n:
-            out.append(pluriel(n, un, plusieurs))
-    reste = sum(n for k, n in compte.items() if k not in vus)
+        if xs:
+            out.append(f"• {pluriel(len(xs), un, plusieurs)}{sites_de(xs)}")
+    reste = [i for k, xs in par_kind.items() if k not in vus for i in xs]
     if reste:
-        out.append(pluriel(reste, "autre"))
-    return " · ".join(out)
+        out.append(f"• {pluriel(len(reste), 'autre')}{sites_de(reste)}")
+    return out
 
 
 def resume_nuit(nuit, now=None):
@@ -393,42 +436,36 @@ def resume_nuit(nuit, now=None):
         return []
     if (now - quand).total_seconds() > NUIT_FRAICHE_H * 3600:
         return [f"⚠️ <b>Passe de nuit absente</b> — dernière le {quand.strftime('%d/%m à %H:%M')}"]
-    faits, attente, rates, annules = [], [], [], []
+    lignes = []
     for dom, r in sorted((nuit.get("sites") or {}).items()):
         if not isinstance(r, dict):
             continue
-        d = f"<b>{A.esc_html(dom)}</b>"
+        d = f"<b>{A.esc_html(court(dom))}</b>"
         v = str(r.get("verdict") or "")
         echecs = r.get("echecs") if isinstance(r.get("echecs"), dict) else {}
-        for slug, vers in echecs.items():
-            rates.append(f"{d} : {A.esc_html(slug)} {A.esc_html(vers)}".rstrip())
         items = [str(x) for x in r.get("items") or [] if str(x) not in echecs]
         cause = str(r.get("cause") or "")
-        if v.startswith("réussi") and items:
-            faits.append(f"{d} : {A.esc_html(', '.join(items))}"
-                         + (" (écart visuel à regarder)" if "anomalies" in v else ""))
+        if v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
+            lignes.append(f"• {'⛔' if v.startswith('ÉCHEC') else '↩️'} {d} — {A.esc_html(v)}"
+                          + (f" : {A.esc_html(cause[:90])}" if cause else ""))
+        elif v.startswith("réussi") and items:
+            lignes.append(f"• ✅ {d} — {A.esc_html(', '.join(items))}"
+                          + (" (écart visuel à regarder)" if "anomalies" in v else ""))
         elif v in ("bloqué", "page instable"):
-            motif = "écart VizProof non réglé" if cause.startswith("écart VizProof") else (cause or v)
-            attente.append(f"{d} : {A.esc_html(motif[:90])}")
-        elif v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
-            annules.append(f"{d} : {A.esc_html(v)}" + (f" — {A.esc_html(cause[:90])}" if cause else ""))
-
-    def bloc(titre, lignes):
-        out = [f"  {titre}"] + [f"    {x}" for x in lignes[:MAX_NUIT]]
-        return out + ([f"    … +{len(lignes) - MAX_NUIT}"] if len(lignes) > MAX_NUIT else [])
-
-    lignes = ["🌙 <b>Cette nuit</b>"]
-    if annules:
-        lignes += bloc("↩️ Annulé / en échec", annules)
-    if faits:
-        lignes += bloc(f"✅ {pluriel(len(faits), 'site mis à jour', 'sites mis à jour')}", faits)
-    if rates:
-        lignes += bloc("⚠️ Impossible (paquet indisponible — licence ?)", rates)
-    if attente:
-        lignes += bloc("⏸ En attente", attente)
-    if len(lignes) == 1:
-        lignes.append("  rien à mettre à jour")
-    return lignes
+            m = re.search(r"\(([^)]*)\)", cause)
+            motif = ("écart VizProof non réglé" + (f" ({m.group(1)})" if m else "")
+                     if cause.startswith("écart VizProof") else (cause or v))
+            nuits = int(r.get("nuits_attente") or 1)
+            lignes.append(f"• ⏸ {d} — bloqué" + (f" depuis {nuits} nuits" if nuits > 1 else "")
+                          + f" : {A.esc_html(motif[:90])}")
+        for slug, vers in echecs.items():
+            lignes.append(f"• ⚠️ {d} — {A.esc_html(f'{slug} {vers}'.strip())} impossible "
+                          "(paquet indisponible, licence ?)")
+    if not lignes:
+        return ["🌙 <b>Cette nuit</b> : rien à mettre à jour"]
+    reste = len(lignes) - MAX_NUIT
+    return (["🌙 <b>Cette nuit</b>"] + lignes[:MAX_NUIT]
+            + ([f"• … +{reste}"] if reste > 0 else []))
 
 
 def contexte_parc():
@@ -495,26 +532,26 @@ def build_message(changes, hours=24, incidents=None, previous=None,
 
     if nouveaux:
         lignes.append("🆕 <b>Depuis hier</b>")
-        lignes += [f"  {libelle(i)}" for i in nouveaux[:MAX_NOUVEAUX]]
+        lignes += [ligne_nouveau(i) for i in nouveaux[:MAX_NOUVEAUX]]
         if len(nouveaux) > MAX_NOUVEAUX:
-            lignes.append(f"  … +{len(nouveaux) - MAX_NOUVEAUX}")
+            lignes.append(f"• … +{len(nouveaux) - MAX_NOUVEAUX}")
         lignes.append("")
     if publies:
         lignes.append("🔧 <b>Correctif publié</b> — faille critique, mise à jour à lancer")
-        lignes += [f"  {libelle_correctif(i)}" for i in publies[:MAX_NOUVEAUX]]
+        lignes += [f"• {libelle_correctif(i)}" for i in publies[:MAX_NOUVEAUX]]
         if len(publies) > MAX_NOUVEAUX:
-            lignes.append(f"  … +{len(publies) - MAX_NOUVEAUX}")
+            lignes.append(f"• … +{len(publies) - MAX_NOUVEAUX}")
         lignes.append("")
     if regles:
         lignes.append(f"✅ <b>Réglé</b> ({len(regles)})")
-        lignes += [f"  {lib}" for lib in regles[:MAX_REGLES]]
+        lignes += [f"• {lib}" for lib in regles[:MAX_REGLES]]
         if len(regles) > MAX_REGLES:
-            lignes.append(f"  … +{len(regles) - MAX_REGLES}")
+            lignes.append(f"• … +{len(regles) - MAX_REGLES}")
         lignes.append("")
     if lignes_nuit:
         lignes += lignes_nuit + [""]
     if ouverts:
-        lignes += [f"📌 <b>Toujours ouvert</b> : {resume_familles(ouverts)}", ""]
+        lignes += [f"📌 <b>Toujours ouvert</b> ({len(ouverts)})"] + resume_familles(ouverts) + [""]
 
     if resume:
         win = "24 h" if hours == 24 else f"{hours} h"
@@ -529,7 +566,7 @@ def build_message(changes, hours=24, incidents=None, previous=None,
             bouts.append(pluriel(len(ch_pp), "changement"))
         if inc_pp:
             bouts.append(pluriel(len(inc_pp), "incident"))
-        cites = ", ".join(noms[:4]) + (" …" if len(noms) > 4 else "")
+        cites = ", ".join(court(n) for n in noms[:4]) + (" …" if len(noms) > 4 else "")
         lignes += [f"🧪 Préprod : {' · '.join(bouts)} ({A.esc_html(cites)})", ""]
 
     lignes = [sans_lien_ip(x) for x in lignes]

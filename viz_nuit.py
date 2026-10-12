@@ -421,6 +421,15 @@ def texte_retour(r):
                                             else "contrôle impossible, à vérifier"))
     if r.get("contenus_modifies"):
         lignes.append("✏️ Contenu modifié dans l'intervalle : " + e(texte_contenus(r["contenus_modifies"])))
+    if t.get("impossibles") or ea:
+        lignes.append("👉 Intervenir : une partie n'a pas pu être rétablie, le site est peut-être "
+                      "encore abîmé.")
+    else:
+        lignes.append("👉 Rien d'urgent : le site tourne comme avant. Ces versions ne seront pas "
+                      "retentées ; si l'écart était voulu, l'accepter dans VizProof.")
+    lien = A.lien_site(r["domain"] or r["site"], "vizproof")
+    if lien:
+        lignes.append(lien)
     return "\n".join(lignes)
 
 
