@@ -1232,11 +1232,48 @@ class TestDigest(unittest.TestCase):
               self.maj("b.fr", "astra 4.13 → 4.14", kind="theme_update")]
         self.assertEqual(digest.resume_changements(ch), ["• 2 thèmes à jour sur 2 sites"])
 
-    def test_rien_de_neuf_pas_de_message(self):
+    def test_rien_de_neuf_message_quand_meme(self):
+        # un silence passerait pour « tout va bien » même cron ou Telegram en panne
         inc = [self.inc("i1", "a.fr")]
-        texte, etat = digest.build_message([], 24, inc, {"i1": "x"})
-        self.assertIsNone(texte)
+        texte, etat = digest.build_message([], 24, inc, {"i1": "x"}, n_sites=3)
+        self.assertIn("🟢 Rien de nouveau de grave · 3 sites · 1 à traiter", texte)
+        self.assertIn("Toujours ouvert", texte)
+        self.assertNotIn("Depuis hier", texte)
         self.assertIn("i1", etat["incidents"])
+
+    NUIT_NOW = datetime.datetime(2026, 10, 12, 8, 0)
+
+    def nuit(self, sites, heures=4):
+        ts = (self.NUIT_NOW - datetime.timedelta(hours=heures)).timestamp()
+        return {"ts": ts, "sites": sites}
+
+    def test_nuit_resume(self):
+        nuit = self.nuit({
+            "a.fr": {"verdict": "réussi", "items": ["astra-addon", "seo"], "echecs": {"astra-addon": "4.13.10"}},
+            "b.fr": {"verdict": "réussi", "items": ["astra-addon"], "echecs": {"astra-addon": "4.13.10"}},
+            "c.fr": {"verdict": "bloqué", "items": ["x"], "cause": "écart VizProof non réglé (Accueil) : …"},
+            "d.fr": {"verdict": "rien à faire", "items": [], "ecartees": ["mec 7"]},
+            "e.fr": {"verdict": "annulé (retour arrière)", "items": ["y"], "cause": "Contrôle : 500"},
+        })
+        lignes = digest.resume_nuit(nuit, self.NUIT_NOW)
+        texte = "\n".join(lignes)
+        self.assertIn("✅ 1 site mis à jour", texte)
+        self.assertIn("<b>a.fr</b> : seo", texte)
+        self.assertNotIn("site mis à jour\n    <b>b.fr", texte)    # rien de fait sur b.fr
+        self.assertIn("<b>b.fr</b> : astra-addon 4.13.10", texte)
+        self.assertIn("⏸ En attente", texte)
+        self.assertIn("<b>c.fr</b> : écart VizProof non réglé", texte)
+        self.assertIn("<b>e.fr</b> : annulé (retour arrière) — Contrôle : 500", texte)
+        self.assertNotIn("d.fr", texte)
+
+    def test_nuit_vide_et_absente(self):
+        self.assertEqual(digest.resume_nuit(None, self.NUIT_NOW), [])
+        self.assertEqual(digest.resume_nuit(self.nuit({}), self.NUIT_NOW),
+                         ["🌙 <b>Cette nuit</b>", "  rien à mettre à jour"])
+        vieille = digest.resume_nuit(self.nuit({}, heures=28), self.NUIT_NOW)
+        self.assertIn("Passe de nuit absente", vieille[0])
+        texte, _ = digest.build_message([], 24, [], {}, now=self.NUIT_NOW, nuit=self.nuit({}))
+        self.assertIn("🌙 <b>Cette nuit</b>\n  rien à mettre à jour", texte)
 
     def test_nouveaux_et_regles(self):
         inc = [self.inc("i1", "a.fr"), self.inc("i2", "b.fr", kind="cert_expiring",
@@ -1258,9 +1295,10 @@ class TestDigest(unittest.TestCase):
         ch = [self.maj("test.x.fr", f"pods {i} → {i + 1}") for i in range(5)]
         ch.append(self.maj("test.x.fr", "+ admin z", kind="admin_add", sev="warn"))
         inc = [self.inc("p1", "test.x.fr")]
-        # la préprod seule ne réveille personne : pas de bilan
+        # la préprod seule : une ligne repliée, pas de « nouveau problème »
         texte, _ = digest.build_message(ch, 24, inc, {}, preprod={"test.x.fr"})
-        self.assertIsNone(texte)
+        self.assertIn("Rien de nouveau de grave", texte)
+        self.assertNotIn("Changements", texte)
         ch.append(self.maj("a.fr", "seo 1 → 2"))
         texte, etat = digest.build_message(ch, 24, inc, {}, preprod={"test.x.fr"})
         self.assertIn("🧪 Préprod : 6 changements · 1 incident (test.x.fr)", texte)

@@ -13,7 +13,7 @@
 # Mises à jour automatiques de la nuit : verdict VizProof de toutes les pages et
 # mises à jour « sans effet » → file d'incidents (1×/jour, à 6 h 45, avant le bilan)
 45 6 * * * root cd /opt/wp-dashboard && /usr/bin/python3 viz_nuit.py >> /var/log/wp-dashboard.log 2>&1
-# Bilan journalier des changements → Telegram (1×/jour, à 8 h, s'il y a du changement)
+# Bilan journalier → Telegram (1×/jour, à 8 h, même sans rien de neuf : la passe de nuit y figure, et un silence = panne)
 0 8 * * * root cd /opt/wp-dashboard && /usr/bin/python3 digest.py >> /var/log/wp-dashboard.log 2>&1
 # Rotation des journaux, à rétention différenciée (1×/semaine, dimanche 4 h 30)
 30 4 * * 0 root cd /opt/wp-dashboard && /usr/bin/python3 rotate.py >> /var/log/wp-dashboard.log 2>&1

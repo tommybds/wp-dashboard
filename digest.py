@@ -16,7 +16,13 @@ Les préprods (drapeau `preprod` de fleet.json) sont repliées en une ligne : un
 banc d'essai qui bouge dix fois par jour ne doit pas noyer la production.
 
 L'état « incidents vus au dernier bilan » est gardé dans data/digest_state.json,
-écrit seulement quand le bilan part vraiment. Aucun message si rien de neuf.
+écrit seulement quand le bilan part vraiment.
+
+Le bilan part TOUS les jours, même sans rien de neuf : un silence ne doit
+jamais pouvoir passer pour « tout va bien » quand c'est le cron, Telegram ou le
+serveur qui est en panne. Il rend compte aussi de la passe de nuit du dashboard
+(data/maj_nuit.json : sites mis à jour, en attente, mises à jour impossibles),
+dont les incidents « à planifier » n'entrent pas dans la file « à traiter ».
 
 Lancé par cron une fois par jour. En test manuel : `python3 digest.py --dry-run`
 affiche le message sans l'envoyer ni toucher à l'état ; `--since H` change la
@@ -34,6 +40,9 @@ import actions_server as A  # noqa: E402  — import sûr : le serveur ne tourne
 
 CHANGES_PATH = os.path.join(DATA, "changes.jsonl")
 STATE_PATH = os.path.join(DATA, "digest_state.json")
+MAJ_NUIT_PATH = os.path.join(DATA, "maj_nuit.json")
+NUIT_FRAICHE_H = 20      # une passe plus vieille n'est pas « cette nuit »
+MAX_NUIT = 8
 
 JOURS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
 MAX_NOUVEAUX, MAX_REGLES, MAX_SECU = 8, 5, 8
@@ -372,6 +381,56 @@ def resume_familles(incidents):
     return " · ".join(out)
 
 
+def resume_nuit(nuit, now=None):
+    """Lignes « Cette nuit » depuis data/maj_nuit.json (liste vide : pas de passe
+    à raconter — mode automatique jamais activé)."""
+    if not isinstance(nuit, dict) or not nuit.get("ts"):
+        return []
+    now = now or datetime.datetime.now()
+    try:
+        quand = datetime.datetime.fromtimestamp(float(nuit["ts"]))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return []
+    if (now - quand).total_seconds() > NUIT_FRAICHE_H * 3600:
+        return [f"⚠️ <b>Passe de nuit absente</b> — dernière le {quand.strftime('%d/%m à %H:%M')}"]
+    faits, attente, rates, annules = [], [], [], []
+    for dom, r in sorted((nuit.get("sites") or {}).items()):
+        if not isinstance(r, dict):
+            continue
+        d = f"<b>{A.esc_html(dom)}</b>"
+        v = str(r.get("verdict") or "")
+        echecs = r.get("echecs") if isinstance(r.get("echecs"), dict) else {}
+        for slug, vers in echecs.items():
+            rates.append(f"{d} : {A.esc_html(slug)} {A.esc_html(vers)}".rstrip())
+        items = [str(x) for x in r.get("items") or [] if str(x) not in echecs]
+        cause = str(r.get("cause") or "")
+        if v.startswith("réussi") and items:
+            faits.append(f"{d} : {A.esc_html(', '.join(items))}"
+                         + (" (écart visuel à regarder)" if "anomalies" in v else ""))
+        elif v in ("bloqué", "page instable"):
+            motif = "écart VizProof non réglé" if cause.startswith("écart VizProof") else (cause or v)
+            attente.append(f"{d} : {A.esc_html(motif[:90])}")
+        elif v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
+            annules.append(f"{d} : {A.esc_html(v)}" + (f" — {A.esc_html(cause[:90])}" if cause else ""))
+
+    def bloc(titre, lignes):
+        out = [f"  {titre}"] + [f"    {x}" for x in lignes[:MAX_NUIT]]
+        return out + ([f"    … +{len(lignes) - MAX_NUIT}"] if len(lignes) > MAX_NUIT else [])
+
+    lignes = ["🌙 <b>Cette nuit</b>"]
+    if annules:
+        lignes += bloc("↩️ Annulé / en échec", annules)
+    if faits:
+        lignes += bloc(f"✅ {pluriel(len(faits), 'site mis à jour', 'sites mis à jour')}", faits)
+    if rates:
+        lignes += bloc("⚠️ Impossible (paquet indisponible — licence ?)", rates)
+    if attente:
+        lignes += bloc("⏸ En attente", attente)
+    if len(lignes) == 1:
+        lignes.append("  rien à mettre à jour")
+    return lignes
+
+
 def contexte_parc():
     """(clés des préprods, nb de sites de production suivis)."""
     sites, _index, _ = A.incident_fleet()
@@ -389,8 +448,8 @@ def contexte_parc():
 #  Message
 # ---------------------------------------------------------------------------
 def build_message(changes, hours=24, incidents=None, previous=None,
-                  preprod=frozenset(), n_sites=None, url="", now=None):
-    """(texte HTML Telegram, état à mémoriser) ou (None, état) si rien de neuf.
+                  preprod=frozenset(), n_sites=None, url="", now=None, nuit=None):
+    """(texte HTML Telegram, état à mémoriser) — toujours un texte.
 
     `incidents` : file « à traiter » (bucket now) du dashboard ;
     `previous` : {id: libellé} des incidents vus au bilan précédent, None si
@@ -419,8 +478,7 @@ def build_message(changes, hours=24, incidents=None, previous=None,
     ouverts = [i for i in inc_prod if i["id"] not in ids_nouveaux]
 
     resume = resume_changements(ch_prod)
-    if not (nouveaux or publies or regles or resume or (previous is None and inc_prod)):
-        return None, etat
+    lignes_nuit = resume_nuit(nuit, now)
 
     lignes = [f"📊 <b>Parc WordPress · {JOURS[now.weekday()]} {now.strftime('%d/%m')}</b>"]
     if nouveaux:
@@ -453,6 +511,8 @@ def build_message(changes, hours=24, incidents=None, previous=None,
         if len(regles) > MAX_REGLES:
             lignes.append(f"  … +{len(regles) - MAX_REGLES}")
         lignes.append("")
+    if lignes_nuit:
+        lignes += lignes_nuit + [""]
     if ouverts:
         lignes += [f"📌 <b>Toujours ouvert</b> : {resume_familles(ouverts)}", ""]
 
@@ -499,12 +559,9 @@ def main():
     previous = etat_prec.get("incidents") if isinstance(etat_prec, dict) else None
     url = str(load_json(A.SETTINGS_PATH, {}).get("public_url") or "").strip()
 
-    text, etat = build_message(changes, hours, incidents, previous, preprod, n_sites, url)
-    if not text:
-        print("Rien de neuf — pas de bilan.")
-        if not dry:
-            save_json(STATE_PATH, etat, mode=0o600)
-        return
+    nuit = load_json(MAJ_NUIT_PATH, None)
+    text, etat = build_message(changes, hours, incidents, previous, preprod, n_sites, url,
+                               nuit=nuit)
     if dry:
         print(text)
         return
