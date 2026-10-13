@@ -36,6 +36,7 @@ const KINDS = {
   // La gravité a sa propre pastille : le type ne la répète pas.
   vuln_critical_fixable: 'faille corrigeable',
   vuln_critical_unfixed: 'faille sans correctif',
+  vuln_critical_licence: 'faille, licence à renouveler',
   checksums_modified: 'checksums modifiés',
   admin_unknown: 'administrateur inconnu',
   server_stale: 'serveur injoignable',
@@ -145,6 +146,12 @@ function queFaire(kind, d) {
       + "sur cette ligne. Si le site est délicat (extension modifiée à la main, "
       + "personnalisations lourdes), passez par « MAJ contrôlée » depuis la page du site, "
       + "qui sauvegarde et sait revenir en arrière.",
+    vuln_critical_licence: "Le correctif existe, mais l'éditeur refuse de le livrer : la "
+      + "licence de l'extension est absente ou expirée. La faille reste donc ouverte tant que "
+      + "la licence n'est pas renouvelée (ou réactivée dans les réglages de l'extension). "
+      + "Dès que le paquet se télécharge de nouveau, la nuit le voit et applique la mise à "
+      + "jour d'elle-même sur un site en mode automatique ; ailleurs, le bouton de mise à jour "
+      + "revient. Si l'extension n'est plus utile, désactivez-la et supprimez-la.",
     vuln_critical_unfixed: "Une faille critique est publiée et AUCUNE version "
       + "corrigée n'existe : la mise à jour ne réglera rien. Trois issues, dans cet "
       + "ordre de préférence — désactiver le composant s'il n'est pas indispensable, "

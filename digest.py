@@ -326,6 +326,7 @@ A_FAIRE = {
     "auto_rollback": "intervenir sur le site",
     "viz_auto_update": "regarder l'écart, revenir en arrière si c'est cassé",
     "vuln_critical_fixable": "lancer la mise à jour",
+    "vuln_critical_licence": "renouveler la licence, la mise à jour suivra",
     "vuln_critical_unfixed": "désactiver ou remplacer l'extension",
     "backup_late": "relancer UpdraftPlus",
     "cert_expiring": "relancer le certificat (SSL It!)",
@@ -356,6 +357,8 @@ def ligne_nouveau(i):
 FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert »
     (("vuln_critical_fixable",), "faille critique corrigeable", "failles critiques corrigeables"),
     (("vuln_critical_unfixed",), "faille critique sans correctif", "failles critiques sans correctif"),
+    (("vuln_critical_licence",), "faille critique bloquée par une licence",
+     "failles critiques bloquées par une licence"),
     (("down", "down_probe"), "site injoignable", "sites injoignables"),
     (("php_fatal",), "erreur fatale", "erreurs fatales"),
     (("backup_late",), "sauvegarde en retard", "sauvegardes en retard"),

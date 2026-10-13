@@ -5159,7 +5159,7 @@ def incident_fingerprint(inc):
     if kind == "php_fatal":
         parts = [str(x.get("file") or ""), str(x.get("line") or ""),
                  _fp_message(x.get("message") or inc.get("detail"))]
-    elif kind == "vuln_critical_fixable":
+    elif kind in ("vuln_critical_fixable", "vuln_critical_licence"):
         # Le genre (extension / thème / cœur) n'entre PAS dans l'empreinte : il
         # est déjà dans l'identifiant de l'incident (`…:theme:astra`), qui est
         # la clé des acquittements. L'y ajouter changerait toutes les empreintes
@@ -5538,12 +5538,35 @@ def inc_php_fatal(index, now):
     return out
 
 
-def inc_vulns(index, rules, now):
-    """Vulnérabilité grave AVEC correctif disponible : une entrée par (site, composant)."""
-    res = incident_json(VULNS_FOUND_PATH, {})
+def licences_bloquees(site, refus_paquet=None):
+    """{slug: version} des extensions dont la mise à jour ne se télécharge pas
+    (paquet absent à la collecte, ou refusé la nuit) : licence manquante."""
+    dom = site.get("domain") or ""
+    if refus_paquet is None:
+        refus_paquet = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
+    refuses = refus_paquet.get(dom) if isinstance(refus_paquet.get(dom), dict) else {}
+    out = {}
+    for p in site.get("plugins_updates_list") or []:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        slug, to = str(p["name"]), str(p.get("to") or "")
+        if p.get("paquet") is False or (refuses.get(slug) and refuses.get(slug) == to):
+            out[slug] = to
+    return out
+
+
+def vulns_graves(rules):
     graves = {"critical"}
     if rules.get("vuln_high_is_incident"):
         graves.add("high")
+    return graves
+
+
+def inc_vulns(index, rules, now):
+    """Vulnérabilité grave AVEC correctif disponible : une entrée par (site, composant)."""
+    res = incident_json(VULNS_FOUND_PATH, {})
+    graves = vulns_graves(rules)
+    refus_paquet = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
     out, vus = [], set()
     for s in (res.get("sites") or []):
         cle = s.get("domain") or ""
@@ -5551,6 +5574,7 @@ def inc_vulns(index, rules, now):
             continue
         server, site = index[cle]
         rest = site.get("via") == "rest"   # aucune action wp-cli possible
+        bloquees = licences_bloquees(site, refus_paquet)
         # Une extension cumule souvent plusieurs CVE graves ; l'incident, lui,
         # est unique par composant. On rassemble donc les identifiants ici, pour
         # que `extra` les porte tous sans dépendre de l'ordre des findings.
@@ -5588,14 +5612,25 @@ def inc_vulns(index, rules, now):
             # quel dans la file et dans les alertes Telegram.
             grav = {"critical": "critique", "high": "élevée", "medium": "moyenne",
                     "low": "faible"}.get(str(v.get("severity") or ""), str(v.get("severity") or ""))
-            titre = (f"{'thème ' if genre == 'theme' else ''}{comp} "
-                     f"{v.get('version') or ''} · faille {grav} corrigeable")
             detail = str(v.get("title") or "vulnérabilité")
             if v.get("cve"):
                 detail += f" ({v['cve']})"
+            # Correctif publié, mais la licence ne permet pas de le télécharger
+            # (lesgeiq, Modern Events Calendar, 13/10) : le bouton « MAJ → 7.37.0 »
+            # ne pouvait qu'échouer, et la même extension sortait une seconde
+            # fois en « licence à renouveler ». Une seule ligne, sans bouton.
+            licence = genre == "plugin" and comp in bloquees
+            if licence:
+                titre = f"{comp} {v.get('version') or ''} · faille {grav}, correctif bloqué par la licence"
+                detail += f" — correctif en {vers}, non téléchargeable : licence à renouveler"
+                action = None
+            else:
+                titre = (f"{'thème ' if genre == 'theme' else ''}{comp} "
+                         f"{v.get('version') or ''} · faille {grav} corrigeable")
+                detail += f" — correctif en {vers}"
             out.append(make_incident(
-                "vuln_critical_fixable", "critical", cle, " ".join(titre.split()),
-                detail + f" — correctif en {vers}",
+                "vuln_critical_licence" if licence else "vuln_critical_fixable",
+                "critical", cle, " ".join(titre.split()), detail,
                 # L'identifiant d'un thème est préfixé : sans cela, le thème
                 # `astra` et l'extension `astra` d'un même site partageraient
                 # une ligne (et un acquittement). Les identifiants d'extensions,
@@ -6070,7 +6105,7 @@ def inc_certs(index, rules, now):
     return out
 
 
-def inc_licences(sites, now):
+def inc_licences(sites, now, rules=None):
     """Extension premium dont la mise à jour n'est pas téléchargeable : licence
     absente ou expirée. Générique, sans rien savoir de l'éditeur, par deux voies :
 
@@ -6088,6 +6123,14 @@ def inc_licences(sites, now):
     Une fois la licence renouvelée, la nuit le voit (sonde du paquet) et
     reprend la mise à jour d'elle-même."""
     refus = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
+    # Une faille grave sur l'extension est déjà dite (vuln_critical_licence) :
+    # pas de seconde ligne pour le même composant.
+    graves = vulns_graves(rules or {})
+    failles = {(str(x.get("domain") or ""), str(v.get("component") or ""))
+               for x in ((incident_json(VULNS_FOUND_PATH, {}) or {}).get("sites") or [])
+               for v in (x.get("findings") or [])
+               if str(v.get("severity") or "").lower() in graves and str(v.get("update_to") or "").strip()
+               and str(v.get("kind") or "plugin") == "plugin"}
     out, vus = [], set()
     for server, s in sites:
         dom = s.get("domain") or ""
@@ -6100,7 +6143,7 @@ def inc_licences(sites, now):
             if not slug or (cle, slug) in vus:
                 continue
             refuse = refuses.get(slug) and refuses.get(slug) == str(p.get("to") or "")
-            if p.get("paquet") is not False and not refuse:
+            if (p.get("paquet") is not False and not refuse) or (dom, slug) in failles:
                 continue
             vus.add((cle, slug))
             comment = ("téléchargement refusé cette nuit" if refuse
@@ -6199,7 +6242,7 @@ def incidents_snapshot(now=None):
     source("maj_nuit", lambda: inc_maj_nuit(index, now))
     source("certs", lambda: inc_certs(index, rules, now))
     source("php_eol", lambda: inc_php_eol(sites, rules, now))
-    source("licences", lambda: inc_licences(sites, now))
+    source("licences", lambda: inc_licences(sites, now, rules))
 
     # Dédoublonnage par identifiant stable : la PREMIÈRE occurrence gagne.
     vus, uniques = set(), []

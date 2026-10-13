@@ -333,6 +333,24 @@ class TestTemoinEtEchecs(IncidentsBase):
         self.vider_cache()
         self.assertEqual(self.par_kind("licence_attendue")[0]["bucket"], "plan")
 
+    def test_faille_bloquee_par_la_licence(self):
+        """Correctif publié mais non téléchargeable : une seule ligne, sans bouton."""
+        self.poser_fleet(self.serveur(sites=[site("a.fr", auto_mode=True, plugins_updates_list=[
+            {"name": "mec", "from": "6.8", "to": "7.37", "paquet": False},
+            {"name": "seo", "from": "1", "to": "2", "paquet": True}])]))
+        A.save_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "a.fr", "findings": [
+            {"kind": "plugin", "component": "mec", "version": "6.8", "severity": "critical",
+             "update_to": "7.13", "cve": "CVE-1", "title": "SQLi"},
+            {"kind": "plugin", "component": "seo", "version": "1", "severity": "critical",
+             "update_to": "2", "cve": "CVE-2", "title": "XSS"}]}]})
+        self.vider_cache()
+        par = {i["extra"]["slug"]: i for i in self.snapshot()[0]["incidents"] if i["kind"].startswith("vuln_critical")}
+        self.assertEqual(par["mec"]["kind"], "vuln_critical_licence")
+        self.assertIsNone(par["mec"].get("action"))
+        self.assertIn("correctif bloqué par la licence", par["mec"]["title"])
+        self.assertEqual(par["seo"]["kind"], "vuln_critical_fixable")
+        self.assertEqual(self.par_kind("licence_attendue"), [])        # pas de doublon
+
     def test_licence_renouvelee_reprise(self):
         """Paquet refusé hier, téléchargeable aujourd'hui : la version est retentée."""
         self._p = maj_nuit.PATH
