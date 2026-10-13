@@ -6081,8 +6081,12 @@ def inc_licences(sites, now):
         moment du téléchargement (Astra Pro, sumotori, octobre 2026).
 
     Tant que la licence manque, l'extension ne reçoit plus de correctif de
-    sécurité : « à traiter ». Une fois la licence renouvelée, la nuit le voit
-    (sonde du paquet) et reprend la mise à jour d'elle-même."""
+    sécurité. « À traiter » sur un site en mode automatique (la licence bloque
+    ce que le dashboard doit faire chaque nuit), « à planifier » ailleurs : au
+    premier relevé, 15 extensions du parc étaient dans ce cas (WPBakery livré
+    avec un thème, Gravity Forms, ACF Pro…), dont la plupart depuis des mois.
+    Une fois la licence renouvelée, la nuit le voit (sonde du paquet) et
+    reprend la mise à jour d'elle-même."""
     refus = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
     out, vus = [], set()
     for server, s in sites:
@@ -6106,7 +6110,7 @@ def inc_licences(sites, now):
                 f"{slug} {p.get('from') or '?'} → {p.get('to') or '?'} : {comment} "
                 "(licence absente ou expirée ?)",
                 site=cle, server=server, arg=slug, now=now,
-                bucket="plan" if s.get("preprod") else "now",
+                bucket="now" if s.get("auto_mode") and not s.get("preprod") else "plan",
                 link={"tab": "extensions", "sub": ""},
                 extra={"item": slug, "version": str(p.get("to") or ""), "refuse": bool(refuse)}))
     return out

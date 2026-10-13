@@ -264,7 +264,7 @@ class TestTemoinEtEchecs(IncidentsBase):
         run.assert_not_called()
 
     def test_incidents_page_instable_et_echec(self):
-        self.poser_fleet(self.serveur(sites=[site("auto.fr", plugins_updates_list=[
+        self.poser_fleet(self.serveur(sites=[site("auto.fr", auto_mode=True, plugins_updates_list=[
             {"name": "modern-events-calendar", "from": "7.36.0", "to": "7.36.4"}])]))
         A.save_json(A.MAJ_NUIT_PATH, {"sites": {"auto.fr": {
             "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["wp-rocket"],
@@ -317,7 +317,7 @@ class TestTemoinEtEchecs(IncidentsBase):
 
     def test_licence_sans_paquet_vue_a_la_collecte(self):
         self.poser_fleet(self.serveur(sites=[
-            site("a.fr", plugins_updates_list=[
+            site("a.fr", auto_mode=True, plugins_updates_list=[
                 {"name": "acf-pro", "from": "6.3", "to": "6.4", "paquet": False},
                 {"name": "seo", "from": "1", "to": "2", "paquet": True},
                 {"name": "inconnu", "from": "1", "to": "2"}]),
@@ -327,6 +327,11 @@ class TestTemoinEtEchecs(IncidentsBase):
         self.assertEqual(set(inc), {"a.fr", "dev.a.fr"})
         self.assertIn("acf-pro 6.3 → 6.4 : mise à jour annoncée sans paquet", inc["a.fr"]["detail"])
         self.assertEqual((inc["a.fr"]["bucket"], inc["dev.a.fr"]["bucket"]), ("now", "plan"))
+        # hors mode automatique : à planifier
+        self.poser_fleet(self.serveur(sites=[site("b.fr", plugins_updates_list=[
+            {"name": "acf-pro", "from": "6.3", "to": "6.4", "paquet": False}])]))
+        self.vider_cache()
+        self.assertEqual(self.par_kind("licence_attendue")[0]["bucket"], "plan")
 
     def test_licence_renouvelee_reprise(self):
         """Paquet refusé hier, téléchargeable aujourd'hui : la version est retentée."""
