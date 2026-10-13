@@ -40,7 +40,7 @@ Résultat dans data/maj_nuit.json (file d'incidents `inc_maj_nuit`, écran Mises
 à jour, bilan de 8 h) ; viz_nuit.py ne repasse pas sur ces sites. Cron 4 h.
 `--dry-run` : dit ce qui serait fait, sans rien lancer ni écrire.
 """
-import os, sys, time
+import os, re, sys, time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
@@ -180,6 +180,30 @@ def recouper_coeur(srv_name, s, dry):
     return True
 
 
+RE_SLUG = re.compile(r"[A-Za-z0-9._-]{1,100}")
+
+
+def paquet_disponible(srv_name, s, slug):
+    """Le paquet de mise à jour de `slug` se télécharge-t-il de nouveau ?
+
+    Sonde générique d'une licence renouvelée : on demande à WordPress l'adresse
+    du paquet (extensions chargées, c'est leur code qui la fournit) et on en lit
+    les premiers octets — « PK », c'est un zip ; une page d'erreur ou un refus,
+    non. Sans elle, une version refusée faute de licence ne serait plus jamais
+    retentée, même licence renouvelée (Astra Pro sur sumotori, 13/10)."""
+    if not RE_SLUG.fullmatch(str(slug or "")):
+        return False
+    srv, site = A.find_site(srv_name, s.get("domain"))
+    if not site:
+        return False
+    rc, out = A.remote_bash(
+        srv, site,
+        f'U=$(run plugin list --name={slug} --field=update_package --skip-themes 2>/dev/null | tail -n 1)\n'
+        'case "$U" in https://*) curl -s -L --max-time 60 -r 0-3 "$U" | head -c 2 ;; esac\n',
+        timeout=120)
+    return rc == 0 and (out or "").strip().endswith("PK")
+
+
 def traiter(srv_name, s, mode, refus, dry, run_garde=""):
     """Une mise à jour Contrôlée sur un site → bilan (dict) ou None (rien à faire)."""
     dom = s.get("domain")
@@ -246,13 +270,24 @@ def main():
     precedent = load_json(PATH, {}) or {}
     refus_tous = precedent.get("refus") if isinstance(precedent.get("refus"), dict) else {}
     sites_avant = precedent.get("sites") if isinstance(precedent.get("sites"), dict) else {}
+    # Versions refusées parce que leur paquet ne se télécharge pas (licence) :
+    # sous-ensemble de `refus`, sondé chaque nuit pour reprendre de lui-même.
+    paquets_avant = (precedent.get("refus_paquet") if isinstance(precedent.get("refus_paquet"), dict)
+                     else {})
+    refus_paquet = {}
     gardes = dict(precedent.get("runs_gardes") or {}) if isinstance(precedent.get("runs_gardes"), dict) else {}
     sites, refus_neufs, natives = {}, {}, {}
     for srv_name, s in A.visible_sites():
         dom = s.get("domain")
         if dom not in modes or s.get("via") == "rest":
             continue
-        refus = refus_tous.get(dom) if isinstance(refus_tous.get(dom), dict) else {}
+        refus = dict(refus_tous.get(dom)) if isinstance(refus_tous.get(dom), dict) else {}
+        for slug, vers in list((paquets_avant.get(dom) or {}).items()):
+            if refus.get(slug) != vers:
+                continue
+            if not dry and paquet_disponible(srv_name, s, slug):
+                print(f"{dom} : {slug} {vers} de nouveau téléchargeable (licence renouvelée ?) → retentée")
+                refus.pop(slug, None)
         n_nat = recouper_natives(srv_name, s, dry)
         try:
             if recouper_coeur(srv_name, s, dry):
@@ -281,6 +316,11 @@ def main():
         # elle seule est retenue, les autres ont été gardées.
         if r and r.get("echecs"):
             garde.update({k: v for k, v in r["echecs"].items() if v})
+        # Paquets refusés encore valables (même version proposée, pas rétablis).
+        pq = {k: v for k, v in (paquets_avant.get(dom) or {}).items() if garde.get(k) == v and refus.get(k) == v}
+        pq.update({k: v for k, v in ((r or {}).get("echecs") or {}).items() if v})
+        if pq:
+            refus_paquet[dom] = pq
         if garde:
             refus_neufs[dom] = garde
         # Passage de fin jugé sain : il ne bloquera pas les nuits suivantes.
@@ -303,7 +343,7 @@ def main():
         return
     save_json(PATH, {"generated_at": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(),
                      "sites": sites, "refus": refus_neufs, "natives_recoupees": natives,
-                     "runs_gardes": gardes})
+                     "runs_gardes": gardes, "refus_paquet": refus_paquet})
     A.attendre_envois()
     print(f"{len(sites)} site(s) traité(s) cette nuit.")
 

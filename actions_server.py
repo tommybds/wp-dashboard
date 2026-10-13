@@ -6005,13 +6005,8 @@ def inc_maj_nuit(index, now):
             out.append(make_incident(
                 "auto_update_failed", "warning", cle, f"Mise à jour de nuit non faite sur {cle}",
                 cause or verdict, site=cle, server=server, since=since, now=now, link=lien, extra=x))
-        for slug, vers in (r.get("echecs") or {}).items():
-            out.append(make_incident(
-                "auto_update_noop", "warning", cle, f"Mise à jour impossible sur {cle}",
-                f"{slug} {vers} : paquet indisponible (licence expirée ?) — cette version ne "
-                "sera pas retentée, la suivante le sera",
-                site=cle, server=server, arg=str(slug), since=since, now=now, link=lien,
-                bucket="plan", extra={"item": slug, "version": vers}))
+        # Extension au paquet refusé : incident `licence_attendue` (inc_licences),
+        # qui dure tant que la licence manque — pas seulement le lendemain.
     return out
 
 
@@ -6072,6 +6067,48 @@ def inc_certs(index, rules, now):
             bucket="now" if jours < crit else "plan",
             extra={"days_left": jours, "expires": str(c.get("valid_to") or ""),
                    "issuer": str(c.get("issuer") or ""), "auto_renew": auto}))
+    return out
+
+
+def inc_licences(sites, now):
+    """Extension premium dont la mise à jour n'est pas téléchargeable : licence
+    absente ou expirée. Générique, sans rien savoir de l'éditeur, par deux voies :
+
+      * la collecte voit une mise à jour annoncée SANS paquet (`paquet` False) —
+        cas des éditeurs qui retirent l'adresse quand la licence manque ;
+      * la nuit a tenté le téléchargement et il a été refusé (`refus_paquet` de
+        maj_nuit.json) — cas des éditeurs qui gardent l'adresse et refusent au
+        moment du téléchargement (Astra Pro, sumotori, octobre 2026).
+
+    Tant que la licence manque, l'extension ne reçoit plus de correctif de
+    sécurité : « à traiter ». Une fois la licence renouvelée, la nuit le voit
+    (sonde du paquet) et reprend la mise à jour d'elle-même."""
+    refus = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
+    out, vus = [], set()
+    for server, s in sites:
+        dom = s.get("domain") or ""
+        cle = s.get("kuma") or dom
+        refuses = refus.get(dom) if isinstance(refus.get(dom), dict) else {}
+        for p in s.get("plugins_updates_list") or []:
+            if not isinstance(p, dict):
+                continue
+            slug = str(p.get("name") or "")
+            if not slug or (cle, slug) in vus:
+                continue
+            refuse = refuses.get(slug) and refuses.get(slug) == str(p.get("to") or "")
+            if p.get("paquet") is not False and not refuse:
+                continue
+            vus.add((cle, slug))
+            comment = ("téléchargement refusé cette nuit" if refuse
+                       else "mise à jour annoncée sans paquet à télécharger")
+            out.append(make_incident(
+                "licence_attendue", "warning", cle, f"Licence à renouveler sur {cle}",
+                f"{slug} {p.get('from') or '?'} → {p.get('to') or '?'} : {comment} "
+                "(licence absente ou expirée ?)",
+                site=cle, server=server, arg=slug, now=now,
+                bucket="plan" if s.get("preprod") else "now",
+                link={"tab": "extensions", "sub": ""},
+                extra={"item": slug, "version": str(p.get("to") or ""), "refuse": bool(refuse)}))
     return out
 
 
@@ -6158,6 +6195,7 @@ def incidents_snapshot(now=None):
     source("maj_nuit", lambda: inc_maj_nuit(index, now))
     source("certs", lambda: inc_certs(index, rules, now))
     source("php_eol", lambda: inc_php_eol(sites, rules, now))
+    source("licences", lambda: inc_licences(sites, now))
 
     # Dédoublonnage par identifiant stable : la PREMIÈRE occurrence gagne.
     vus, uniques = set(), []

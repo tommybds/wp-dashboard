@@ -264,12 +264,16 @@ class TestTemoinEtEchecs(IncidentsBase):
         run.assert_not_called()
 
     def test_incidents_page_instable_et_echec(self):
-        self.poser_fleet(self.serveur(sites=[site("auto.fr")]))
+        self.poser_fleet(self.serveur(sites=[site("auto.fr", plugins_updates_list=[
+            {"name": "modern-events-calendar", "from": "7.36.0", "to": "7.36.4"}])]))
         A.save_json(A.MAJ_NUIT_PATH, {"sites": {"auto.fr": {
             "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["wp-rocket"],
-            "verdict": "réussi", "echecs": {"modern-events-calendar": "7.36.4"}}}})
-        inc = self.par_kind("auto_update_noop")
+            "verdict": "réussi", "echecs": {"modern-events-calendar": "7.36.4"}}},
+            "refus_paquet": {"auto.fr": {"modern-events-calendar": "7.36.4"}}})
+        inc = self.par_kind("licence_attendue")
         self.assertEqual(inc[0]["extra"]["item"], "modern-events-calendar")
+        self.assertEqual(inc[0]["bucket"], "now")
+        self.assertIn("téléchargement refusé", inc[0]["detail"])
         A.save_json(A.MAJ_NUIT_PATH, {"sites": {"auto.fr": {
             "domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["x"],
             "verdict": "page instable", "cause": "Scan témoin : Accueil (a11y)"}}})
@@ -310,6 +314,51 @@ class TestTemoinEtEchecs(IncidentsBase):
         self.assertEqual((pages, rid), ([("Accueil", ["desktop"], None)], "run1"))
         self.assertEqual(A.viz_lien_run("cmv1rcxue0d9"), A.viz_api_base() + "/runs/cmv1rcxue0d9")
         self.assertEqual(A.viz_lien_run("../x"), "")
+
+    def test_licence_sans_paquet_vue_a_la_collecte(self):
+        self.poser_fleet(self.serveur(sites=[
+            site("a.fr", plugins_updates_list=[
+                {"name": "acf-pro", "from": "6.3", "to": "6.4", "paquet": False},
+                {"name": "seo", "from": "1", "to": "2", "paquet": True},
+                {"name": "inconnu", "from": "1", "to": "2"}]),
+            site("dev.a.fr", preprod=True, plugins_updates_list=[
+                {"name": "acf-pro", "from": "6.3", "to": "6.4", "paquet": False}])]))
+        inc = {i["site"]: i for i in self.par_kind("licence_attendue")}
+        self.assertEqual(set(inc), {"a.fr", "dev.a.fr"})
+        self.assertIn("acf-pro 6.3 → 6.4 : mise à jour annoncée sans paquet", inc["a.fr"]["detail"])
+        self.assertEqual((inc["a.fr"]["bucket"], inc["dev.a.fr"]["bucket"]), ("now", "plan"))
+
+    def test_licence_renouvelee_reprise(self):
+        """Paquet refusé hier, téléchargeable aujourd'hui : la version est retentée."""
+        self._p = maj_nuit.PATH
+        maj_nuit.PATH = os.path.join(self.data, "maj_nuit.json")
+        self.addCleanup(setattr, maj_nuit, "PATH", self._p)
+        A.save_json(maj_nuit.PATH, {"refus": {"auto.fr": {"wordfence": "8.0.1"}},
+                                    "refus_paquet": {"auto.fr": {"wordfence": "8.0.1"}}})
+        vus = {}
+
+        def traiter(srv, s, mode, refus, dry, run_garde=""):
+            vus["refus"] = dict(refus)
+            return {"domain": "auto.fr", "server": "vps1", "ts": time.time(), "items": ["wordfence"],
+                    "verdict": "réussi", "visees": {"wordfence": "8.0.1"}}
+
+        def nuit(dispo):
+            with mock.patch.object(A, "auto_mode_load", return_value={"auto.fr": {}}), \
+                    mock.patch.object(A, "visible_sites", return_value=[("vps1", site_maj())]), \
+                    mock.patch.object(A, "attendre_envois"), \
+                    mock.patch.object(maj_nuit, "recouper_natives", return_value=0), \
+                    mock.patch.object(maj_nuit, "recouper_coeur", return_value=False), \
+                    mock.patch.object(maj_nuit, "paquet_disponible", return_value=dispo), \
+                    mock.patch.object(maj_nuit, "traiter", side_effect=traiter), \
+                    mock.patch("builtins.print"):
+                maj_nuit.main()
+            return A.load_json(maj_nuit.PATH, {})
+        d = nuit(False)
+        self.assertEqual(vus["refus"], {"wordfence": "8.0.1"})        # toujours écartée
+        self.assertEqual(d["refus_paquet"], {"auto.fr": {"wordfence": "8.0.1"}})
+        d = nuit(True)
+        self.assertEqual(vus["refus"], {})                            # retentée
+        self.assertEqual(d.get("refus_paquet"), {})
 
     def test_refus_limite_aux_echecs(self):
         self._p = maj_nuit.PATH

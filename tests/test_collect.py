@@ -1362,6 +1362,18 @@ class TestDigest(unittest.TestCase):
         self.assertIn("✅ <b>Réglé</b> (1)", texte)
         self.assertNotIn("erreur fatale", texte)
 
+    def test_paquet_de_mise_a_jour(self):
+        site = collect.apply_plugins({}, [
+            {"name": "a", "status": "active", "version": "1", "update": "available",
+             "update_version": "2", "update_package": "https://x/a.zip?key=SECRET"},
+            {"name": "b", "status": "active", "version": "1", "update": "available",
+             "update_version": "2", "update_package": ""},
+            {"name": "c", "status": "active", "version": "1", "update": "available", "update_version": "2"}])
+        par = {p["name"]: p for p in site["plugins_updates_list"]}
+        self.assertEqual((par["a"]["paquet"], par["b"]["paquet"]), (True, False))
+        self.assertNotIn("paquet", par["c"])                  # inconnu (agent REST)
+        self.assertNotIn("SECRET", json.dumps(site))           # la clé de licence n'est pas gardée
+
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
         self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")

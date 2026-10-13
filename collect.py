@@ -228,7 +228,7 @@ emit_site() {
     emitfield core_update core check-update --format=json --fields=version,update_type
     emitfield siteurl option get siteurl
     emitfield blogname option get blogname
-    emitfield ~plugins plugin list --format=json --fields=name,status,version,update_version,update
+    emitfield ~plugins plugin list --format=json --fields=name,status,version,update_version,update,update_package
     # `parent` n'est PAS un champ de `wp theme list` (même en 2.12) : le demander
     # fait échouer la commande entière (« Invalid field: parent »), donc plus aucun
     # thème. La parenté se lit de toute façon dans `status`, que wp-cli met à
@@ -467,8 +467,16 @@ def apply_plugins(site, plugins):
         site["plugins_active"] = sum(1 for p in plugins if p.get("status") in ("active", "active-network"))
         upd = [p for p in plugins if has_update(p)]
         site["plugins_updates"] = len(upd)
-        site["plugins_updates_list"] = [{"name": p.get("name"), "from": p.get("version"),
-                                         "to": p.get("update_version")} for p in upd]
+        # `paquet` : la mise à jour a-t-elle une adresse de téléchargement ? Une
+        # extension premium sans licence valide annonce sa nouvelle version mais
+        # sans paquet (EDD, Freemius, ACF, Elementor…). Seul le booléen est
+        # gardé : l'adresse porte souvent la clé de licence. None = inconnu
+        # (agent REST, ancien relevé).
+        site["plugins_updates_list"] = [dict({"name": p.get("name"), "from": p.get("version"),
+                                              "to": p.get("update_version")},
+                                             **({"paquet": bool(str(p.get("update_package") or "").strip())}
+                                                if "update_package" in p else {}))
+                                        for p in upd]
         site["plugins_list"] = [{"name": p.get("name"), "status": p.get("status"), "version": p.get("version"),
                                  "update": p.get("update"), "to": p.get("update_version")} for p in plugins]
     else:

@@ -330,6 +330,7 @@ A_FAIRE = {
     "checksums_modified": "vérifier les fichiers du cœur, compromission possible",
     "down": "vérifier le site",
     "down_probe": "vérifier le site",
+    "licence_attendue": "renouveler la licence — la mise à jour reprendra seule la nuit suivante",
 }
 
 
@@ -361,6 +362,7 @@ FAMILLES = [  # (kinds, singulier, pluriel) — pour la ligne « toujours ouvert
     (("auto_rollback",), "mise à jour auto annulée", "mises à jour auto annulées"),
     (("auto_update_blocked",), "site en automatique bloqué par un écart", "sites en automatique bloqués par un écart"),
     (("auto_update_failed",), "mise à jour de nuit non faite", "mises à jour de nuit non faites"),
+    (("licence_attendue",), "licence à renouveler", "licences à renouveler"),
 ]
 
 

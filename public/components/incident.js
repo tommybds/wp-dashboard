@@ -49,6 +49,7 @@ const KINDS = {
   auto_rollback: 'MAJ auto annulée',
   auto_update_blocked: 'MAJ auto bloquée',
   auto_update_failed: 'MAJ auto non faite',
+  licence_attendue: 'licence à renouveler',
 };
 
 export const kindLabel = k => KINDS[k] || (k ? 'autre' : 'incident');
@@ -193,6 +194,12 @@ function queFaire(kind, d) {
       + "par-dessus prendrait l'état cassé comme nouvelle référence. Ouvrez le rapport : si l'écart est voulu "
       + "(contenu modifié, carrousel), acceptez-le comme référence dans VizProof ; sinon, "
       + "réparez la page. Les mises à jour reprennent la nuit suivante.",
+    licence_attendue: "L'éditeur annonce une nouvelle version, mais refuse de la livrer : "
+      + "licence absente, expirée ou liée à un autre site. Tant que c'est le cas, l'extension "
+      + "ne reçoit plus aucun correctif, de sécurité compris. Renouvelez la licence (ou "
+      + "réactivez-la dans les réglages de l'extension) : chaque nuit, le dashboard vérifie si "
+      + "le paquet se télécharge de nouveau et reprend alors la mise à jour de lui-même. "
+      + "Si l'extension n'est plus utile, désactivez-la et supprimez-la plutôt.",
     auto_update_failed: "La mise à jour de la nuit s'est arrêtée avant de toucher au site : "
       + "site déjà en erreur au départ, référence VizProof impossible alors qu'elle est "
       + "exigée, ou erreur du dashboard. Rien n'a changé sur le site ; la cause est ci-dessus. "
