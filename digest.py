@@ -300,6 +300,9 @@ def libelle(i):
     kind, detail = i.get("kind"), str(i.get("detail") or "")
     if kind == "php_fatal":
         quoi = libelle_fatale(i, detail)
+    elif kind == "licence_attendue":
+        x = i.get("extra") if isinstance(i.get("extra"), dict) else {}
+        quoi = f"licence à renouveler : {x.get('item') or '?'}"
     elif kind in ("down", "down_probe"):
         quoi = "injoignable (" + detail[:50] + ")"
     elif kind == "cert_expiring":

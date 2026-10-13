@@ -1374,6 +1374,11 @@ class TestDigest(unittest.TestCase):
         self.assertNotIn("paquet", par["c"])                  # inconnu (agent REST)
         self.assertNotIn("SECRET", json.dumps(site))           # la clé de licence n'est pas gardée
 
+    def test_licence_nomme_l_extension(self):
+        i = self.inc("l1", "a.fr", kind="licence_attendue", title="Licence à renouveler sur a.fr")
+        i["extra"] = {"item": "modern-events-calendar"}
+        self.assertEqual(digest.libelle(i), "<b>a</b> — licence à renouveler : modern-events-calendar")
+
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
         self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")
