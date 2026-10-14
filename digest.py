@@ -399,6 +399,30 @@ def correctifs_publies(nouveaux, previous):
     return paires, retires
 
 
+# Genres d'un même problème : une faille passe de l'un à l'autre quand sa
+# situation change (correctif publié, licence expirée ou renouvelée). Le genre
+# fait partie de l'identifiant ; sans ce regroupement, le changement de genre se
+# lisait « 🆕 nouveau problème » + « ✅ réglé » pour la même faille (lesgeiq,
+# 14/10, corrigeable → bloquée par la licence).
+MEMES_FAILLES = {"vuln_critical_fixable", "vuln_critical_unfixed", "vuln_critical_licence"}
+
+
+def requalifies(nouveaux, previous, deja=frozenset()):
+    """(incidents nouveaux qui ne sont qu'un changement de genre, ids anciens
+    correspondants) — ni nouveaux, ni réglés : ils restent « ouverts »."""
+    anciens = {suffixe(iid): iid for iid in (previous or {})
+               if str(iid).split(":", 1)[0] in MEMES_FAILLES and iid not in deja}
+    out, retires = [], set()
+    for i in nouveaux:
+        if i.get("kind") not in MEMES_FAILLES:
+            continue
+        vieux = anciens.get(suffixe(i.get("id")))
+        if vieux and vieux != i.get("id"):
+            out.append(i)
+            retires.add(vieux)
+    return out, retires
+
+
 def libelle_correctif(i):
     x = i.get("extra") if isinstance(i.get("extra"), dict) else {}
     site = i.get("site") or ""
@@ -534,6 +558,10 @@ def build_message(changes, hours=24, incidents=None, previous=None,
         publies, retires = correctifs_publies(nouveaux, previous)
         ids_publies = {i["id"] for i in publies}
         nouveaux = [i for i in nouveaux if i["id"] not in ids_publies]
+        requal, retires_rq = requalifies(nouveaux, previous, retires)
+        ids_requal = {i["id"] for i in requal}
+        nouveaux = [i for i in nouveaux if i["id"] not in ids_requal]
+        retires = retires | retires_rq
         regles = [lib for iid, lib in previous.items()
                   if iid not in etat["incidents"] and iid not in retires and iid not in ailleurs]
     ids_nouveaux = {i["id"] for i in nouveaux} | {i["id"] for i in publies}

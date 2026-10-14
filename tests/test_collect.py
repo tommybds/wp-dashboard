@@ -1379,6 +1379,17 @@ class TestDigest(unittest.TestCase):
         i["extra"] = {"item": "modern-events-calendar"}
         self.assertEqual(digest.libelle(i), "<b>a</b> — licence à renouveler : modern-events-calendar")
 
+    def test_changement_de_genre_ni_nouveau_ni_regle(self):
+        """Même faille, autre genre (corrigeable → bloquée par la licence)."""
+        prev = {"vuln_critical_fixable:a.fr:mec": "<b>a</b> — mec · faille critique corrigeable"}
+        i = self.inc("vuln_critical_licence:a.fr:mec", "a.fr", kind="vuln_critical_licence",
+                     title="mec 6.8 · faille critique, correctif bloqué par la licence")
+        texte, _ = digest.build_message([], 24, [i], prev)
+        self.assertNotIn("Depuis hier", texte)
+        self.assertNotIn("Réglé", texte)
+        self.assertIn("Toujours ouvert</b> (1)\n• 1 faille critique bloquée par une licence : a", texte)
+        self.assertIn("🟢 Rien de nouveau de grave", texte)
+
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
         self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")
