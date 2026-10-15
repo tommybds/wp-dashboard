@@ -598,3 +598,112 @@ class TestRecouperCoeur(IncidentsBase):
             self.assertTrue(r)
             self.assertIn("config set WP_AUTO_UPDATE_CORE false --raw", appels[-1])
             alerte.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+#  Neutralisation des failles sans correctif (option du mode automatique)     #
+# --------------------------------------------------------------------------- #
+class TestNeutralisation(IncidentsBase):
+
+    VULNS = {"sites": [{"domain": "a.fr", "findings": [
+        {"kind": "plugin", "component": "mec", "version": "6.8", "severity": "critical",
+         "status": "active", "update_to": "", "cve": "CVE-1"},
+        {"kind": "plugin", "component": "acf", "version": "6.3", "severity": "critical",
+         "status": "active", "update_to": "6.4", "cve": "CVE-2"},
+        {"kind": "plugin", "component": "seo", "version": "1", "severity": "critical",
+         "status": "active", "update_to": "2", "cve": "CVE-3"},
+        {"kind": "plugin", "component": "vieux", "version": "1", "severity": "critical",
+         "status": "inactive", "update_to": "", "cve": "CVE-4"},
+        {"kind": "plugin", "component": "vizproof-timeline", "version": "1", "severity": "critical",
+         "status": "active", "update_to": "", "cve": "CVE-5"},
+        {"kind": "plugin", "component": "moyen", "version": "1", "severity": "medium",
+         "status": "active", "update_to": "", "cve": "CVE-6"}]}]}
+
+    def site(self, **kw):
+        s = {"domain": "a.fr", "plugins_updates_list": [
+            {"name": "acf", "from": "6.3", "to": "6.4", "paquet": False},
+            {"name": "seo", "from": "1", "to": "2", "paquet": True}],
+             "plugins_list": [{"name": n, "status": "active"} for n in ("mec", "acf", "seo")],
+             "vizproof": {"connected": True, "has_cli": True}}
+        s.update(kw)
+        return s
+
+    def test_candidates(self):
+        c = A.failles_a_neutraliser(self.site(), {}, self.VULNS, {})
+        self.assertEqual(set(c), {"mec", "acf"})        # sans correctif + licence ; pas seo, vieux, vizproof, moyen
+        self.assertEqual(c["mec"]["raison"], "faille sans correctif")
+        self.assertEqual(c["acf"]["raison"], "correctif bloqué par la licence")
+        self.assertEqual(c["mec"]["cves"], ["CVE-1"])
+
+    def nuit(self, quarantaine, candidates, sain=True, actives=None):
+        cmds = []
+
+        def remote(srv, site, script, **kw):
+            cmds.append(script)
+            return 0, ""
+        s = self.site()
+        if actives is not None:
+            s["plugins_list"] = [{"name": n, "status": st} for n, st in actives.items()]
+        with mock.patch.object(A, "find_site", return_value=({"name": "vps1"}, {"domain": "a.fr"})), \
+                mock.patch.object(A, "failles_a_neutraliser", return_value=candidates), \
+                mock.patch.object(A, "remote_bash", side_effect=remote), \
+                mock.patch.object(maj_nuit, "_controle", return_value=(sain, [] if sain else ["Accueil"])):
+            bilan = maj_nuit.neutraliser("vps1", s, quarantaine, False)
+        return bilan, cmds
+
+    def test_desactivation_controlee(self):
+        q = {}
+        bilan, cmds = self.nuit(q, {"mec": {"cves": ["CVE-1"], "version": "6.8", "raison": "faille sans correctif"}})
+        self.assertEqual([x["slug"] for x in bilan["neutralisees"]], ["mec"])
+        self.assertIn("mec", q["a.fr"])
+        self.assertTrue(any("baseline" in c for c in cmds))           # référence AVANT
+        self.assertIn("run plugin deactivate mec", cmds)
+
+    def test_desactivation_qui_casse_est_annulee(self):
+        q = {}
+        bilan, cmds = self.nuit(q, {"mec": {"cves": [], "version": "6.8", "raison": "x"}}, sain=False)
+        self.assertEqual(bilan["neutralisees"], [])
+        self.assertEqual(bilan["refusees"][0]["pages"], ["Accueil"])
+        self.assertIn("run plugin activate mec", cmds)
+        self.assertNotIn("a.fr", q)
+
+    def test_reactivation_quand_corrigee(self):
+        q = {"a.fr": {"mec": {"depuis": "x"}}}
+        bilan, cmds = self.nuit(q, {}, actives={"mec": "inactive"})
+        self.assertEqual(bilan["reactivees"], [{"slug": "mec"}])
+        self.assertIn("run plugin update mec", cmds)
+        self.assertIn("run plugin activate mec", cmds)
+        self.assertNotIn("a.fr", q)
+
+    def test_reactivee_a_la_main_jamais_redesactivee(self):
+        q = {"a.fr": {"mec": {"depuis": "x"}}}
+        cand = {"mec": {"cves": [], "version": "6.8", "raison": "x"}}
+        bilan, cmds = self.nuit(q, cand, actives={"mec": "active"})
+        self.assertEqual(bilan["laissees"][0]["slug"], "mec")
+        self.assertNotIn("run plugin deactivate mec", cmds)
+        bilan, cmds = self.nuit(q, cand, actives={"mec": "active"})     # nuit suivante
+        self.assertEqual(bilan["neutralisees"], [])
+        self.assertNotIn("run plugin deactivate mec", cmds)
+
+    def test_incident_neutralise_a_planifier(self):
+        self.poser_fleet(self.serveur(sites=[site("a.fr")]))
+        A.save_json(A.VULNS_FOUND_PATH, {"sites": [{"domain": "a.fr", "findings": [
+            {"kind": "plugin", "component": "mec", "version": "6.8", "severity": "critical",
+             "status": "active", "update_to": "", "cve": "CVE-1"}]}]})
+        self.assertEqual(self.par_kind("vuln_critical_unfixed")[0]["bucket"], "now")
+        A.save_json(A.QUARANTAINE_PATH, {"a.fr": {"mec": {"depuis": "x"}}})
+        self.vider_cache()
+        inc = self.par_kind("vuln_critical_unfixed")[0]
+        self.assertEqual(inc["bucket"], "plan")
+        self.assertIn("désactivée par le dashboard", inc["title"])
+
+
+class TestRouteNeutraliser(TestRouteMode):
+
+    def test_option_neutraliser(self):
+        self.post({"server": "vps1", "domain": "auto.fr", "auto": True, "rollback": True})
+        st, j = self.post({"server": "vps1", "domain": "auto.fr", "neutraliser": True})
+        self.assertEqual((st, j["modes"]["auto.fr"]["neutraliser"], j["modes"]["auto.fr"]["rollback"]),
+                         (200, True, True))
+        st, j = self.post({"server": "vps1", "domain": "auto.fr", "neutraliser": "oui"})
+        self.assertEqual(st, 400)

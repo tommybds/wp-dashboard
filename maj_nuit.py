@@ -204,6 +204,125 @@ def paquet_disponible(srv_name, s, slug):
     return rc == 0 and (out or "").strip().endswith("PK")
 
 
+def _controle(srv, site, viz):
+    """(sain, pages en écart) après un changement : accueil servi, puis scan
+    VizProof s'il est relié (référence prise juste avant par l'appelant)."""
+    ok, _st, _taille, msg = A.health_probe(site)
+    if not ok:
+        return False, [f"accueil : {msg}"]
+    if not viz:
+        return True, []
+    rc, out = A.remote_bash(srv, site, "run vizproof scan --wait --format=json", timeout=600, max_out=None)
+    rapport = A.viz_report_payload(A.viz_json_tail(out) or {})
+    if not isinstance(rapport, dict) or rapport.get("is_baseline"):
+        return True, []
+    pages = [p for p, _f, _h in viz_nuit.pages_en_ecart(rapport)]
+    return not pages, pages
+
+
+def _basculer(srv, site, slug, actif):
+    rc, out = A.remote_bash(srv, site, f"run plugin {'activate' if actif else 'deactivate'} {slug}", timeout=120)
+    return rc == 0, (out or "")[-300:]
+
+
+def neutraliser(srv_name, s, quarantaine, dry):
+    """Neutralisation des failles sans issue (option `neutraliser` du mode
+    automatique) → bilan {neutralisees, refusees, reactivees, laissees}.
+
+    Une extension active dont une faille critique ne se corrige pas ce soir
+    (pas de correctif, ou correctif refusé faute de licence) est DÉSACTIVÉE —
+    mais comme une mise à jour : référence VizProof avant, contrôle après, et
+    réactivation immédiate si une page casse (une extension qui fournit un
+    formulaire, un agenda, une boutique ne s'éteint pas sans qu'on le voie).
+    Une extension mise en quarantaine est RÉACTIVÉE dès qu'une mise à jour la
+    corrige, avec le même contrôle. Réactivée à la main par quelqu'un, elle
+    n'est plus jamais désactivée : c'est une décision, on ne la combat pas."""
+    dom = s.get("domain")
+    if not isinstance(quarantaine.get(dom), dict):
+        quarantaine[dom] = {}
+    q = quarantaine[dom]
+    bilan = {"neutralisees": [], "refusees": [], "reactivees": [], "laissees": []}
+    srv, site = A.find_site(srv_name, dom)
+    if not site:
+        return bilan
+    actives = {str(p.get("name")): p.get("status") for p in s.get("plugins_list") or [] if isinstance(p, dict)}
+    candidates = A.failles_a_neutraliser(s)
+    viz = bool((s.get("vizproof") or {}).get("connected") and (s.get("vizproof") or {}).get("has_cli"))
+
+    # 1. Quarantaines à lever : plus de faille sans issue, ou réactivée à la main.
+    for slug, info in list(q.items()):
+        if not isinstance(info, dict) or slug.startswith("_"):
+            continue
+        if actives.get(slug) in ("active", "active-network"):
+            info["reactivee_a_la_main"] = time.strftime("%Y-%m-%d %H:%M")
+            q.setdefault("_ignorees", {})[slug] = info
+            q.pop(slug, None)
+            bilan["laissees"].append({"slug": slug, "raison": "réactivée à la main"})
+            continue
+        if slug in candidates or dry:
+            continue
+        if viz:
+            A.remote_bash(srv, site, A.VIZ_BASELINE_CMD, timeout=A.VIZ_BASELINE_TIMEOUT, max_out=None)
+        A.remote_bash(srv, site, f"run plugin update {slug}", timeout=300)
+        ok, out = _basculer(srv, site, slug, True)
+        sain, pages = _controle(srv, site, viz) if ok else (False, [out])
+        if sain:
+            q.pop(slug, None)
+            bilan["reactivees"].append({"slug": slug})
+        else:
+            _basculer(srv, site, slug, False)
+            bilan["refusees"].append({"slug": slug, "action": "réactivation", "pages": pages})
+
+    # 2. Nouvelles neutralisations.
+    ignorees = q.get("_ignorees") if isinstance(q.get("_ignorees"), dict) else {}
+    for slug, info in candidates.items():
+        if slug in q or slug in ignorees or not RE_SLUG.fullmatch(slug):
+            continue
+        if dry:
+            bilan["neutralisees"].append(dict(info, slug=slug, simulation=True))
+            continue
+        if viz:
+            A.remote_bash(srv, site, A.VIZ_BASELINE_CMD, timeout=A.VIZ_BASELINE_TIMEOUT, max_out=None)
+        ok, out = _basculer(srv, site, slug, False)
+        if not ok:
+            bilan["refusees"].append(dict(info, slug=slug, action="désactivation", pages=[out]))
+            continue
+        sain, pages = _controle(srv, site, viz)
+        if sain:
+            q[slug] = dict(info, depuis=time.strftime("%Y-%m-%d %H:%M"))
+            bilan["neutralisees"].append(dict(info, slug=slug))
+        else:
+            _basculer(srv, site, slug, True)
+            if viz:   # la référence prise sans l'extension ne doit pas rester
+                A.remote_bash(srv, site, A.VIZ_BASELINE_CMD, timeout=A.VIZ_BASELINE_TIMEOUT, max_out=None)
+            bilan["refusees"].append(dict(info, slug=slug, action="désactivation", pages=pages))
+    if not q:
+        quarantaine.pop(dom, None)
+    return bilan
+
+
+def alerter_neutralisation(dom, n, dry):
+    """Une alerte par geste : désactiver une extension se voit sur le site."""
+    if dry:
+        return
+    for x in n.get("neutralisees") or []:
+        A.alert(f"neutralisee:{dom}:{x['slug']}", None, A.carte(
+            "🧯", dom, f"{x['slug']} désactivée : {x.get('raison')}",
+            [", ".join(x.get("cves") or [])[:200], "contrôle après désactivation : aucune page cassée"],
+            faire="Vérifier qu'aucune fonction utile n'a disparu (formulaire, agenda…). Elle sera "
+                  "réactivée d'elle-même dès qu'une mise à jour la corrige.", onglet="securite"))
+    for x in n.get("refusees") or []:
+        A.alert(f"neutralisation_refusee:{dom}:{x['slug']}", None, A.carte(
+            "⚠️", dom, f"{x['slug']} : {x.get('action')} annulée, le site cassait sans elle",
+            ["pages touchées : " + ", ".join(x.get("pages") or [])[:200]],
+            faire="La faille reste ouverte : remplacer l'extension, ou décider de la garder "
+                  "en connaissance de cause.", onglet="securite"))
+    for x in n.get("reactivees") or []:
+        A.alert(f"reactivee:{dom}:{x['slug']}", None, A.carte(
+            "✅", dom, f"{x['slug']} réactivée : un correctif est installé",
+            [], faire="Rien à faire.", lien=False))
+
+
 def traiter(srv_name, s, mode, refus, dry, run_garde=""):
     """Une mise à jour Contrôlée sur un site → bilan (dict) ou None (rien à faire)."""
     dom = s.get("domain")
@@ -270,6 +389,7 @@ def main():
     precedent = load_json(PATH, {}) or {}
     refus_tous = precedent.get("refus") if isinstance(precedent.get("refus"), dict) else {}
     sites_avant = precedent.get("sites") if isinstance(precedent.get("sites"), dict) else {}
+    quarantaine = load_json(A.QUARANTAINE_PATH, {}) or {}
     # Versions refusées parce que leur paquet ne se télécharge pas (licence) :
     # sous-ensemble de `refus`, sondé chaque nuit pour reprendre de lui-même.
     paquets_avant = (precedent.get("refus_paquet") if isinstance(precedent.get("refus_paquet"), dict)
@@ -335,12 +455,23 @@ def main():
                 r["attente_depuis"] = av.get("attente_depuis") or av.get("ts")
             else:
                 r["nuits_attente"], r["attente_depuis"] = 1, r.get("ts")
+        if (modes[dom] if isinstance(modes[dom], dict) else {}).get("neutraliser"):
+            try:
+                n = neutraliser(srv_name, s, quarantaine, dry)
+            except Exception as e:           # un site en panne n'arrête pas les autres
+                n = {"erreur": f"{type(e).__name__}: {e}"[:300]}
+            if any(n.get(k) for k in ("neutralisees", "refusees", "reactivees", "laissees", "erreur")):
+                r = r or {"domain": dom, "server": srv_name, "ts": time.time(), "items": [],
+                          "verdict": "rien à faire"}
+                r["neutralisation"] = n
+                alerter_neutralisation(dom, n, dry)
         if r:
             sites[dom] = r
             print(f"{dom:28} {r['verdict']:32} {', '.join(r.get('items') or []) or '-'}"
                   + (f" · {r['cause'][:120]}" if r.get("cause") else ""))
     if dry:
         return
+    save_json(A.QUARANTAINE_PATH, quarantaine)
     save_json(PATH, {"generated_at": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(),
                      "sites": sites, "refus": refus_neufs, "natives_recoupees": natives,
                      "runs_gardes": gardes, "refus_paquet": refus_paquet})

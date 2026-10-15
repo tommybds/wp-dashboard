@@ -48,7 +48,8 @@ function etatAuto(s) {
   else if (ext > 0 && nExt >= ext && (th == null || nTh == null || nTh >= th)) mode = 'hebergeur';
   else if (natives > 0) mode = 'partiel';
   const attente = (s.plugins_updates || 0) + (s.themes_updates || 0);
-  return { ext, nExt, th, nTh, natives, mode, attente, rollback: !!(reglage || {}).rollback };
+  return { ext, nExt, th, nTh, natives, mode, attente, rollback: !!(reglage || {}).rollback,
+    neutraliser: !!(reglage || {}).neutraliser };
 }
 
 const MODE_CHIP = {
@@ -100,11 +101,15 @@ function monter() {
       h('div', { class: 'sechead' }, h('h2', { text: 'Mode automatique, site par site' })),
       h('p', { class: 'hint', text: 'Le retour arrière automatique demande VizProof : sans contrôle '
         + 'visuel, seul un site tombé ferait annuler la mise à jour. « Auto-MAJ natives » : ce que '
-        + 'WordPress et l’hébergeur mettent à jour seuls — à zéro pour un site en automatique.' }),
+        + 'WordPress et l’hébergeur mettent à jour seuls — à zéro pour un site en automatique. '
+        + '« Failles sans correctif » : la nuit désactive une extension active dont une faille '
+        + 'critique ne se corrige pas (aucun correctif, ou licence expirée), contrôle VizProof à '
+        + 'l’appui, et la réactive dès qu’une mise à jour la corrige.' }),
       h('div', { class: 'filters' }, q, sel, h('span', { class: 'muted small', id: 'maj-count' })),
       h('div', { class: 'wrap' }, h('table', { id: 'maj-tbl' },
         h('thead', {}, h('tr', {},
-          ['Site', 'Mode', 'En attente', 'Auto-MAJ natives', 'Contrôle visuel', 'Retour arrière auto', '']
+          ['Site', 'Mode', 'En attente', 'Auto-MAJ natives', 'Contrôle visuel', 'Retour arrière auto',
+            'Failles sans correctif', '']
             .map(t => h('th', { text: t })))),
         h('tbody', { id: 'maj-tb' })))));
 }
@@ -238,7 +243,7 @@ function rendreSites() {
     cnt.textContent = nAuto + ' site' + (nAuto > 1 ? 's' : '') + ' en automatique';
   }
   mount(tb, lignes.length ? lignes.map(({ s, e }) => ligneSite(s, e))
-    : h('tr', { class: 'grouprow' }, h('td', { colspan: '7' },
+    : h('tr', { class: 'grouprow' }, h('td', { colspan: '8' },
       h('span', { class: 'muted', text: 'Aucun site ne correspond au filtre.' }))));
 }
 
@@ -265,6 +270,20 @@ function ligneSite(s, e) {
     const ok = await poserMode(s, { rollback: rb.checked });
     rb.disabled = false;
     if (!ok) rb.checked = !rb.checked;
+  };
+
+  /* Neutralisation : désactiver la nuit une extension active à faille critique
+     sans issue. Même condition que le retour arrière : sans VizProof, rien ne
+     verrait qu'une page a perdu son formulaire ou son agenda. */
+  const nz = h('input', { type: 'checkbox', 'aria-label': 'Désactiver les extensions à faille sans correctif sur ' + nomDeSite(s) });
+  nz.checked = e.neutraliser;
+  if (e.mode !== 'auto') { nz.disabled = true; nz.title = 'La neutralisation accompagne le mode automatique'; }
+  else if (!viz) { nz.disabled = true; nz.title = 'VizProof n’est pas relié : rien ne verrait ce que la désactivation retire'; }
+  nz.onchange = async () => {
+    nz.disabled = true;
+    const ok = await poserMode(s, { neutraliser: nz.checked });
+    nz.disabled = false;
+    if (!ok) nz.checked = !nz.checked;
   };
 
   /* Auto-MAJ natives : pour un site en automatique, tout ce qui n'est pas zéro
@@ -294,6 +313,7 @@ function ligneSite(s, e) {
     h('td', {}, natives),
     h('td', {}, viz ? chipEl('VizProof', 'ok') : chipEl('non relié', 'mut')),
     h('td', {}, h('label', { class: 'small inlinechk' }, rb, e.rollback ? ' activé' : ' non')),
+    h('td', {}, h('label', { class: 'small inlinechk' }, nz, e.neutraliser ? ' désactiver' : ' non')),
     h('td', {}, action));
 }
 

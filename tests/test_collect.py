@@ -1390,6 +1390,16 @@ class TestDigest(unittest.TestCase):
         self.assertIn("Toujours ouvert</b> (1)\n• 1 faille critique bloquée par une licence : a", texte)
         self.assertIn("🟢 Rien de nouveau de grave", texte)
 
+    def test_nuit_neutralisation(self):
+        nuit = self.nuit({"a.fr": {"verdict": "rien à faire", "items": [], "neutralisation": {
+            "neutralisees": [{"slug": "mec", "raison": "faille sans correctif"}],
+            "refusees": [{"slug": "acf", "action": "désactivation", "pages": ["Contact"]}],
+            "reactivees": [{"slug": "seo"}]}}})
+        texte = "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW))
+        self.assertIn("• 🧯 <b>a</b> — mec désactivée (faille sans correctif)", texte)
+        self.assertIn("• ⚠️ <b>a</b> — acf : désactivation annulée, le site cassait sans elle", texte)
+        self.assertIn("• ✅ <b>a</b> — seo réactivée (corrigée)", texte)
+
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
         self.assertEqual(digest.court("www.crm.sumoto.fr"), "crm.sumoto")

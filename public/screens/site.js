@@ -96,6 +96,8 @@ const ACT_LIB = {
   themes_autoupdate_off: 'Désactivation des auto-MAJ des thèmes',
   auto_rollback_on: 'Retour arrière automatique activé',
   auto_rollback_off: 'Retour arrière automatique désactivé',
+  auto_neutraliser_on: 'Neutralisation des failles sans correctif activée',
+  auto_neutraliser_off: 'Neutralisation des failles sans correctif désactivée',
   auto_mode_on: 'Mode automatique activé', auto_mode_off: 'Mode automatique désactivé',
   verify_checksums: 'Intégrité du cœur', vizproof_install: 'Installation VizProof',
   viz_baseline: 'Baseline visuelle', viz_scan: 'Scan visuel', viz_disconnect: 'Dissociation VizProof',

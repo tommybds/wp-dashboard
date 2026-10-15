@@ -507,6 +507,14 @@ def resume_nuit(nuit, now=None):
         for slug, vers in echecs.items():
             lignes.append(f"• ⚠️ {d} — {A.esc_html(f'{slug} {vers}'.strip())} impossible "
                           "(paquet indisponible, licence ?)")
+        n = r.get("neutralisation") if isinstance(r.get("neutralisation"), dict) else {}
+        for x in n.get("neutralisees") or []:
+            lignes.append(f"• 🧯 {d} — {A.esc_html(x.get('slug'))} désactivée ({A.esc_html(x.get('raison'))})")
+        for x in n.get("refusees") or []:
+            lignes.append(f"• ⚠️ {d} — {A.esc_html(x.get('slug'))} : {A.esc_html(x.get('action'))} annulée, "
+                          "le site cassait sans elle")
+        for x in n.get("reactivees") or []:
+            lignes.append(f"• ✅ {d} — {A.esc_html(x.get('slug'))} réactivée (corrigée)")
     if not lignes:
         return ["🌙 <b>Cette nuit</b> : rien à mettre à jour"]
     reste = len(lignes) - MAX_NUIT

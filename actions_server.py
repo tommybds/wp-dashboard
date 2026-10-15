@@ -233,6 +233,7 @@ AUTO_MODE_PATH = os.path.join(DATA, "auto_mode.json")
 # Mises à jour de la nuit faites PAR LE DASHBOARD (maj_nuit.py, 4 h) sur les
 # sites en mode automatique : verdict par site + versions refusées.
 MAJ_NUIT_PATH = os.path.join(DATA, "maj_nuit.json")
+QUARANTAINE_PATH = os.path.join(DATA, "quarantaine.json")
 # Politique de mise à jour par extension : liste d'exclusions PAR SITE. Une
 # extension gelée (parce qu'une version casse le site, ou qu'un client valide
 # avant) reste installée mais n'est jamais mise à jour par le dashboard.
@@ -5556,6 +5557,42 @@ def licences_bloquees(site, refus_paquet=None):
     return out
 
 
+# Jamais désactivées par la neutralisation : ce sont elles qui la font et la
+# contrôlent (sans l'agent ni VizProof, plus rien ne verrait la suite).
+NEUTRALISATION_PROTEGEES = {"sumotori-dash-agent", "vizproof-timeline"}
+
+
+def failles_a_neutraliser(site, rules=None, vulns=None, refus_paquet=None):
+    """{slug: {cves, version, raison}} des extensions ACTIVES d'un site qui ont
+    une faille grave qu'aucune mise à jour ne corrige ce soir : sans correctif
+    publié, ou correctif publié mais refusé faute de licence. Une faille qui a
+    un correctif téléchargeable n'est pas ici : la nuit met l'extension à jour."""
+    dom = site.get("domain") or ""
+    graves = vulns_graves(rules if rules is not None else incident_rules())
+    vulns = vulns if vulns is not None else incident_json(VULNS_FOUND_PATH, {})
+    bloquees = licences_bloquees(site, refus_paquet)
+    out = {}
+    for x in (vulns or {}).get("sites") or []:
+        if x.get("domain") != dom:
+            continue
+        for v in x.get("findings") or []:
+            slug = str(v.get("component") or "")
+            if (str(v.get("kind") or "plugin") != "plugin" or not slug
+                    or slug in NEUTRALISATION_PROTEGEES
+                    or str(v.get("severity") or "").lower() not in graves
+                    or str(v.get("status") or "") != "active"):
+                continue
+            corrige = str(v.get("update_to") or "").strip()
+            if corrige and slug not in bloquees:
+                continue
+            e = out.setdefault(slug, {"cves": [], "version": str(v.get("version") or ""),
+                                      "raison": ("correctif bloqué par la licence" if corrige
+                                                 else "faille sans correctif")})
+            if v.get("cve") and str(v["cve"]) not in e["cves"]:
+                e["cves"].append(str(v["cve"]))
+    return out
+
+
 def vulns_graves(rules):
     graves = {"critical"}
     if rules.get("vuln_high_is_incident"):
@@ -5568,6 +5605,7 @@ def inc_vulns(index, rules, now):
     res = incident_json(VULNS_FOUND_PATH, {})
     graves = vulns_graves(rules)
     refus_paquet = (incident_json(MAJ_NUIT_PATH, {}) or {}).get("refus_paquet") or {}
+    quarantaine = load_json(QUARANTAINE_PATH, {}) or {}
     out, vus = [], set()
     for s in (res.get("sites") or []):
         cle = s.get("domain") or ""
@@ -5576,6 +5614,7 @@ def inc_vulns(index, rules, now):
         server, site = index[cle]
         rest = site.get("via") == "rest"   # aucune action wp-cli possible
         bloquees = licences_bloquees(site, refus_paquet)
+        neutres = quarantaine.get(cle) if isinstance(quarantaine.get(cle), dict) else {}
         # Une extension cumule souvent plusieurs CVE graves ; l'incident, lui,
         # est unique par composant. On rassemble donc les identifiants ici, pour
         # que `extra` les porte tous sans dépendre de l'ordre des findings.
@@ -5621,8 +5660,10 @@ def inc_vulns(index, rules, now):
             # ne pouvait qu'échouer, et la même extension sortait une seconde
             # fois en « licence à renouveler ». Une seule ligne, sans bouton.
             licence = genre == "plugin" and comp in bloquees
+            neutre = licence and isinstance(neutres.get(comp), dict)
             if licence:
-                titre = f"{comp} {v.get('version') or ''} · faille {grav}, correctif bloqué par la licence"
+                titre = (f"{comp} {v.get('version') or ''} · faille {grav}, correctif bloqué par la licence"
+                         + (" · désactivée par le dashboard" if neutre else ""))
                 detail += f" — correctif en {vers}, non téléchargeable : licence à renouveler"
                 action = None
             else:
@@ -5631,7 +5672,8 @@ def inc_vulns(index, rules, now):
                 detail += f" — correctif en {vers}"
             out.append(make_incident(
                 "vuln_critical_licence" if licence else "vuln_critical_fixable",
-                "critical", cle, " ".join(titre.split()), detail,
+                "warning" if neutre else "critical", cle, " ".join(titre.split()), detail,
+                bucket="plan" if neutre else "now",
                 # L'identifiant d'un thème est préfixé : sans cela, le thème
                 # `astra` et l'extension `astra` d'un même site partageraient
                 # une ligne (et un acquittement). Les identifiants d'extensions,
@@ -5661,12 +5703,14 @@ def inc_vulns_unfixed(index, now):
     (les fichiers sont là) mais il n'est pas servi aux visiteurs.
     """
     res = incident_json(VULNS_FOUND_PATH, {})
+    quarantaine = load_json(QUARANTAINE_PATH, {}) or {}
     out = []
     for s_ in (res.get("sites") or []):
         cle = s_.get("domain") or ""
         if cle not in index:
             continue
         server, _site = index[cle]
+        neutres = quarantaine.get(cle) if isinstance(quarantaine.get(cle), dict) else {}
         # Un composant, une ligne : une extension cumule souvent plusieurs CVE.
         par_comp = {}
         for v in (s_.get("findings") or []):
@@ -5689,6 +5733,11 @@ def inc_vulns_unfixed(index, now):
             titre = (f"{quoi}{comp} {e['version']} · {e['n']} faille"
                      f"{'s' if e['n'] > 1 else ''} critique"
                      f"{'s' if e['n'] > 1 else ''} sans correctif")
+            if genre == "plugin" and isinstance(neutres.get(comp), dict):
+                # Désactivée par le dashboard (neutralisation) : le collecteur ou
+                # le scan de failles peuvent encore la voir active jusqu'au relevé.
+                e["actif"] = False
+                titre += " · désactivée par le dashboard"
             detail = ("extension active : la faille est exposée"
                       if e["actif"] else "composant inactif : présent sur le disque, non servi")
             if e["cves"]:
@@ -8691,6 +8740,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "auto doit valoir true ou false"})
             if "rollback" in body and body.get("rollback") not in (True, False):
                 return self._send(400, {"error": "rollback doit valoir true ou false"})
+            if "neutraliser" in body and body.get("neutraliser") not in (True, False):
+                return self._send(400, {"error": "neutraliser doit valoir true ou false"})
             srv, site = find_site(server, domain)
             if not srv or not site:
                 return self._send(404, {"error": "site inconnu"})
@@ -8706,7 +8757,10 @@ class Handler(BaseHTTPRequestHandler):
                 e = d.get(domain) if isinstance(d.get(domain), dict) else {"depuis": _now_s()[:16]}
                 if "rollback" in body:
                     e["rollback"] = bool(body["rollback"])
+                if "neutraliser" in body:
+                    e["neutraliser"] = bool(body["neutraliser"])
                 e.setdefault("rollback", False)
+                e.setdefault("neutraliser", False)
                 d[domain] = e
                 return d
 
@@ -8714,9 +8768,13 @@ class Handler(BaseHTTPRequestHandler):
             if "auto" in body:
                 act, txt = (("auto_mode_on", "mode automatique activé (MAJ de nuit par le dashboard)")
                             if auto else ("auto_mode_off", "mode automatique désactivé"))
-            else:
+            elif "rollback" in body:
                 act = "auto_rollback_on" if body["rollback"] else "auto_rollback_off"
                 txt = "retour arrière automatique " + ("activé" if body["rollback"] else "désactivé")
+            else:
+                act = "auto_neutraliser_on" if body.get("neutraliser") else "auto_neutraliser_off"
+                txt = ("neutralisation des failles sans correctif "
+                       + ("activée" if body.get("neutraliser") else "désactivée"))
             append_log({"ts": _now_s(), "source": "manuel", "server": server, "domain": domain,
                         "action": act, "arg": None, "rc": 0, "duration_s": 0, "output_tail": txt})
             return self._send(200, {"ok": True, "modes": modes})

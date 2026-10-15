@@ -61,7 +61,7 @@ class IncidentsBase(unittest.TestCase):
                       ("BASE", "DATA", "FLEET_PATH", "PHPERR_PATH", "VULNS_FOUND_PATH",
                        "CHECKSUMS_PATH", "SETTINGS_PATH", "SESSION_SECRET_PATH", "LOG",
                        "ACKS_PATH", "SEEN_PATH", "MAJ_NUIT_PATH", "AUTO_MODE_PATH",
-                       "VIZ_NUIT_PATH")}
+                       "VIZ_NUIT_PATH", "QUARANTAINE_PATH")}
         A.BASE = self.root
         A.DATA = self.data
         A.FLEET_PATH = os.path.join(self.data, "fleet.json")
@@ -76,6 +76,7 @@ class IncidentsBase(unittest.TestCase):
         A.MAJ_NUIT_PATH = os.path.join(self.data, "maj_nuit.json")
         A.AUTO_MODE_PATH = os.path.join(self.data, "auto_mode.json")
         A.VIZ_NUIT_PATH = os.path.join(self.data, "viz_nuit.json")
+        A.QUARANTAINE_PATH = os.path.join(self.data, "quarantaine.json")
         A._SESSION_SECRET = None
         A._JSON_LOCKS.clear()
         self.addCleanup(self._restaurer)
