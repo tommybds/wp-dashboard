@@ -12,6 +12,7 @@ sys.path.insert(0, BASE)
 
 import actions_server as A          # noqa: E402
 import maj_nuit                     # noqa: E402
+import viz_nuit                     # noqa: E402
 from tests.test_incidents import IncidentsBase, RoutesBase, site   # noqa: E402
 
 
@@ -382,6 +383,22 @@ class TestTemoinEtEchecs(IncidentsBase):
         d = nuit(True)
         self.assertEqual(vus["refus"], {})                            # retentée
         self.assertEqual(d.get("refus_paquet"), {})
+
+    def test_maj_du_dashboard_pas_reprise_la_nuit(self):
+        """Une MAJ lancée depuis le dashboard la veille n'est pas une MAJ auto."""
+        log = os.path.join(self.data, "actions.log")
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))
+        with open(log, "w") as fh:
+            for e in ({"ts": ts, "domain": "a.fr", "action": "safe_update", "arg": ""},
+                      {"ts": ts, "domain": "a.fr", "action": "plugin_update", "arg": "seo"},
+                      {"ts": ts, "domain": "a.fr", "action": "safe_update", "arg": "core,elementor,theme:astra"},
+                      {"ts": ts, "domain": "b.fr", "action": "core_update", "arg": ""},
+                      {"ts": ts, "domain": "a.fr", "action": "rescan", "arg": ""}):
+                fh.write(json.dumps(e) + "\n")
+        with mock.patch.object(A, "LOG", log):
+            faits = viz_nuit.faits_par_le_dashboard("a.fr", time.time() - 86400)
+            self.assertEqual(faits, {"wordpress-core", "seo", "elementor", "astra"})
+            self.assertEqual(viz_nuit.faits_par_le_dashboard("a.fr", time.time()), set())
 
     def test_refus_limite_aux_echecs(self):
         self._p = maj_nuit.PATH

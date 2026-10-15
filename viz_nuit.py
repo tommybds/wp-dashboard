@@ -216,6 +216,47 @@ def maj_journalisees(domaine, depuis):
     return out
 
 
+# Mises à jour lancées DEPUIS LE DASHBOARD (journal des actions) : leur chaîne
+# a déjà scanné et jugé (MAJ contrôlée), ou leur geste a son propre contrôle de
+# fin (MAJ simple). Les reprendre ici les faisait passer pour une « mise à jour
+# automatique de la nuit » — proaxys, 15/10 : cœur 6.9.10 passé à la main la
+# veille à 17 h 38, verdict « réussi », alerté à 6 h 46 sur deux pages instables.
+ACTIONS_MAJ = {"plugin_update", "theme_update", "core_update", "safe_update",
+               "plugins_update_all", "plugins_update_except",
+               "themes_update_all", "themes_update_except"}
+TOUT = "*"   # « toutes les extensions / tous les thèmes » : pas de liste dans le journal
+
+
+def faits_par_le_dashboard(domaine, depuis):
+    """Composants mis à jour par une action du dashboard depuis `depuis` →
+    ensemble de slugs (« wordpress-core » pour le cœur, TOUT pour un lot)."""
+    out = set()
+    for e in A.read_jsonl_tail(A.LOG, 5000):
+        if e.get("domain") != domaine or e.get("action") not in ACTIONS_MAJ:
+            continue
+        try:
+            t = time.mktime(time.strptime(str(e.get("ts")), "%Y-%m-%d %H:%M:%S"))
+        except (ValueError, TypeError):
+            continue
+        if t < depuis:
+            continue
+        act, arg = e["action"], str(e.get("arg") or "")
+        if act == "core_update":
+            out.add("wordpress-core")
+        elif act in ("plugin_update", "theme_update") and arg:
+            out.add(arg)
+        elif act == "safe_update":
+            # Le journal ne nommait pas le cœur (corrigé le 15/10) : une MAJ
+            # contrôlée sans extension ni thème ne pouvait viser que lui.
+            parts = [x for x in arg.split(",") if x]
+            if not parts or "core" in parts:
+                out.add("wordpress-core")
+            out.update(x.split(":", 1)[-1] for x in parts if x != "core")
+        else:
+            out.add(TOUT)
+    return out
+
+
 def scan_rattrapage(srv_name, s, srv, site, majs):
     """Scan d'après mise à jour lancé PAR LE DASHBOARD → {rc, report, …}.
 
@@ -315,8 +356,11 @@ def examiner(srv_name, s, now, rattraper=False, deja=None):
     if not site:
         return None
     majs = maj_journalisees(s.get("domain"), now - FENETRE_H * 3600)
+    dash = faits_par_le_dashboard(s.get("domain"), now - FENETRE_H * 3600)
+    if dash:
+        deja = set(deja or ()) | dash
     if deja is not None:
-        majs = [m for m in majs if m[0] not in deja]
+        majs = [m for m in majs if m[0] not in deja and not (TOUT in deja and m[1] != "core")]
         if not majs:
             return None
     ev = evenements(srv, site) or []
@@ -380,7 +424,8 @@ def examiner(srv_name, s, now, rattraper=False, deja=None):
         "retour": retour,
         "contenus_modifies": contenus,
         "run_id": (rapport or {}).get("run_id") if isinstance(rapport, dict) else None,
-        "report_url": (rapport or {}).get("report_url") if isinstance(rapport, dict) else None,
+        "report_url": ((A.viz_lien_run(rapport.get("run_id")) or rapport.get("report_url"))
+                       if isinstance(rapport, dict) else None),
     }
 
 

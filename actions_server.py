@@ -3759,7 +3759,8 @@ echo "MAINTENANCE_POSEE=$POSE"
         append_log({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "source": "maj-sure", "server": server_name, "domain": domain,
                     "action": "safe_update",
-                    "arg": ",".join(pending + [f"theme:{t}" for t in pending_th]),
+                    "arg": ",".join((["core"] if with_core else []) + pending
+                                    + [f"theme:{t}" for t in pending_th]),
                     "rc": 0 if sain else 2, "duration_s": duree,
                     "output_tail": f"verdict={SAFE['verdict']}"
                                    + (f" · cause = {cause}" if cause and not sain else "")})
