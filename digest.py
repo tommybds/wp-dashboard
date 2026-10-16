@@ -297,6 +297,12 @@ def libelle_fatale(i, detail):
 def libelle(i):
     """« site : quoi » en une ligne courte, sans répéter le nom du site."""
     site = i.get("site") or i.get("server") or ""
+    return f"<b>{A.esc_html(court(site))}</b> — {A.esc_html(quoi_incident(i))}"
+
+
+def quoi_incident(i):
+    """Ce qui arrive, sans le nom du site (texte brut)."""
+    site = i.get("site") or i.get("server") or ""
     kind, detail = i.get("kind"), str(i.get("detail") or "")
     if kind == "php_fatal":
         quoi = libelle_fatale(i, detail)
@@ -315,7 +321,7 @@ def libelle(i):
                 quoi = quoi.replace(motif, " ")
         quoi = " ".join(quoi.split())
         quoi = quoi[:1].lower() + quoi[1:]
-    return f"<b>{A.esc_html(court(site))}</b> — {A.esc_html(quoi)}"
+    return quoi
 
 
 # Le geste attendu, pour les incidents qui en ont un évident. Une nouveauté
@@ -343,6 +349,66 @@ def lien_ecart(url):
     url = str(url or "")
     return (f'<a href="{html.escape(url, quote=True)}">voir l’écart</a>'
             if url.startswith("https://") else "")
+
+
+MAX_SITES_GROUPE = 8
+
+
+def grouper(incidents):
+    """[[incident, …]] : les incidents de même nature et de même cause, sur
+    plusieurs sites, forment UN problème. Le 16/10, une panne de VizProof (une
+    seule cause) s'est lue « 🔴 7 nouveaux problèmes », un par site."""
+    groupes, index = [], {}
+    for i in incidents:
+        cle = (i.get("kind"), quoi_incident(i), " ".join(str(i.get("detail") or "").split()))
+        if cle in index:
+            groupes[index[cle]].append(i)
+        else:
+            index[cle] = len(groupes)
+            groupes.append([i])
+    return groupes
+
+
+def ligne_groupe(g):
+    """Une ligne pour un problème : un site, ou plusieurs touchés de la même façon."""
+    if len(g) == 1:
+        return ligne_nouveau(g[0])
+    i = g[0]
+    noms = [court(x.get("site") or x.get("server") or "") for x in g]
+    sites = ", ".join(noms[:MAX_SITES_GROUPE]) + (f" … +{len(noms) - MAX_SITES_GROUPE}"
+                                                  if len(noms) > MAX_SITES_GROUPE else "")
+    cause = " ".join(str(i.get("detail") or "").split())[:160]
+    faire = A_FAIRE.get(i.get("kind"))
+    return (f"• <b>{len(g)} sites</b> — {A.esc_html(quoi_incident(i))}"
+            + (f" : {A.esc_html(cause)}" if cause else "")
+            + f"\n   {A.esc_html(sites)}"
+            + (f"\n   👉 {A.esc_html(faire)}" if faire else ""))
+
+
+RE_LIGNE_NUIT = re.compile(r"^• (\S+) <b>([^<]+)</b> — (.*)$", re.S)
+
+
+def grouper_nuit(lignes):
+    """Lignes « Cette nuit » identiques à part le site → une seule ligne."""
+    groupes, index = [], {}
+    for l in lignes:
+        m = RE_LIGNE_NUIT.match(l)
+        cle = (m.group(1), m.group(3)) if m else (None, l)
+        if m and cle in index:
+            groupes[index[cle]][1].append(m.group(2))
+            continue
+        index[cle] = len(groupes)
+        groupes.append((l, [m.group(2)] if m else []))
+    out = []
+    for l, noms in groupes:
+        if len(noms) < 2:
+            out.append(l)
+            continue
+        m = RE_LIGNE_NUIT.match(l)
+        liste = ", ".join(noms[:MAX_SITES_GROUPE]) + (f" … +{len(noms) - MAX_SITES_GROUPE}"
+                                                      if len(noms) > MAX_SITES_GROUPE else "")
+        out.append(f"• {m.group(1)} <b>{len(noms)} sites</b> — {m.group(3)}\n   {liste}")
+    return out
 
 
 def ligne_nouveau(i):
@@ -493,7 +559,7 @@ def resume_nuit(nuit, now=None):
         lien = f" · {lien}" if lien else ""
         if v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
             lignes.append(f"• {'⛔' if v.startswith('ÉCHEC') else '↩️'} {d} — {A.esc_html(v)}"
-                          + (f" : {A.esc_html(cause[:90])}" if cause else "") + lien)
+                          + (f" : {A.esc_html(cause[:140])}" if cause else "") + lien)
         elif v.startswith("réussi") and items:
             lignes.append(f"• ✅ {d} — {A.esc_html(', '.join(items))}"
                           + (" (écart visuel à regarder)" if "anomalies" in v else "") + lien)
@@ -517,6 +583,7 @@ def resume_nuit(nuit, now=None):
             lignes.append(f"• ✅ {d} — {A.esc_html(x.get('slug'))} réactivée (corrigée)")
     if not lignes:
         return ["🌙 <b>Cette nuit</b> : rien à mettre à jour"]
+    lignes = grouper_nuit(lignes)
     reste = len(lignes) - MAX_NUIT
     return (["🌙 <b>Cette nuit</b>"] + lignes[:MAX_NUIT]
             + ([f"• … +{reste}"] if reste > 0 else []))
@@ -579,8 +646,11 @@ def build_message(changes, hours=24, incidents=None, previous=None,
     lignes_nuit = resume_nuit(nuit, now)
 
     lignes = [f"📊 <b>Parc WordPress · {JOURS[now.weekday()]} {now.strftime('%d/%m')}</b>"]
+    groupes = grouper(nouveaux)
     if nouveaux:
-        verdict = "🔴 " + pluriel(len(nouveaux), "nouveau problème", "nouveaux problèmes")
+        verdict = "🔴 " + pluriel(len(groupes), "nouveau problème", "nouveaux problèmes")
+        if len(groupes) < len(nouveaux):
+            verdict += f" ({pluriel(len({i.get('site') for i in nouveaux}), 'site')})"
     elif publies:
         verdict = "🟠 " + pluriel(len(publies), "correctif à appliquer", "correctifs à appliquer")
     elif regles and not inc_prod:
@@ -593,9 +663,9 @@ def build_message(changes, hours=24, incidents=None, previous=None,
 
     if nouveaux:
         lignes.append("🆕 <b>Depuis hier</b>")
-        lignes += [ligne_nouveau(i) for i in nouveaux[:MAX_NOUVEAUX]]
-        if len(nouveaux) > MAX_NOUVEAUX:
-            lignes.append(f"• … +{len(nouveaux) - MAX_NOUVEAUX}")
+        lignes += [ligne_groupe(g) for g in groupes[:MAX_NOUVEAUX]]
+        if len(groupes) > MAX_NOUVEAUX:
+            lignes.append(f"• … +{len(groupes) - MAX_NOUVEAUX}")
         lignes.append("")
     if publies:
         lignes.append("🔧 <b>Correctif publié</b> — faille critique, mise à jour à lancer")

@@ -1257,7 +1257,7 @@ class TestDigest(unittest.TestCase):
         })
         texte = "\n".join(digest.resume_nuit(nuit, self.NUIT_NOW))
         self.assertIn("• ✅ <b>a</b> — seo\n", texte)              # astra-addon n'est pas fait
-        self.assertIn("• ⚠️ <b>b</b> — astra-addon 4.13.10 impossible", texte)
+        self.assertIn("• ⚠️ <b>2 sites</b> — astra-addon 4.13.10 impossible (paquet indisponible, licence ?)\n   a, b", texte)
         self.assertNotIn("✅ <b>b</b>", texte)                    # rien de fait sur b
         self.assertIn("• ⏸ <b>c</b> — bloqué : écart VizProof non réglé (Accueil)", texte)
         self.assertIn("• ↩️ <b>e</b> — annulé (retour arrière) : Contrôle : 500", texte)
@@ -1399,6 +1399,27 @@ class TestDigest(unittest.TestCase):
         self.assertIn("• 🧯 <b>a</b> — mec désactivée (faille sans correctif)", texte)
         self.assertIn("• ⚠️ <b>a</b> — acf : désactivation annulée, le site cassait sans elle", texte)
         self.assertIn("• ✅ <b>a</b> — seo réactivée (corrigée)", texte)
+
+    def test_meme_cause_une_ligne(self):
+        """16/10 : une panne de VizProof sur 7 sites = un problème, pas sept."""
+        cause = "Référence VizProof avant mise à jour : exigée et en échec"
+        inc = [dict(self.inc(f"f{n}", f"s{n}.fr", kind="auto_update_failed",
+                             title=f"Mise à jour de nuit non faite sur s{n}.fr", detail=cause))
+               for n in range(7)]
+        inc.append(self.inc("x", "z.fr"))                       # une autre cause
+        texte, _ = digest.build_message([], 24, inc, {"vieux": "y"})
+        self.assertIn("🔴 2 nouveaux problèmes (8 sites)", texte)
+        self.assertIn("• <b>7 sites</b> — mise à jour de nuit non faite : " + cause, texte)
+        self.assertIn("   s0, s1, s2, s3, s4, s5, s6", texte)
+        self.assertEqual(texte.count("mise à jour de nuit non faite"), 1)
+
+    def test_nuit_meme_cause_une_ligne(self):
+        sites = {f"s{n}.fr": {"verdict": "annulé", "items": ["x"], "cause": "référence en échec"}
+                 for n in range(3)}
+        sites["t.fr"] = {"verdict": "réussi", "items": ["seo"]}
+        lignes = digest.resume_nuit(self.nuit(sites), self.NUIT_NOW)
+        self.assertIn("• ↩️ <b>3 sites</b> — annulé : référence en échec\n   s0, s1, s2", lignes)
+        self.assertIn("• ✅ <b>t</b> — seo", lignes)
 
     def test_court(self):
         self.assertEqual(digest.court("terrainnova.fr"), "terrainnova")
