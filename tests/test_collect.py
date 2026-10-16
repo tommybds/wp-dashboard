@@ -1418,7 +1418,8 @@ class TestDigest(unittest.TestCase):
                  for n in range(3)}
         sites["t.fr"] = {"verdict": "réussi", "items": ["seo"]}
         lignes = digest.resume_nuit(self.nuit(sites), self.NUIT_NOW)
-        self.assertIn("• ↩️ <b>3 sites</b> — annulé : référence en échec\n   s0, s1, s2", lignes)
+        self.assertIn("• ⏹ <b>3 sites</b> — mise à jour non lancée, rien n'a changé : référence en échec"
+                      "\n   s0, s1, s2", lignes)
         self.assertIn("• ✅ <b>t</b> — seo", lignes)
 
     def test_court(self):

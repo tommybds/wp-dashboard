@@ -557,7 +557,12 @@ def resume_nuit(nuit, now=None):
         lien = lien_ecart(r.get("report_url")) if (v in ("bloqué", "page instable") or "anomalies" in v
                                                     or v.startswith(("annulé (retour", "ÉCHEC"))) else ""
         lien = f" · {lien}" if lien else ""
-        if v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
+        if v == "annulé":
+            # Interrompue AVANT toute modification (« annulé (retour arrière) »
+            # est l'autre cas) : la flèche ↩️ faisait croire à un retour arrière.
+            lignes.append(f"• ⏹ {d} — mise à jour non lancée, rien n'a changé"
+                          + (f" : {A.esc_html(cause[:140])}" if cause else ""))
+        elif v.startswith(("annulé", "ÉCHEC", "impossible", "erreur")):
             lignes.append(f"• {'⛔' if v.startswith('ÉCHEC') else '↩️'} {d} — {A.esc_html(v)}"
                           + (f" : {A.esc_html(cause[:140])}" if cause else "") + lien)
         elif v.startswith("réussi") and items:
